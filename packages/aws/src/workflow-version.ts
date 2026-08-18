@@ -17,9 +17,7 @@ import type {
   OwnershipScope,
   WorkflowVersionRepository,
 } from "@automation/core";
-import type {
-  AwsArtifactStoreConfig,
-} from "./artifact-store.js";
+import type { AwsArtifactStoreConfig } from "./artifact-store.js";
 import type {
   AwsDynamoDbConfig,
   DynamoDocumentClientLike,
@@ -385,10 +383,12 @@ export class AwsWorkflowVersionRepository implements WorkflowVersionRepository {
       scope,
       automationId,
     );
-    metadata.sort((left, right) => left.version - right.version);
+    const sortedMetadata = [...metadata].sort(
+      (left, right) => left.version - right.version,
+    );
 
     const graphs: WorkflowGraph[] = [];
-    for (const item of metadata) {
+    for (const item of sortedMetadata) {
       const bytes = await this.documents.get(item.objectKey);
       if (!bytes) {
         throw new Error(
