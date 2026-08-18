@@ -23,6 +23,8 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Side-effecting nodes need idempotency strategy or an explicit non-repeatable guard.
 - Do not allow concurrent runs of the same automation unless the automation policy explicitly permits it.
 - Persist run/checkpoint state before acknowledging work that may be retried.
+- Human-resolution commands must be idempotent by stable resolution ID and pause boundary. Production claim stores must use an atomic conditional write or equivalent transaction; read-then-unconditional-write implementations are invalid.
+- A duplicate of the already-accepted resolution may return `REPLAY`, while a different resolution ID for the same run/node boundary must return `CONFLICT` and must not start resume execution.
 
 ### 4. Failure handling
 - Classify failures before retrying.
@@ -31,6 +33,7 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Authentication, quota, policy, human-decision, and destructive-action failures are not generic transient errors.
 - Paused runs must retain enough checkpoint/evidence state for deterministic recovery.
 - Explicit `HUMAN`-node resume must never infer control flow. Until a typed human branch-selection contract exists, resume requires exactly one declared successor and must reject ambiguous topology before mutating the persisted run out of `WAITING_FOR_HUMAN`.
+- Database/network uncertainty during human-resolution claiming must propagate as a failure; it must never be guessed to mean replay, conflict, or acceptance.
 
 ### 5. Security and tenant isolation
 - Never store raw external API keys in application metadata tables or logs.
@@ -38,6 +41,7 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Every automation, browser profile, credential reference, artifact, and run must be scoped to an owning tenant/user.
 - Browser executors must not accept arbitrary profile identifiers without ownership authorization.
 - Human approval boundaries must exist for risky/destructive actions.
+- Human-resolution claims must be partitioned/scoped by tenant and user, and durable claim payload identity must be validated when read.
 
 ### 6. Browser safety
 - Deterministic Playwright/CDP interaction is preferred when a known validated strategy exists.
@@ -57,6 +61,7 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Do not rely on in-memory state for anything required after retry, pause, restart, or human takeover.
 - Version workflow definitions; a run must remain bound to the workflow version it started with unless an explicit migration/resume rule exists.
 - Browser compute may terminate while waiting for a human; persistent browser/session state and checkpoint evidence must be saved first.
+- Human-resolution acceptance must be durable before browser/model resume work starts so duplicate workers can be rejected before side effects.
 
 ### 9. Observability
 - Every run needs a stable run ID and correlation context.
@@ -69,6 +74,7 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - CI must run type checking and tests for every PR to `main` and direct push to `main`.
 - A red CI run must be root-caused from logs; do not disable a failing check simply to make CI green.
 - Never claim a test/check passed unless it was actually executed successfully.
+- Durable idempotency adapters require contention tests, same-command replay tests, conflicting-command tests, tenant-isolation tests, and non-conditional failure propagation tests.
 
 ### 11. Dependency discipline
 - Avoid dependencies when a small well-tested internal abstraction is sufficient.
