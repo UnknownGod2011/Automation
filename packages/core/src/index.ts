@@ -110,9 +110,21 @@ export interface CredentialSecret {
   value: string;
 }
 
+/**
+ * Opaque identity material supplied by the execution host when a provider requires
+ * workload-bound authorization to read a stored secret. Cloud adapters may ignore it.
+ */
+export interface CredentialAccessContext {
+  executionIdentityToken?: string;
+}
+
 export interface CredentialVault {
   put(scope: OwnershipScope, credentialId: string, secret: CredentialSecret): Promise<string>;
-  get(scope: OwnershipScope, secretRef: string): Promise<CredentialSecret | null>;
+  get(
+    scope: OwnershipScope,
+    secretRef: string,
+    access?: CredentialAccessContext,
+  ): Promise<CredentialSecret | null>;
   delete(scope: OwnershipScope, secretRef: string): Promise<void>;
 }
 
