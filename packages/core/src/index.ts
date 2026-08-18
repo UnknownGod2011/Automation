@@ -138,6 +138,7 @@ export interface BrowserActionResult {
   effectObserved: boolean;
   evidenceRefs: readonly string[];
   outputs: Readonly<Record<string, unknown>>;
+  stateFingerprint?: string;
   failure?: RunFailure;
 }
 
@@ -146,6 +147,13 @@ export interface BrowserExecutor {
     scope: OwnershipScope,
     runId: string,
     node: WorkflowNode,
+    inputs: Readonly<Record<string, unknown>>,
+  ): Promise<BrowserActionResult>;
+  executeSemantic(
+    scope: OwnershipScope,
+    runId: string,
+    node: WorkflowNode,
+    decision: ReasoningDecision,
     inputs: Readonly<Record<string, unknown>>,
   ): Promise<BrowserActionResult>;
 }
@@ -169,5 +177,6 @@ export interface VerificationEngine {
   verify(context: VerificationContext): Promise<VerificationResult>;
 }
 
+export * from "./execution.js";
 export * from "./memory.js";
 export * from "./run-state.js";
