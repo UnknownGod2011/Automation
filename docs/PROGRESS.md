@@ -156,3 +156,45 @@ This file is the continuity checkpoint for automated development runs. Read `END
 3. Add audit events for human pause, claim accepted/replayed/conflicted, resume checkpoint, and successor start.
 4. Align AWS SDK package versions and re-run the full workspace suite.
 5. Continue browser-profile pause/resume reconstruction and then move back outward through capture -> compile -> test -> publish -> schedule.
+
+## 2026-08-19 — Durable AWS human-resolution claims
+
+### Completed
+- Added `AwsDynamoHumanResolutionClaimStore`, a dedicated AWS adapter implementing the provider-neutral `HumanResolutionClaimStore` contract without adding AWS dependencies to core.
+- Human-resolution claims are keyed by the same tenant/user ownership partition plus run and paused node. The first resolution uses a conditional DynamoDB put; losing writers perform a strongly consistent read to distinguish identical `REPLAY` from competing `CONFLICT`.
+- Claim payloads are validated against requested tenant, user, run, and node identity on read so a malformed/corrupted item cannot silently cross an ownership or pause boundary.
+- Added AWS adapter regression coverage for first acceptance, duplicate replay, concurrent competing resolution IDs, cross-tenant isolation, strongly consistent contention reads, and propagation of non-conditional DynamoDB failures.
+- Exported the new AWS adapter from the package public surface.
+- Updated `ARCHITECTURE.md` and `QUALITY_GATES.md` with the durable claim guarantee, uncertainty semantics, tenant boundary, and required contention tests.
+
+### Validation
+- GitHub Actions CI run #103 completed successfully on code head `b7951c0d5c1c4429570959ca6e533ab6769dab10`; the full configured CI pipeline passed with the new adapter and tests.
+- The execution container still cannot resolve `github.com`, so no local install/check/test pass is claimed.
+- Documentation commits after the code head require their own latest-head CI result before this run is treated as fully validated.
+
+### Invariants and failure-mode review
+- Exactly one resolution ID can be durably accepted for a tenant + user + run + paused-node boundary even when separate workers race.
+- A conditional-write loser is not allowed to guess the outcome: it uses a strongly consistent read of the winning claim before returning `REPLAY` or `CONFLICT`.
+- DynamoDB throttling, transport, permission, and other non-conditional failures propagate to the caller. They are not translated into acceptance/replay/conflict because write outcome is not proven by those errors.
+- The adapter validates all identifiers and timestamps before persistence and stores no browser/profile/provider secret material.
+- This slice does not change retry budgets, browser timeouts, reasoning behavior, workflow topology, or effect-verification semantics.
+
+### Security, concurrency, observability, cost, and scaling review
+- Claims remain in the ownership-scoped DynamoDB partition; a different tenant/user cannot retrieve the winning resolution using the same run/node IDs.
+- Claim acceptance costs one conditional write in the uncontended case. Duplicate/conflicting delivery adds one failed conditional write plus one strongly consistent read, still avoiding browser/model startup and downstream side effects.
+- No new dependency was introduced; the implementation uses the already-controlled AWS SDK packages.
+- Resolution IDs and node IDs are operational metadata, not secrets. No hidden reasoning, cookies, browser storage, credentials, or auth headers are persisted by the adapter.
+
+### Known risks / unresolved questions
+- The durable AWS claim is not yet wired into a production resume worker/API boundary. `WorkflowExecutionEngine` can still be invoked directly with `resumeFromHuman=true`, so duplicate execution prevention is not end-to-end complete yet.
+- Crash recovery after claim acceptance but before successor execution is still unspecified. A same-resolution replay must eventually be able to recover a dead worker without permitting a competing resolution to execute.
+- Explicit HUMAN branch-selection data is still absent; the exactly-one-successor rule remains intentionally conservative.
+- The existing AWS SDK peer-version warning still needs deliberate package alignment.
+- Real DynamoDB behavior is not live-cloud validated without credentials; deterministic command-level tests cover the conditional-write semantics used by the adapter.
+
+### Next highest-value tasks
+1. Add a provider-neutral human-resume orchestration service that consumes `HumanResolutionCoordinator` and only starts browser execution after a durable accepted claim, with explicit crash-safe same-resolution replay semantics.
+2. Wire that orchestration service to the AWS worker/runtime path and prove duplicate/conflicting resolution delivery cannot start a second side-effecting successor.
+3. Add structured audit events for human pause, claim accepted/replayed/conflicted, resume checkpoint, and successor start without sensitive payloads.
+4. Align the AWS SDK package versions deliberately and run the full workspace CI again.
+5. Continue browser-profile pause/resume reconstruction, then proceed outward through capture -> compile -> test -> publish -> schedule.
