@@ -41,8 +41,14 @@ Step Functions is the durable source of truth for a run. Agent/model/browser pro
 4. Execute workflow nodes.
 5. For every node, produce structured attempt/effect evidence.
 6. If deterministic execution cannot satisfy a node, invoke the semantic reasoner with constrained context and allowed actions.
-7. Verify resulting state before advancing.
-8. Checkpoint after every meaningful effect.
+7. Validate any reasoning decision against the node's declared action boundary before giving it to the browser executor.
+8. Verify resulting state before advancing.
+9. Bind declared node outputs into durable workflow variables.
+10. Checkpoint after every meaningful effect and before any retry/pause boundary.
+
+Semantic recovery is only a fallback for recoverable UI ambiguity such as element drift or failed effect verification. It is not used to reinterpret authentication, quota, policy/security, or explicit human-decision failures.
+
+For a node with one successor, control flow advances directly. For a node with multiple declared successors, the executor/reasoner must produce `nextNodeId`, and the engine accepts it only when it exactly matches one of those declared successors. This keeps branching inside the immutable workflow graph rather than permitting model-selected arbitrary destinations.
 
 ### Completion
 - Persist final run state and evidence.
@@ -66,7 +72,11 @@ Typical classes:
 - HUMAN_DECISION_REQUIRED
 - UNKNOWN
 
-Each workflow state has a retry budget and fingerprint. Repeated unresolved fingerprints transition the run to WAITING_FOR_HUMAN/NEEDS_ATTENTION. Persist checkpoint + evidence, save browser profile, terminate browser, notify owner. Resume later in a new browser session reconstructed from checkpoint/profile.
+Each workflow state has a retry budget and fingerprint. Retry delays use bounded exponential backoff; jitter is injected by the runtime so retry planning remains deterministic and testable. Repeated unresolved fingerprints open a human-intervention circuit even when nominal attempts remain, preventing infinite retries against an unchanged page state.
+
+A durable checkpoint contains the current node, completed nodes, attempt count, state fingerprint/repeat count, workflow variables, accumulated evidence references, and the last classified failure. This is the minimum recovery state required to terminate browser/model compute while waiting for a human and later reconstruct execution from the same immutable workflow version.
+
+Persist checkpoint + evidence, save browser profile, terminate browser, notify owner. Resume later in a new browser session reconstructed from checkpoint/profile. Human resume resets the failed-attempt/fingerprint circuit for the repaired node while retaining durable workflow variables and prior evidence.
 
 ## Workflow intermediate representation
 
@@ -98,6 +108,8 @@ Every executable node includes:
 - timeout
 - retry policy
 - escalation policy
+
+Nodes that declare side effects must also declare a verification contract. Invalid retry backoff bounds and graph references are rejected at the workflow-contract boundary rather than deferred to runtime.
 
 ## Capture architecture
 
