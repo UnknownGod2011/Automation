@@ -168,3 +168,5 @@ export interface VerificationResult {
 export interface VerificationEngine {
   verify(context: VerificationContext): Promise<VerificationResult>;
 }
+
+export * from "./memory.js";
