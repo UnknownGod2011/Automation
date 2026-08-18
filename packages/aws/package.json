@@ -1,0 +1,19 @@
+{
+  "name": "@automation/aws",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@automation/core": "workspace:*",
+    "@aws-sdk/client-bedrock-agentcore": "3.1101.0",
+    "@aws-sdk/client-bedrock-agentcore-control": "3.1103.0"
+  }
+}
