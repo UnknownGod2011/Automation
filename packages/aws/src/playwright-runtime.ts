@@ -12,7 +12,6 @@ import type {
   BrowserSessionHandle,
   OwnershipScope,
   ReasoningDecision,
-  RunRecord,
   VerificationContext,
   VerificationEngine,
   VerificationResult,
@@ -20,6 +19,7 @@ import type {
 import { ClassifiedExecutionError } from "@automation/core";
 import type {
   FailureCode,
+  RunRecord,
   WorkflowNode,
 } from "@automation/contracts";
 import {
@@ -67,7 +67,7 @@ function classifiedFailure(
       nodeId,
       evidenceRefs: [],
     },
-    ...(cause !== undefined ? { cause } : {}),
+    cause !== undefined ? { cause } : undefined,
   );
 }
 
