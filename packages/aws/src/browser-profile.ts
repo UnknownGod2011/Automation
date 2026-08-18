@@ -6,6 +6,7 @@ import {
   type BedrockAgentCoreControlClientConfig,
 } from "@aws-sdk/client-bedrock-agentcore-control";
 import type { BrowserProfileStore, OwnershipScope } from "@automation/core";
+import { agentCoreClientToken, scopedResourceIdentity, stableResourceToken } from "./idempotency.js";
 
 const PROFILE_REF_PREFIX = "aws-agentcore-browser-profile://";
 const PROFILE_ID_PATTERN = /^[a-zA-Z][a-zA-Z0-9_]{0,47}-[a-zA-Z0-9]{10}$/;
@@ -31,27 +32,6 @@ export function isResourceNotFound(error: unknown): boolean {
   return errorName(error) === "ResourceNotFoundException";
 }
 
-function hash32(input: string, seed: number): string {
-  let value = seed >>> 0;
-  for (let index = 0; index < input.length; index += 1) {
-    value ^= input.charCodeAt(index);
-    value = Math.imul(value, 16_777_619) >>> 0;
-  }
-  return value.toString(16).padStart(8, "0");
-}
-
-function stableToken(input: string): string {
-  return [
-    2_166_136_261,
-    2_654_435_761,
-    1_013_904_223,
-    3_668_338_649,
-    1_144_067_013,
-  ]
-    .map((seed) => hash32(input, seed))
-    .join("");
-}
-
 export function profileRef(profileId: string): string {
   if (!PROFILE_ID_PATTERN.test(profileId)) {
     throw new Error("AgentCore returned an invalid browser profile identifier");
@@ -68,10 +48,6 @@ export function parseProfileRef(ref: string): string {
     throw new Error("invalid AWS AgentCore browser profile reference");
   }
   return profileId;
-}
-
-function resourceIdentity(scope: OwnershipScope, automationId: string): string {
-  return `${scope.tenantId}\u0000${scope.userId}\u0000${automationId}`;
 }
 
 export class AwsSdkAgentCoreBrowserProfileApi implements AgentCoreBrowserProfileApi {
@@ -115,12 +91,12 @@ export class AgentCoreBrowserProfileStore implements BrowserProfileStore {
   constructor(private readonly api: AgentCoreBrowserProfileApi) {}
 
   async create(scope: OwnershipScope, automationId: string): Promise<string> {
-    const identity = resourceIdentity(scope, automationId);
-    const token = stableToken(identity);
+    const identity = scopedResourceIdentity(scope, automationId);
+    const token = stableResourceToken(identity);
     const created = await this.api.create({
       name: `automation_${token.slice(0, 24)}`,
       description: "Managed browser profile for Automation cloud execution",
-      clientToken: `profile${token}`,
+      clientToken: agentCoreClientToken("profile", identity),
       tags: {
         managedBy: "automation-platform",
         scopeHash: token.slice(0, 24),
@@ -145,7 +121,7 @@ export class AgentCoreBrowserProfileStore implements BrowserProfileStore {
     try {
       await this.api.delete(
         profileId,
-        `delete${stableToken(resourceIdentity(scope, profileId))}`,
+        agentCoreClientToken("delete", scopedResourceIdentity(scope, profileId)),
       );
     } catch (error) {
       if (!isResourceNotFound(error)) throw error;
