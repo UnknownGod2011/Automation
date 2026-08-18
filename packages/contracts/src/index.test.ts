@@ -74,6 +74,23 @@ describe("workflow contracts", () => {
     start.retryPolicy.maxAttempts = 0;
     expect(() => assertWorkflowGraph(graph)).toThrow(/at least one attempt/);
   });
+
+  it("rejects invalid retry backoff bounds", () => {
+    const graph = baseGraph();
+    const start = graph.nodes.start;
+    if (!start) throw new Error("test fixture missing start node");
+    start.retryPolicy.initialBackoffMs = 3_000;
+    start.retryPolicy.maxBackoffMs = 2_000;
+    expect(() => assertWorkflowGraph(graph)).toThrow(/cannot exceed max backoff/);
+  });
+
+  it("requires verification for nodes that declare side effects", () => {
+    const graph = baseGraph();
+    const start = graph.nodes.start;
+    if (!start) throw new Error("test fixture missing start node");
+    start.allowedSideEffects = ["navigation"];
+    expect(() => assertWorkflowGraph(graph)).toThrow(/no verification contract/);
+  });
 });
 
 describe("occurrence idempotency", () => {
