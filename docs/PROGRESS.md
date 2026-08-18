@@ -115,3 +115,44 @@ This file is the continuity checkpoint for automated development runs. Read `END
 3. Align the AWS SDK package versions deliberately and re-run the full suite, retaining pinned/controlled dependency behavior.
 4. Add explicit audit/run events for human pause, human resolution acceptance/rejection, resume checkpoint, and successor start without storing hidden reasoning or sensitive browser data.
 5. Continue the end-to-end lifecycle toward capture/compile/test/publish/schedule only through provider-neutral ports; keep Google adapters implementable against the same contracts.
+
+## 2026-08-19 — Guarded human-resolution command claims
+
+### Completed
+- Added a provider-neutral `HumanResolutionCommand` contract carrying `runId`, `expectedNodeId`, `resolutionId`, and ownership scope.
+- Added `HumanResolutionClaimStore` with explicit `ACCEPTED`, `REPLAY`, and `CONFLICT` outcomes. The contract requires cloud adapters to make claim creation atomic; read-then-unconditional-write implementations are explicitly invalid.
+- Added `HumanResolutionCoordinator` to validate the durable run/checkpoint boundary before a resolution can be claimed: the run must exist in the requested tenant/user scope, remain `WAITING_FOR_HUMAN`, have a durable checkpoint bound to the same run/automation/workflow version, and match the expected node.
+- Added an in-memory claim adapter for deterministic local/test use. It keys claims by tenant + user + run + node so a second resolution ID cannot win the same human boundary.
+- Added tests for identical-delivery replay, concurrent competing resolution IDs, stale-node rejection before mutation, cross-tenant isolation, and rejection after the run has already left `WAITING_FOR_HUMAN`.
+- Exported the new contract/coordinator from `@automation/core`; no AWS/GCP dependency was introduced.
+
+### Validation
+- The code increment was committed as `11f811b165a219a2a4fc68464a52ceffb7a7dafb` and pushed to PR #1.
+- Local clone/test execution was attempted again, but this execution container still cannot resolve `github.com`; no local test-pass claim is made.
+- GitHub Actions for the new head had not yet surfaced through the connector at the time this entry was written; latest-head CI is rechecked after this documentation commit and no green claim is made until a completed successful run is observed.
+
+### Invariants and failure-mode review
+- Only an `ACCEPTED` claim is permission for a caller to start resume execution. `REPLAY` and `CONFLICT` are non-executing outcomes.
+- Claim validation is node-specific and workflow-version-specific, preventing stale human commands from silently applying to a later pause boundary or changed workflow version.
+- Ownership lookup occurs before claim creation, so a cross-tenant request cannot create a claim for a run it cannot resolve.
+- The in-memory adapter is atomic only within one process and exists for tests/local mode. Production durability still requires a conditional database write or equivalent transactional primitive.
+- This slice deliberately does not yet wire the claim into `WorkflowExecutionEngine`; therefore it narrows the concurrency hazard but does not by itself make duplicate resume execution impossible in production.
+
+### Security, retry, observability, cost, and scaling review
+- Resolution IDs and node IDs are metadata, not secrets; no browser/session/provider credential material is added to logs or persistence contracts.
+- The claim path performs metadata reads plus one atomic claim write and does not create browser/model compute, so rejected duplicates are cheap and can be absorbed before execution-plane cost is incurred.
+- A conflicting command returns the already-accepted claim identity rather than accepting a second branch of execution; callers must avoid exposing that metadata across authorization boundaries.
+- No retry loop was added. Adapter-level transient database failures should be retried by the orchestration layer using the same resolution ID so a retry resolves to `REPLAY` rather than a second acceptance.
+
+### Known risks / unresolved questions
+- The claim is not yet persisted by an AWS adapter, and the engine can still be called directly with `resumeFromHuman=true`; production safety therefore still depends on finishing the integration boundary.
+- Crash recovery between claim acceptance and resume execution is not yet specified. The next slice should use a durable conditional claim/state transition that permits the same resolution ID to recover after worker loss without letting a competing ID execute.
+- Typed human branch-selection output is still absent; explicit `HUMAN` nodes remain restricted to one successor.
+- The AWS SDK peer-version warning remains unresolved.
+
+### Next highest-value tasks
+1. Implement the claim atomically in `AwsDynamoRunRepository` or a dedicated DynamoDB claim adapter and integrate resolution acceptance with the engine/worker so direct duplicate resume delivery cannot execute a side-effecting successor twice.
+2. Define crash-safe replay semantics for a worker that dies after claim acceptance but before successor execution.
+3. Add audit events for human pause, claim accepted/replayed/conflicted, resume checkpoint, and successor start.
+4. Align AWS SDK package versions and re-run the full workspace suite.
+5. Continue browser-profile pause/resume reconstruction and then move back outward through capture -> compile -> test -> publish -> schedule.
