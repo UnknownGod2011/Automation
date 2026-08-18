@@ -170,3 +170,4 @@ export interface VerificationEngine {
 }
 
 export * from "./memory.js";
+export * from "./run-state.js";
