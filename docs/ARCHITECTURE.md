@@ -78,6 +78,8 @@ A durable checkpoint contains the current node, completed nodes, attempt count, 
 
 Persist checkpoint + evidence, save browser profile, terminate browser, notify owner. Resume later in a new browser session reconstructed from checkpoint/profile. Human resume resets the failed-attempt/fingerprint circuit for the repaired node while retaining durable workflow variables and prior evidence.
 
+An explicit `HUMAN` workflow node is a durable pause boundary. Until human branch-selection output is represented as an explicit typed resolution command, resuming an explicit `HUMAN` node requires exactly one declared successor. The engine validates that successor before changing the persisted run out of `WAITING_FOR_HUMAN`, marks the human node completed, checkpoints the declared successor, clears the human failure/fingerprint circuit, and preserves the run's immutable workflow version, variables, and prior evidence. Ambiguous human control flow is rejected rather than guessed.
+
 ## Workflow intermediate representation
 
 The compiler emits a versioned DAG/state graph rather than generated one-off Playwright code.
