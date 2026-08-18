@@ -1,10 +1,13 @@
 import type { RunFailure } from "@automation/contracts";
 
 export type ExecutionOperation =
+  | "browser session setup"
+  | "browser profile persistence"
   | "deterministic browser execution"
   | "semantic reasoning"
   | "semantic browser execution"
-  | "effect verification";
+  | "effect verification"
+  | "execution runtime cleanup";
 
 /**
  * Provider and browser adapters use this error to surface a sanitized, domain-level
