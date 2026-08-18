@@ -12,6 +12,7 @@
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@automation/contracts": "workspace:*",
     "@automation/core": "workspace:*",
     "@aws-sdk/client-bedrock-agentcore": "3.1101.0",
     "@aws-sdk/client-bedrock-agentcore-control": "3.1103.0",
