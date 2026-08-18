@@ -180,6 +180,26 @@ export class InMemoryAutomationLockManager implements AutomationLockManager {
     return clone(lease);
   }
 
+  async renew(scope: OwnershipScope, lease: LockLease, ttlMs: number): Promise<LockLease | null> {
+    if (ttlMs <= 0) throw new Error("lock ttlMs must be positive");
+    const key = ownedKey(scope, lease.automationId);
+    const existing = this.locks.get(key);
+    if (!existing) return null;
+    if (existing.ownerToken !== lease.ownerToken) {
+      throw new Error("lock lease is not owned by caller");
+    }
+
+    const nowMs = this.now().getTime();
+    if (new Date(existing.expiresAt).getTime() <= nowMs) return null;
+
+    const renewed: LockRecord = {
+      ...existing,
+      expiresAt: new Date(nowMs + ttlMs).toISOString(),
+    };
+    this.locks.set(key, renewed);
+    return clone(renewed);
+  }
+
   async release(scope: OwnershipScope, lease: LockLease): Promise<void> {
     const key = ownedKey(scope, lease.automationId);
     const existing = this.locks.get(key);
