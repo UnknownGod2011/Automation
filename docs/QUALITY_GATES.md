@@ -30,6 +30,7 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Repeated identical failure states must trip a retry budget and pause rather than loop forever.
 - Authentication, quota, policy, human-decision, and destructive-action failures are not generic transient errors.
 - Paused runs must retain enough checkpoint/evidence state for deterministic recovery.
+- Explicit `HUMAN`-node resume must never infer control flow. Until a typed human branch-selection contract exists, resume requires exactly one declared successor and must reject ambiguous topology before mutating the persisted run out of `WAITING_FOR_HUMAN`.
 
 ### 5. Security and tenant isolation
 - Never store raw external API keys in application metadata tables or logs.
