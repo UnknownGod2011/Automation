@@ -25,8 +25,11 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Persist run/checkpoint state before acknowledging work that may be retried.
 - Human-resolution commands must be idempotent by stable resolution ID and pause boundary. Production claim stores must use an atomic conditional write or equivalent transaction; read-then-unconditional-write implementations are invalid.
 - A duplicate of the already-accepted resolution may return `REPLAY`, while a different resolution ID for the same run/node boundary must return `CONFLICT` and must not start resume execution.
-- `REPLAY` is never execution permission. Human resume browser/model execution may start only for a newly `ACCEPTED` claim unless a separate durable recovery-lease state machine explicitly grants execution ownership.
-- Worker crash recovery must not rely on claim replay alone. A recovery lease must prevent concurrent execution and node-level idempotency/effect verification must address the unknown-side-effect window before automatic recovery can be considered safe.
+- `REPLAY` is never execution permission. Human resume browser/model execution may start only for a newly `ACCEPTED` claim unless a separate durable recovery policy explicitly grants safe execution ownership.
+- Newly accepted human resume execution must acquire a durable execution lease before browser/model work starts. The lease must be scoped to tenant + user + run + paused node + resolution ID and owned by an opaque worker token.
+- Production lease stores must atomically prevent overlapping owners. Expired ownership may be reacquired only by the same resolution ID; a competing resolution ID must remain a conflict.
+- Completion is a durable tombstone. A completed human-resume boundary must not become executable again merely because a TTL elapsed.
+- Worker crash recovery must not rely on claim replay or lease expiry alone. Node-level idempotency/effect verification must address the unknown-side-effect window before automatic recovery can be considered safe.
 
 ### 4. Failure handling
 - Classify failures before retrying.
@@ -35,8 +38,9 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Authentication, quota, policy, human-decision, and destructive-action failures are not generic transient errors.
 - Paused runs must retain enough checkpoint/evidence state for deterministic recovery.
 - Explicit `HUMAN`-node resume must never infer control flow. Until a typed human branch-selection contract exists, resume requires exactly one declared successor and must reject ambiguous topology before mutating the persisted run out of `WAITING_FOR_HUMAN`.
-- Database/network uncertainty during human-resolution claiming must propagate as a failure; it must never be guessed to mean replay, conflict, or acceptance.
-- If resume execution fails after claim acceptance and no durable recovery lease exists, fail closed; do not reinterpret a later replay as permission to rerun side effects.
+- Database/network uncertainty during human-resolution claiming or execution-lease mutation must propagate as a failure; it must never be guessed to mean replay, conflict, acquisition, renewal, or completion.
+- If resume execution fails after claim acceptance, do not reinterpret a later claim replay as permission to rerun side effects.
+- If execution finishes after its durable lease expired or was lost, do not report durable success from the orchestration boundary; surface the ownership-loss failure for reconciliation.
 
 ### 5. Security and tenant isolation
 - Never store raw external API keys in application metadata tables or logs.
@@ -44,7 +48,8 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Every automation, browser profile, credential reference, artifact, and run must be scoped to an owning tenant/user.
 - Browser executors must not accept arbitrary profile identifiers without ownership authorization.
 - Human approval boundaries must exist for risky/destructive actions.
-- Human-resolution claims must be partitioned/scoped by tenant and user, and durable claim payload identity must be validated when read.
+- Human-resolution claims and resume execution leases must be partitioned/scoped by tenant and user, and durable payload identity must be validated when read.
+- Human-resume lease owner tokens are operational capability material: persist only where needed for compare-and-set ownership and never expose them to clients, user-visible histories, or logs.
 
 ### 6. Browser safety
 - Deterministic Playwright/CDP interaction is preferred when a known validated strategy exists.
@@ -65,12 +70,15 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Version workflow definitions; a run must remain bound to the workflow version it started with unless an explicit migration/resume rule exists.
 - Browser compute may terminate while waiting for a human; persistent browser/session state and checkpoint evidence must be saved first.
 - Human-resolution acceptance must be durable before browser/model resume work starts so duplicate workers can be rejected before side effects.
-- Automatic recovery after accepted human resolution requires durable execution ownership distinct from the immutable resolution claim; ownership must be conditionally acquired/renewed/completed and must not overlap across workers.
+- Human-resume execution ownership must be durable and conditionally acquired/renewed/completed; overlapping owners are invalid.
+- Lease renewal must occur before expiry. Expired ownership cannot be completed as though it were still valid.
+- Automatic recovery after lease expiry remains disabled until a durable effect-reconciliation strategy proves rerunning the successor is safe.
 
 ### 9. Observability
 - Every run needs a stable run ID and correlation context.
 - Record node attempts, failure class, retry count, verification result, timing, and checkpoint state without leaking secrets.
 - User-facing run history must distinguish succeeded, retrying, paused, needs-auth, needs-credential, failed, and canceled states.
+- Human-resolution audit events should distinguish claim accepted/replayed/conflicted, lease acquired/busy/completed/expired, and executor start/finish without logging lease owner tokens or sensitive browser data.
 
 ### 10. Tests and CI
 - Add or update tests for every behavior changed.
@@ -80,6 +88,7 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Never claim a test/check passed unless it was actually executed successfully.
 - Durable idempotency adapters require contention tests, same-command replay tests, conflicting-command tests, tenant-isolation tests, and non-conditional failure propagation tests.
 - Human resume orchestration tests must prove replay/conflict outcomes are non-executing, including concurrent duplicate delivery and executor-failure cases.
+- Human-resume lease tests must prove single-owner acquisition, same-resolution reacquisition only after expiry, conflict isolation, renewal/completion owner checks, completed tombstones, tenant isolation, stale-expiry rejection, and propagation of non-conditional storage failures.
 
 ### 11. Dependency discipline
 - Avoid dependencies when a small well-tested internal abstraction is sufficient.

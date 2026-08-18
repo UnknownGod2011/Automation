@@ -228,6 +228,7 @@ export * from "./coordinator.js";
 export * from "./errors.js";
 export * from "./execution.js";
 export * from "./human-resolution.js";
+export * from "./human-resume-lease.js";
 export * from "./human-resume.js";
 export * from "./memory.js";
 export * from "./run-finalization.js";

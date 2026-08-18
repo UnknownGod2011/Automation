@@ -1,240 +1,121 @@
 # Progress Log
 
-This file is the continuity checkpoint for automated development runs. Read `END_GOAL.md` and `ARCHITECTURE.md` before changing implementation boundaries.
+This file is the continuity checkpoint for automated development runs. Read `END_GOAL.md`, `ARCHITECTURE.md`, and `QUALITY_GATES.md` before changing implementation boundaries.
 
-## 2026-08-18 — Bootstrap
+Older hourly entries were consolidated on 2026-08-19 to keep this file useful as an engineering handoff rather than an ever-growing transcript. The guarantees, validated heads, unresolved risks, and next production slices are preserved below.
 
-### Completed
-- Initialized repository.
-- Locked product end goal and non-negotiable engineering properties.
-- Locked control-plane/execution-plane architecture and failure semantics.
-- Established pnpm TypeScript monorepo layout with strict compiler settings.
-- Added `@automation/contracts` as the shared domain boundary.
-- Defined automation states, run states, workflow node kinds, failure codes, retry policy, verification contract, workflow graph, automation/run/checkpoint records, provider credential metadata, and occurrence idempotency key helper.
-- Added domain tests for workflow graph integrity and scheduled-run idempotency.
-- Added GitHub Actions CI for type checking and tests.
-- Added repository ignores.
+## Product/lifecycle target
 
-### Validation
-- Manually reviewed strict TypeScript access patterns and corrected an unsafe test index access.
-- Attempted clean clone + `pnpm install && pnpm check && pnpm test` in the execution container, but the container could not resolve `github.com`; no local test-pass claim is made.
-- GitHub Actions is the authoritative validation path until a network-capable local checkout is available.
+The required production lifecycle remains:
 
-### Architectural decisions locked
-- Durable orchestration state belongs outside the model/browser runtime.
-- Workflow IR is semantic/versioned, not generated one-off Playwright source.
-- Deterministic execution precedes semantic/model fallback.
-- Every consequential node has bounded retries and effect verification.
-- Human takeover closes ephemeral browser compute and resumes from persisted checkpoint/profile later.
-- BYOK secrets stay behind a secret/token-vault adapter; normal tables hold references/health metadata only.
-- Multi-tenant ownership/idempotency/concurrency fields exist from the first schema.
+create automation -> capture -> compile -> test -> publish -> schedule -> execute -> reason -> verify -> checkpoint -> retry/pause -> human recovery -> resume -> success.
 
-## 2026-08-18 — Provider-neutral core ports and local adapters
+Core orchestration remains provider-neutral. AWS is the first production adapter; Google must remain implementable behind the same contracts.
 
-### Completed
-- Added `@automation/core`, with no AWS or GCP SDK dependency.
-- Defined explicit ports for AutomationRepository, WorkflowVersionRepository, RunRepository, CheckpointRepository, AutomationLockManager, ArtifactStore, BrowserProfileStore, CredentialVault, CredentialMetadataRepository, SchedulerPort, NotificationPort, ReasoningProvider, BrowserExecutor, and VerificationEngine.
-- Added deterministic in-memory adapters for metadata repositories, immutable workflow versions, idempotent runs, checkpoints, expiring automation locks, artifacts, browser-profile references, credential secrets/metadata, schedules, and notifications.
-- Added explicit run lifecycle state machine with guarded transitions, terminal-state handling, timestamps, failure requirements, retry/human-resume paths, and rejection of impossible transitions.
-- Added tests proving immutable workflow versions, ordered version listing, at-least-once run deduplication by occurrence key, immutable run identity, concurrency-lock exclusion/expiry, lock-owner protection, cross-tenant secret isolation, legal run lifecycle, retry/human resume, invalid transition rejection, and structured terminal failure requirements.
-- Adjusted workspace package type resolution so clean `pnpm check` does not depend on a prior `dist` build.
+## Completed foundation
 
-### Validation
-- Reviewed new code against strict TypeScript settings (`strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`).
-- Corrected an invalid test-only type-use expression before finalizing the slice.
-- Reviewed PR review threads; no unresolved inline review threads were present at this checkpoint.
-- GitHub combined commit status currently reports CodeRabbit success. GitHub Actions workflow discovery through the connector has not yet surfaced the newest run, so no CI-pass claim is made for this slice yet.
-- Local container execution remains unavailable because the prior environment could not resolve GitHub/package dependencies; tests are therefore designed to be deterministic and credential-free while repository CI remains authoritative.
+### Domain and execution core
+- Established the strict pnpm/TypeScript monorepo and shared `@automation/contracts` domain boundary.
+- Added versioned workflow graphs, run/checkpoint records, failure classification, bounded retry/backoff contracts, verification requirements, provider credential metadata, occurrence idempotency, and multi-tenant ownership fields.
+- Added provider-neutral repositories/ports plus deterministic in-memory adapters.
+- Added guarded run lifecycle state transitions, idempotent scheduled-run creation, automation concurrency leases, durable checkpoints, retry fingerprints/circuit breaking, semantic fallback constraints, and explicit effect verification.
+- Added a provider-neutral execution engine that preserves immutable workflow versions, variables, evidence, and checkpoints across retry/pause/resume.
+- Added run preflight/finalization/worker boundaries, browser-session/profile abstractions, reasoning/provider interfaces, and deterministic verification interfaces.
 
-### Architectural decisions reinforced
-- Core ports are the only dependency direction for cloud adapters: AWS and Google implementations must implement these interfaces rather than introducing cloud APIs into workflow/compiler/executor code.
-- Workflow-version storage is immutable by contract.
-- At-least-once scheduler delivery is absorbed at RunRepository creation using occurrence identity.
-- Automation concurrency is an explicit lease, not an in-process mutex.
-- Secret material and credential metadata remain separate abstractions.
-- Run state is governed by an explicit state machine; adapters may persist state but must not invent lifecycle transitions.
+### AWS production adapters
+- Added DynamoDB state repositories/locks, S3 artifact storage, browser-profile/session adapters, identity/credential boundaries, reasoning adapter scaffolding, and Playwright runtime integration behind provider-neutral interfaces.
+- Added package-level public exports and deterministic command-level tests so AWS SDK behavior is exercised without live credentials.
+- No new dependency is introduced by the human recovery work; the existing controlled AWS SDK dependencies are reused.
 
-### Next highest-value tasks
-1. Build the provider-neutral execution engine that walks WorkflowGraph nodes using BrowserExecutor/ReasoningProvider/VerificationEngine and persists checkpoints after meaningful effects.
-2. Add retry-state fingerprints and deterministic retry/backoff planning; prove repeated unresolved states transition to WAITING_FOR_HUMAN instead of looping.
-3. Add mock BrowserExecutor, ReasoningProvider, and VerificationEngine implementations and an end-to-end scheduled-run lifecycle test including deterministic success, semantic fallback, verification failure, pause, correction, and resume.
-4. Add a run coordinator/preflight service around idempotent run creation, automation-state validation, immutable workflow loading, lock acquisition/release, browser-profile readiness, and credential readiness.
-5. Add AWS adapter package/infrastructure skeleton only after the above execution lifecycle is green: DynamoDB/S3/SQS/Step Functions/EventBridge/SES/AgentCore behind existing ports.
-6. Add environment/config contracts that produce explicit NOT_CONFIGURED states when cloud/provider credentials are absent.
-7. Add Next.js control-plane UI only after lifecycle/domain APIs are stable enough not to encode temporary assumptions.
+### Explicit HUMAN recovery
+- Fixed explicit `HUMAN` workflow nodes so pause -> human repair -> resume can advance to the declared successor and complete.
+- Resume validates topology before mutating a durable run: until typed human branch selection exists, an explicit `HUMAN` node must have exactly one successor.
+- Resume preserves run identity, immutable workflow version, variables, accumulated evidence, and checkpoint continuity while clearing the stale human-failure/fingerprint circuit.
+- Regression coverage includes action -> verification -> HUMAN pause -> resume -> END success and ambiguous-successor rejection before durable state mutation.
 
-### Current blockers
-- No AWS credentials/API keys are required for current development. Real cloud integration tests will remain disabled until credentials exist.
-- Current connector tooling has not surfaced a GitHub Actions run for the latest commits yet; validation status must be rechecked on the next run.
-- Local container network could not reach GitHub during the bootstrap run; repository CI covers authoritative validation once surfaced.
+### Durable human-resolution claims
+- Added provider-neutral `HumanResolutionCommand`, `HumanResolutionClaimStore`, and `HumanResolutionCoordinator`.
+- Commands are scoped to tenant + user + run + paused node and carry a stable resolution ID.
+- The coordinator proves the run is still `WAITING_FOR_HUMAN`, the checkpoint belongs to the same run/automation/workflow version, and the expected node still matches before a claim is created.
+- Added `AwsDynamoHumanResolutionClaimStore`: first resolution wins with a conditional write; losing writers use a strongly consistent read to return same-ID `REPLAY` or different-ID `CONFLICT`.
+- Transport/throttling/permission uncertainty is propagated rather than guessed.
+- Duplicate/conflicting delivery is rejected before browser/model startup.
 
-## 2026-08-19 — Playwright CI repair and explicit HUMAN resume
+### Guarded human-resume orchestration
+- Added provider-neutral `HumanResumeOrchestrator` and `HumanResumeExecutor`.
+- Claim idempotency is not execution idempotency: `REPLAY` and `CONFLICT` are non-executing outcomes.
+- Prior to the execution-lease slice below, only a newly `ACCEPTED` claim could start the executor; worker failure then failed closed and replay could not silently rerun side effects.
 
-### Completed
-- Root-caused GitHub Actions run #91 instead of weakening CI. `pnpm check` failed because the new AWS Playwright runtime imported `RunRecord` from `@automation/core` instead of the shared contracts package and attempted to spread a plain object as constructor arguments for `ClassifiedExecutionError`.
-- Corrected the `RunRecord` import boundary and passed `ErrorOptions` explicitly to `ClassifiedExecutionError`.
-- Root-caused the subsequent AWS test failure in run #92: the Playwright executor and verifier compiled but were absent from the `@automation/aws` public package exports. Added the missing `playwright-runtime` export rather than bypassing the package surface in tests.
-- Fixed the explicit `HUMAN` recovery lifecycle in `WorkflowExecutionEngine`. A run checkpointed on an explicit `HUMAN` node can now resume by marking that node completed, checkpointing its sole declared successor, clearing the human failure/fingerprint circuit, and continuing execution.
-- Explicit `HUMAN` resume validates control flow before changing the persisted run from `WAITING_FOR_HUMAN` to `RUNNING`. Until typed human branch-selection output exists, zero or multiple successors are rejected rather than guessed.
-- Preserved workflow variables, accumulated evidence, run identity, and immutable workflow version across explicit human resume.
-- Added regression coverage for the full explicit-human lifecycle: deterministic action -> verified effect -> HUMAN pause -> human resume -> END success.
-- Added a negative regression proving an ambiguous two-successor HUMAN resume throws before any run update and leaves the durable WAITING checkpoint unchanged.
-- Updated `ARCHITECTURE.md` and `QUALITY_GATES.md` with the explicit-human resume invariant and pre-mutation ambiguity gate.
+## Validation history before the current slice
 
-### Validation
-- GitHub Actions run #91 failed at `pnpm check`; exact compiler errors were inspected before any source change.
-- After the type fixes, run #92 passed `pnpm check` and then failed `pnpm test`; logs showed all Playwright runtime tests failing because the runtime classes were not exported from the package public surface.
-- After the package export fix and explicit-human lifecycle implementation/tests, GitHub Actions run #95 completed successfully on commit `1dc9ad43b32d628d81f50bb83a221b88321c1359`: type checking, build, and the full workspace test suite passed.
-- The final documentation commits in this run require their own latest-head CI result before this run is treated as fully validated; that result is checked after this progress entry is committed.
-- No local test pass is claimed. The execution environment still cannot resolve GitHub/package network access reliably, so repository CI remains the authoritative validation path.
+- GitHub Actions run #95 passed on `1dc9ad43b32d628d81f50bb83a221b88321c1359` after root-causing and fixing Playwright package/import defects plus explicit HUMAN resume regressions.
+- GitHub Actions run #103 passed on `b7951c0d5c1c4429570959ca6e533ab6769dab10` with durable DynamoDB human-resolution claims and contention tests.
+- GitHub Actions run #107 passed on `1d9f605b8e1e137e7882a566a4b549b3f6c7e029` with guarded human-resume orchestration.
+- GitHub Actions run #110 passed on `a5b01027e521fcefb7a5fbc9e910df0424af9d1f`, the starting head for the current execution-lease slice.
+- The execution container still cannot resolve `github.com`, so no local clone/install/check/test pass is claimed. GitHub Actions remains authoritative.
+
+## 2026-08-19 — Durable human-resume execution ownership
+
+### Completed in this slice
+- Added provider-neutral `HumanResumeExecutionLeaseStore` and `HumanResumeExecutionLease` contracts with explicit `ACTIVE`/`COMPLETED` state and `ACQUIRED`, `BUSY`, `COMPLETED`, and `CONFLICT` acquisition outcomes.
+- Lease identity is scoped to tenant + user + run + paused node + accepted resolution ID and owned by an opaque worker token.
+- Added deterministic in-memory lease behavior for local/core tests.
+- Added `AwsDynamoHumanResumeExecutionLeaseStore` using conditional DynamoDB writes so only one live execution owner can exist across workers.
+- An expired lease may be reacquired only for the same resolution ID. A competing resolution ID remains a permanent conflict.
+- Losing acquisition writers use a strongly consistent read to classify the durable winner.
+- Renewal and completion require the same resolution ID + owner token + `ACTIVE` state + unexpired lease through DynamoDB conditional expressions.
+- Completion persists a durable `COMPLETED` tombstone instead of deleting ownership state, preventing a finished human-resume boundary from becoming executable again after time passes.
+- Non-conditional DynamoDB uncertainty propagates; throttling/transport/permission errors are not reclassified as acquisition, conflict, renewal, or completion.
+- Updated `HumanResumeOrchestrator`: a newly accepted human resolution must now acquire durable execution ownership before invoking browser/model work.
+- The executor receives the active lease so production runtime reconstruction can be tied to explicit execution ownership.
+- Successful execution must durably complete the lease before the orchestrator reports `EXECUTED`. If ownership expired or was lost before completion, orchestration fails rather than claiming durable success.
+- Executor failure intentionally leaves the lease active until expiry and claim replay remains non-executing.
+- Added core tests for single-owner acquisition, overlap rejection, same-resolution reacquisition after expiry, competing-resolution conflict, renewal, completed tombstones, stale-expiry rejection, orchestration lease gating, concurrent duplicate delivery, and worker-failure fail-closed behavior.
+- Added AWS adapter tests for conditional single-owner acquisition, strongly consistent contention reads, same-resolution expiry recovery at the storage-contract layer, competing-resolution conflict, renewal, completion tombstones, stale completion rejection, tenant isolation, and propagation of non-conditional DynamoDB failure.
+- Updated `ARCHITECTURE.md` and `QUALITY_GATES.md` with the new execution-ownership guarantee, owner-token security boundary, storage uncertainty semantics, and regression requirements.
 
 ### Invariants and failure-mode review
-- Explicit `HUMAN` nodes are durable pause boundaries, not browser actions and not semantic-reasoning actions.
-- A human resume may skip only the exact explicit `HUMAN` node referenced by the durable checkpoint; a later distinct `HUMAN` node still pauses normally.
-- Ambiguous human branching is rejected before persisted state mutation. The engine does not invent `nextNodeId` on behalf of a human.
-- Existing recovery of a failed non-HUMAN node is unchanged: the repaired node is retried with its durable variables and a reset retry/fingerprint circuit.
-- Retry budgets, timeout semantics, semantic fallback constraints, effect verification, and terminal failure classification were not broadened by this slice.
-- The change introduces no new provider-specific dependency into core and therefore preserves AWS/Google adapter neutrality.
+- Human claim acceptance and human execution ownership are separate durable facts.
+- `REPLAY` is still not execution permission. The current orchestrator does not automatically reacquire an expired lease for a replayed claim.
+- The lease store supports same-resolution reacquisition after expiry because production crash recovery will need that primitive, but the orchestration layer deliberately does not yet convert it into side-effect replay.
+- A lease prevents concurrent workers; it does not prove whether an external action happened immediately before a crashed worker lost ownership.
+- Automatic crash recovery therefore remains blocked until node-level effect reconciliation/idempotency can decide whether the successor should be verified, continued, or safely retried.
+- Lease completion after expiry is rejected. A worker that runs longer than the lease TTL must renew before expiry; production browser/runtime wiring must provide renewal during long execution.
+- A storage/network error during acquisition/renewal/completion is uncertain and propagates to the caller. No retry outcome is invented.
+- Completed lease state is durable and non-reacquirable.
+- Core contracts contain no AWS/GCP SDK types, preserving Google adapter compatibility.
 
-### Security, tenancy, observability, and scaling review
-- No secret, browser-profile, credential, or authentication interfaces changed. No additional sensitive values are logged or persisted.
-- Human resume continues through the existing ownership-scoped repositories; this slice does not add a client-selectable credential/profile identifier or weaken tenant boundaries.
-- The explicit-human transition writes a durable successor checkpoint before continuing, providing observable node completion and clearing stale human failure state without deleting prior evidence.
-- Explicit HUMAN resume performs no model call and no browser action for the human node itself, avoiding unnecessary compute cost. It adds only the expected durable checkpoint/run updates before successor execution.
-- A concurrent duplicate human-resume command is still a residual risk at the command/orchestration boundary: `WorkflowExecutionEngine` does not provide its own compare-and-swap claim on a WAITING run. Production API/worker integration must serialize or idempotently claim human-resolution commands with the existing automation/run locking model before a side-effecting successor can execute.
+### Security and tenant isolation review
+- Lease keys use the existing tenant/user ownership partition plus run/node identity.
+- Durable payload identity is validated on read.
+- Worker owner tokens are capability material used for compare-and-set ownership. They must not be sent to clients, exposed in user-visible run history, or written to logs.
+- The slice adds no provider keys, cookies, browser storage, auth headers, or target-site credentials to metadata persistence.
+- Human resolution ownership still must be proven by `HumanResolutionCoordinator` before lease acquisition can reach the executor path.
 
-### Known risks / unresolved questions
-- Human branch-selection data is not yet represented as a typed durable resolution command. The current exactly-one-successor rule is intentionally conservative until that contract exists.
-- Concurrent duplicate human-resume delivery needs an explicit idempotency/CAS or lease-backed command claim at the orchestration boundary; relying only on callers to avoid duplicates is not sufficient for production.
-- CI install currently reports an AWS SDK peer-version warning: `@aws-sdk/lib-dynamodb` resolves a `@aws-sdk/util-dynamodb` peer expectation newer than the pinned `@aws-sdk/client-dynamodb`. This did not cause the validated lifecycle failures but should be aligned in a dependency-discipline slice rather than ignored.
-- Real AgentCore Browser, browser-profile persistence, DynamoDB, and provider credential behavior remain unvalidated without cloud credentials. Existing adapters/tests remain deterministic and credential-free; no live-cloud success is claimed.
+### Retry, timeout, observability, cost, and scaling review
+- No automatic execution retry is added by this slice.
+- Uncontended resume ownership adds one DynamoDB conditional write before browser/model startup and one conditional completion write afterward; duplicates remain cheaper than opening browser/model compute.
+- Contention adds a failed conditional write plus strongly consistent read.
+- Lease TTL is explicit and must be sized/renewed by the production worker; an unbounded hidden in-process lock is not used.
+- Future audit events should record claim accepted/replayed/conflicted, lease acquired/busy/completed/expired, executor start/finish, and ownership-loss failure while redacting owner tokens and sensitive browser/model data.
 
-### Next highest-value tasks
-1. Add an idempotent human-resolution command contract with a resolution/command ID and conditional run-state claim so duplicate/concurrent resume delivery cannot execute a side-effecting successor twice.
-2. Prove worker orchestration persists browser profile/checkpoint, terminates ephemeral browser compute on pause, and reconstructs a fresh runtime on resume while maintaining the automation lock/ownership boundary.
-3. Align the AWS SDK package versions deliberately and re-run the full suite, retaining pinned/controlled dependency behavior.
-4. Add explicit audit/run events for human pause, human resolution acceptance/rejection, resume checkpoint, and successor start without storing hidden reasoning or sensitive browser data.
-5. Continue the end-to-end lifecycle toward capture/compile/test/publish/schedule only through provider-neutral ports; keep Google adapters implementable against the same contracts.
-
-## 2026-08-19 — Guarded human-resolution command claims
-
-### Completed
-- Added a provider-neutral `HumanResolutionCommand` contract carrying `runId`, `expectedNodeId`, `resolutionId`, and ownership scope.
-- Added `HumanResolutionClaimStore` with explicit `ACCEPTED`, `REPLAY`, and `CONFLICT` outcomes. The contract requires cloud adapters to make claim creation atomic; read-then-unconditional-write implementations are explicitly invalid.
-- Added `HumanResolutionCoordinator` to validate the durable run/checkpoint boundary before a resolution can be claimed: the run must exist in the requested tenant/user scope, remain `WAITING_FOR_HUMAN`, have a durable checkpoint bound to the same run/automation/workflow version, and match the expected node.
-- Added an in-memory claim adapter for deterministic local/test use. It keys claims by tenant + user + run + node so a second resolution ID cannot win the same human boundary.
-- Added tests for identical-delivery replay, concurrent competing resolution IDs, stale-node rejection before mutation, cross-tenant isolation, and rejection after the run has already left `WAITING_FOR_HUMAN`.
-- Exported the new contract/coordinator from `@automation/core`; no AWS/GCP dependency was introduced.
-
-### Validation
-- The code increment was committed as `11f811b165a219a2a4fc68464a52ceffb7a7dafb` and pushed to PR #1.
-- Local clone/test execution was attempted again, but this execution container still cannot resolve `github.com`; no local test-pass claim is made.
-- GitHub Actions for the new head had not yet surfaced through the connector at the time this entry was written; latest-head CI is rechecked after this documentation commit and no green claim is made until a completed successful run is observed.
-
-### Invariants and failure-mode review
-- Only an `ACCEPTED` claim is permission for a caller to start resume execution. `REPLAY` and `CONFLICT` are non-executing outcomes.
-- Claim validation is node-specific and workflow-version-specific, preventing stale human commands from silently applying to a later pause boundary or changed workflow version.
-- Ownership lookup occurs before claim creation, so a cross-tenant request cannot create a claim for a run it cannot resolve.
-- The in-memory adapter is atomic only within one process and exists for tests/local mode. Production durability still requires a conditional database write or equivalent transactional primitive.
-- This slice deliberately does not yet wire the claim into `WorkflowExecutionEngine`; therefore it narrows the concurrency hazard but does not by itself make duplicate resume execution impossible in production.
-
-### Security, retry, observability, cost, and scaling review
-- Resolution IDs and node IDs are metadata, not secrets; no browser/session/provider credential material is added to logs or persistence contracts.
-- The claim path performs metadata reads plus one atomic claim write and does not create browser/model compute, so rejected duplicates are cheap and can be absorbed before execution-plane cost is incurred.
-- A conflicting command returns the already-accepted claim identity rather than accepting a second branch of execution; callers must avoid exposing that metadata across authorization boundaries.
-- No retry loop was added. Adapter-level transient database failures should be retried by the orchestration layer using the same resolution ID so a retry resolves to `REPLAY` rather than a second acceptance.
+### Validation status for this slice
+- Code and documentation were assembled as one atomic multi-file Git commit using Git data primitives so the branch receives at most one normal CI-triggering push for this run.
+- Local execution is unavailable because the container cannot resolve `github.com`; no local check/test success is claimed.
+- GitHub Actions on the resulting commit must be inspected before this slice is called validated. If CI fails, logs must be root-caused before any corrective commit.
 
 ### Known risks / unresolved questions
-- The claim is not yet persisted by an AWS adapter, and the engine can still be called directly with `resumeFromHuman=true`; production safety therefore still depends on finishing the integration boundary.
-- Crash recovery between claim acceptance and resume execution is not yet specified. The next slice should use a durable conditional claim/state transition that permits the same resolution ID to recover after worker loss without letting a competing ID execute.
-- Typed human branch-selection output is still absent; explicit `HUMAN` nodes remain restricted to one successor.
-- The AWS SDK peer-version warning remains unresolved.
+- Production resume worker wiring is still incomplete: browser profile reconstruction + `WorkflowExecutionEngine` resume must be invoked through `HumanResumeOrchestrator` while a valid lease is held.
+- Lease renewal is implemented as a contract/adapter operation but not yet driven by a long-running production resume worker heartbeat.
+- Automatic crash recovery after lease expiry remains intentionally disabled until external-effect reconciliation is defined.
+- Explicit HUMAN branch-selection data is still absent; the exactly-one-successor restriction remains.
+- Structured human-resolution/lease audit events are not yet persisted.
+- The existing AWS SDK peer-version warning still needs deliberate alignment rather than suppression.
+- Live AgentCore/DynamoDB behavior remains unvalidated without cloud credentials; deterministic command-level tests are the current evidence.
 
 ### Next highest-value tasks
-1. Implement the claim atomically in `AwsDynamoRunRepository` or a dedicated DynamoDB claim adapter and integrate resolution acceptance with the engine/worker so direct duplicate resume delivery cannot execute a side-effecting successor twice.
-2. Define crash-safe replay semantics for a worker that dies after claim acceptance but before successor execution.
-3. Add audit events for human pause, claim accepted/replayed/conflicted, resume checkpoint, and successor start.
-4. Align AWS SDK package versions and re-run the full workspace suite.
-5. Continue browser-profile pause/resume reconstruction and then move back outward through capture -> compile -> test -> publish -> schedule.
-
-## 2026-08-19 — Durable AWS human-resolution claims
-
-### Completed
-- Added `AwsDynamoHumanResolutionClaimStore`, a dedicated AWS adapter implementing the provider-neutral `HumanResolutionClaimStore` contract without adding AWS dependencies to core.
-- Human-resolution claims are keyed by the same tenant/user ownership partition plus run and paused node. The first resolution uses a conditional DynamoDB put; losing writers perform a strongly consistent read to distinguish identical `REPLAY` from competing `CONFLICT`.
-- Claim payloads are validated against requested tenant, user, run, and node identity on read so a malformed/corrupted item cannot silently cross an ownership or pause boundary.
-- Added AWS adapter regression coverage for first acceptance, duplicate replay, concurrent competing resolution IDs, cross-tenant isolation, strongly consistent contention reads, and propagation of non-conditional DynamoDB failures.
-- Exported the new AWS adapter from the package public surface.
-- Updated `ARCHITECTURE.md` and `QUALITY_GATES.md` with the durable claim guarantee, uncertainty semantics, tenant boundary, and required contention tests.
-
-### Validation
-- GitHub Actions CI run #103 completed successfully on code head `b7951c0d5c1c4429570959ca6e533ab6769dab10`; the full configured CI pipeline passed with the new adapter and tests.
-- The execution container still cannot resolve `github.com`, so no local install/check/test pass is claimed.
-- Documentation commits after the code head require their own latest-head CI result before this run is treated as fully validated.
-
-### Invariants and failure-mode review
-- Exactly one resolution ID can be durably accepted for a tenant + user + run + paused-node boundary even when separate workers race.
-- A conditional-write loser is not allowed to guess the outcome: it uses a strongly consistent read of the winning claim before returning `REPLAY` or `CONFLICT`.
-- DynamoDB throttling, transport, permission, and other non-conditional failures propagate to the caller. They are not translated into acceptance/replay/conflict because write outcome is not proven by those errors.
-- The adapter validates all identifiers and timestamps before persistence and stores no browser/profile/provider secret material.
-- This slice does not change retry budgets, browser timeouts, reasoning behavior, workflow topology, or effect-verification semantics.
-
-### Security, concurrency, observability, cost, and scaling review
-- Claims remain in the ownership-scoped DynamoDB partition; a different tenant/user cannot retrieve the winning resolution using the same run/node IDs.
-- Claim acceptance costs one conditional write in the uncontended case. Duplicate/conflicting delivery adds one failed conditional write plus one strongly consistent read, still avoiding browser/model startup and downstream side effects.
-- No new dependency was introduced; the implementation uses the already-controlled AWS SDK packages.
-- Resolution IDs and node IDs are operational metadata, not secrets. No hidden reasoning, cookies, browser storage, credentials, or auth headers are persisted by the adapter.
-
-### Known risks / unresolved questions
-- The durable AWS claim is not yet wired into a production resume worker/API boundary. `WorkflowExecutionEngine` can still be invoked directly with `resumeFromHuman=true`, so duplicate execution prevention is not end-to-end complete yet.
-- Crash recovery after claim acceptance but before successor execution is still unspecified. A same-resolution replay must eventually be able to recover a dead worker without permitting a competing resolution to execute.
-- Explicit HUMAN branch-selection data is still absent; the exactly-one-successor rule remains intentionally conservative.
-- The existing AWS SDK peer-version warning still needs deliberate package alignment.
-- Real DynamoDB behavior is not live-cloud validated without credentials; deterministic command-level tests cover the conditional-write semantics used by the adapter.
-
-### Next highest-value tasks
-1. Add a provider-neutral human-resume orchestration service that consumes `HumanResolutionCoordinator` and only starts browser execution after a durable accepted claim, with explicit crash-safe same-resolution replay semantics.
-2. Wire that orchestration service to the AWS worker/runtime path and prove duplicate/conflicting resolution delivery cannot start a second side-effecting successor.
-3. Add structured audit events for human pause, claim accepted/replayed/conflicted, resume checkpoint, and successor start without sensitive payloads.
-4. Align the AWS SDK package versions deliberately and run the full workspace CI again.
-5. Continue browser-profile pause/resume reconstruction, then proceed outward through capture -> compile -> test -> publish -> schedule.
-
-## 2026-08-19 — Guarded human resume orchestration
-
-### Completed
-- Added provider-neutral `HumanResumeOrchestrator` and `HumanResumeExecutor` boundaries in `@automation/core`.
-- Resume execution now has an explicit orchestration rule: only a newly durable `ACCEPTED` human-resolution claim is allowed to invoke the resume executor. `REPLAY` and `CONFLICT` outcomes are returned as non-executing results.
-- Added regression coverage proving accepted commands execute once, identical delivery does not execute twice, competing resolution IDs do not execute, concurrent duplicate delivery starts only one executor, and executor failure fails closed rather than turning a later replay into implicit re-execution.
-- Exported the orchestration boundary through the core package public surface; no provider SDK dependency was introduced.
-
-### Validation
-- Code commit `1d9f605b8e1e137e7882a566a4b549b3f6c7e029` was pushed to PR #1.
-- GitHub Actions CI run #107 completed successfully on that code head: dependency installation, `pnpm check`, and the full workspace test suite all passed.
-- Local clone/install remains unavailable because this execution container cannot resolve `github.com`; no local test pass is claimed.
-
-### Invariants and failure-mode review
-- Claim idempotency is not execution idempotency. `REPLAY` is never interpreted as permission to rerun browser/model work.
-- A competing resolution ID cannot reach resume execution after another resolution has been accepted for the same tenant/user/run/node boundary.
-- The orchestration layer passes the already-validated durable run/checkpoint to the executor so downstream code does not need to re-resolve untrusted client identity.
-- If execution throws after claim acceptance, the current behavior is deliberately fail-closed: the same resolution subsequently returns `REPLAY` and does not execute again automatically.
-- This avoids duplicate external side effects but means worker-crash recovery after acceptance is not yet available. Recovery requires a separate durable lease/state-machine design rather than overloading claim replay semantics.
-
-### Security, tenancy, retries, observability, cost, and scaling review
-- Ownership validation remains in `HumanResolutionCoordinator` before any executor call. The new layer introduces no new secret, browser-profile, provider-key, or credential surface.
-- Duplicate/conflicting deliveries are rejected before browser/model startup, keeping contention cost limited to durable metadata operations.
-- No retry loop or timeout policy was added. Infrastructure uncertainty still propagates from the claim adapter; callers must retry the same resolution ID and receive a non-executing replay unless a future recovery lease explicitly grants execution ownership.
-- The orchestration result is suitable for structured audit events (`ACCEPTED/EXECUTED`, `REPLAY/NOT_EXECUTED`, `CONFLICT/NOT_EXECUTED`) without logging hidden reasoning or sensitive browser state.
-
-### Known risks / unresolved questions
-- The AWS production worker/API path is not yet wired to `HumanResumeOrchestrator`; direct engine invocation with `resumeFromHuman=true` still exists internally and must not be exposed as a production command path.
-- Crash recovery after claim acceptance remains intentionally unavailable rather than unsafe. A durable execution lease with owner token, expiry, conditional acquisition/renewal, and completion state is the next correctness-critical requirement.
-- Even after an execution lease exists, crash recovery across an unknown external side effect requires node-level idempotency/effect verification; lease expiry alone cannot prove whether an external action happened before worker death.
-- Explicit HUMAN branch-selection output is still absent; one-successor restriction remains.
-- AWS SDK peer-version alignment remains unresolved.
-
-### Next highest-value tasks
-1. Add a provider-neutral human-resume execution lease/state contract with `ACQUIRED`, `HELD`, `COMPLETED`, and conflict semantics, then implement it atomically in DynamoDB so the same resolution can recover only after lease expiry while concurrent workers cannot execute.
-2. Wire `HumanResumeOrchestrator` into a production resume worker that reconstructs browser profile/runtime and calls `WorkflowExecutionEngine` with `resumeFromHuman=true` only after claim + execution ownership are proven.
-3. Add structured human-resolution audit events and redaction tests.
-4. Align AWS SDK package versions deliberately and re-run the full workspace CI.
-5. Continue browser-profile pause/resume reconstruction and then return outward through capture -> compile -> test -> publish -> schedule.
+1. Wire a production human-resume executor that reconstructs the authorized browser profile/runtime and calls `WorkflowExecutionEngine` with `resumeFromHuman=true` only while a valid lease is held; add lease renewal for long executions.
+2. Add effect-reconciliation/idempotency state around the first side-effecting successor so expired same-resolution leases can recover safely without duplicating external actions.
+3. Add structured, redacted audit events for human pause, resolution claim, lease lifecycle, resume checkpoint, successor start, and completion/failure.
+4. Deliberately align the AWS SDK peer versions and run the full workspace suite.
+5. Continue outward through capture -> compile -> test -> publish -> schedule once the recovery path is end-to-end guarded.

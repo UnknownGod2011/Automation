@@ -5,6 +5,7 @@ import {
   HumanResumeOrchestrator,
   InMemoryCheckpointRepository,
   InMemoryHumanResolutionClaimStore,
+  InMemoryHumanResumeExecutionLeaseStore,
   InMemoryRunRepository,
   type OwnershipScope,
 } from "./index.js";
@@ -58,6 +59,7 @@ class RecordingExecutor implements HumanResumeExecutor {
 async function setup(executor = new RecordingExecutor()) {
   const runs = new InMemoryRunRepository();
   const checkpoints = new InMemoryCheckpointRepository();
+  const leases = new InMemoryHumanResumeExecutionLeaseStore();
   await runs.createIfAbsent(waitingRun());
   await checkpoints.put(scope, checkpoint());
   const resolutions = new HumanResolutionCoordinator({
@@ -68,7 +70,15 @@ async function setup(executor = new RecordingExecutor()) {
   });
   return {
     executor,
-    orchestrator: new HumanResumeOrchestrator({ resolutions, executor }),
+    leases,
+    orchestrator: new HumanResumeOrchestrator({
+      resolutions,
+      leases,
+      executor,
+      ownerToken: () => "worker-1",
+      now: () => new Date("2026-08-19T00:00:04.000Z"),
+      leaseTtlMs: 60_000,
+    }),
   };
 }
 
@@ -80,15 +90,17 @@ const command = (resolutionId = "resolution-1") => ({
 });
 
 describe("HumanResumeOrchestrator", () => {
-  it("starts resume execution only after a newly accepted durable claim", async () => {
-    const { orchestrator, executor } = await setup();
+  it("executes only while a newly accepted resolution owns a durable lease", async () => {
+    const { orchestrator, executor, leases } = await setup();
 
     const result = await orchestrator.execute(command());
 
     expect(result.kind).toBe("EXECUTED");
     expect(executor.calls).toHaveLength(1);
     expect(executor.calls[0]?.validated.result.status).toBe("ACCEPTED");
+    expect(executor.calls[0]?.lease).toMatchObject({ ownerToken: "worker-1", state: "ACTIVE" });
     expect(executor.calls[0]?.validated.checkpoint.variables).toEqual({ reportId: "R-42" });
+    expect(await leases.get(scope, "run-1", "human-1")).toMatchObject({ state: "COMPLETED" });
   });
 
   it("treats identical at-least-once delivery as non-executing replay", async () => {
@@ -124,14 +136,25 @@ describe("HumanResumeOrchestrator", () => {
     expect(executor.calls).toHaveLength(1);
   });
 
-  it("fails closed after an accepted worker failure instead of replaying browser side effects", async () => {
+  it("fails closed after an accepted worker failure and leaves the lease uncompleted", async () => {
     const executor = new RecordingExecutor(new Error("worker crashed"));
-    const { orchestrator } = await setup(executor);
+    const { orchestrator, leases } = await setup(executor);
 
     await expect(orchestrator.execute(command())).rejects.toThrow("worker crashed");
     const replay = await orchestrator.execute(command());
 
     expect(replay).toMatchObject({ kind: "NOT_EXECUTED", claim: { status: "REPLAY" } });
     expect(executor.calls).toHaveLength(1);
+    expect(await leases.get(scope, "run-1", "human-1")).toMatchObject({ state: "ACTIVE" });
+  });
+
+  it("does not start execution when accepted claim cannot acquire execution ownership", async () => {
+    const { orchestrator, executor, leases } = await setup();
+    await leases.acquire(command(), "other-worker", "2026-08-19T00:00:03.000Z", 60_000);
+
+    const result = await orchestrator.execute(command());
+
+    expect(result).toMatchObject({ kind: "LEASE_NOT_ACQUIRED", lease: { status: "BUSY" } });
+    expect(executor.calls).toHaveLength(0);
   });
 });

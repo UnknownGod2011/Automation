@@ -4,6 +4,7 @@ export * from "./browser-session.js";
 export * from "./config.js";
 export * from "./dynamodb-state.js";
 export * from "./human-resolution.js";
+export * from "./human-resume-lease.js";
 export * from "./identity-vault.js";
 export * from "./playwright-runtime.js";
 export * from "./reasoning.js";

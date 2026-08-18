@@ -15,7 +15,7 @@ The web application is a control plane. Scheduled automation execution is a sepa
 Owns automation CRUD, workflow versioning, schedules, credential metadata, run inspection, and human-resolution commands.
 
 ### Persistence
-- DynamoDB: users, automations, workflow-version metadata, runs, run steps, locks, human-resolution claims, credential metadata.
+- DynamoDB: users, automations, workflow-version metadata, runs, run steps, locks, human-resolution claims, human-resume execution leases, credential metadata.
 - S3: capture recordings, screenshots, DOM/event artifacts, compiled workflow documents, run evidence.
 - Browser Profiles: target-site session state.
 - AgentCore Identity: provider credential secrets/references.
@@ -82,7 +82,13 @@ An explicit `HUMAN` workflow node is a durable pause boundary. Until human branc
 
 Human-resolution delivery is at-least-once. A resolution command is scoped to tenant + user + run + paused node and carries a stable resolution ID. Durable cloud adapters must atomically accept exactly one resolution ID for that pause boundary. The AWS adapter uses a conditional DynamoDB put; a losing writer performs a strongly consistent read and resolves to `REPLAY` only when the winning resolution ID matches, otherwise `CONFLICT`. Transport/throttling failures are not converted into duplicate outcomes. Claim acceptance is intentionally cheaper than browser/model startup so duplicate delivery can be rejected before execution-plane cost or side effects.
 
-`HumanResumeOrchestrator` is the provider-neutral production command boundary between durable human-resolution claims and resume execution. Only a newly `ACCEPTED` claim may invoke the resume executor. `REPLAY` and `CONFLICT` are explicitly non-executing outcomes; replay idempotency must never be interpreted as permission to repeat browser/model side effects. If a worker fails after claim acceptance, current behavior fails closed rather than replaying automatically. Recoverable execution ownership requires a separate durable lease/state machine with conditional acquisition, expiry, and completion semantics; lease expiry alone still cannot prove whether an external side effect occurred before a crash.
+`HumanResumeOrchestrator` is the provider-neutral production command boundary between durable human-resolution claims and resume execution. `REPLAY` and `CONFLICT` remain explicitly non-executing. A newly `ACCEPTED` claim must additionally acquire a durable human-resume execution lease before browser/model work may start. The lease is scoped to tenant + user + run + paused node + resolution ID and is owned by an opaque worker token with an expiry. Completion is a durable tombstone, not lease deletion.
+
+The AWS lease adapter uses conditional DynamoDB writes so only one live owner exists. An expired lease may be reacquired only for the same resolution ID; a competing resolution ID is a permanent conflict. Renewal and completion use conditional owner/resolution/state/expiry checks, and non-conditional DynamoDB uncertainty propagates instead of being guessed. Reads used to classify contention are strongly consistent.
+
+This lease does not by itself make crash replay safe. Current orchestration still treats a claim `REPLAY` as non-executing even if a prior lease later expires. If the accepted executor crashes, the active lease is left to expire and the run requires a future recovery policy. Automatic reacquisition/re-execution must remain disabled until the executor can reconcile the unknown-side-effect window using node-level verification/idempotency. Lease ownership prevents concurrency; it does not prove whether an external side effect happened just before a worker died.
+
+Worker owner tokens are operational capability material. They may be persisted inside the lease record for compare-and-set ownership, but must not be exposed to clients, user-visible run history, or logs.
 
 ## Workflow intermediate representation
 
@@ -150,7 +156,7 @@ Future managed-model mode implements the same router interface.
 
 ## Multi-tenancy and authorization
 
-Every durable entity is keyed/owned by tenant_id + user_id where appropriate. Browser-profile and secret access are resolved server-side from an authorized automation; clients never choose arbitrary secret/profile identifiers for execution. Human-resolution claims use the same ownership partition and validate the embedded claim identity when read.
+Every durable entity is keyed/owned by tenant_id + user_id where appropriate. Browser-profile and secret access are resolved server-side from an authorized automation; clients never choose arbitrary secret/profile identifiers for execution. Human-resolution claims and resume execution leases use the same ownership partition and validate embedded ownership identity when read.
 
 ## Idempotency/concurrency
 
@@ -158,7 +164,8 @@ Every durable entity is keyed/owned by tenant_id + user_id where appropriate. Br
 - Automation lock prevents overlapping mutable browser runs by default.
 - Retryable steps carry attempt IDs and must not duplicate irreversible effects without verification/idempotency support.
 - Human-resolution command delivery may be duplicated or concurrent; exactly one resolution ID may be durably accepted for a given ownership + run + paused-node boundary.
-- Human resume execution is started only for the newly accepted claim; replay/conflict outcomes do not start browser/model work.
+- Human resume execution is started only for a newly accepted claim that also owns a live execution lease; replay/conflict outcomes do not start browser/model work.
+- Lease expiry permits same-resolution ownership recovery at the storage-contract level, but orchestration must not convert that into automatic side-effect replay until effect reconciliation is implemented.
 
 ## Observability
 
@@ -170,7 +177,7 @@ All services propagate correlation identifiers:
 - node_id
 - attempt_id
 
-Do not log cookies, secrets, prompt-private DOM fields, raw API keys, or sensitive browser storage. Run UI receives sanitized reasoning summaries/evidence, not hidden model chain-of-thought.
+Do not log cookies, secrets, prompt-private DOM fields, raw API keys, sensitive browser storage, or human-resume lease owner tokens. Run UI receives sanitized reasoning summaries/evidence, not hidden model chain-of-thought.
 
 ## Deployment strategy
 
