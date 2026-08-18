@@ -17,6 +17,7 @@ import type {
   RunRepository,
   VerificationEngine,
 } from "./index.js";
+import { classifyExecutionError } from "./errors.js";
 import { transitionRun } from "./run-state.js";
 
 const SEMANTIC_RECOVERABLE_FAILURES = new Set<RunFailure["code"]>([
@@ -150,6 +151,15 @@ function makeFailure(
   retryable: boolean,
 ): RunFailure {
   return { code, message, retryable, nodeId, evidenceRefs };
+}
+
+function failureResult(failure: RunFailure): BrowserActionResult {
+  return {
+    effectObserved: false,
+    evidenceRefs: [...failure.evidenceRefs],
+    outputs: {},
+    failure,
+  };
 }
 
 function semanticAllowedActions(node: WorkflowNode): readonly string[] {
@@ -324,31 +334,47 @@ export class WorkflowExecutionEngine {
       let nodeFailure = actionResult.failure;
 
       if (!nodeFailure && node.verification) {
-        const verification = await this.dependencies.verifier.verify({
-          scope: request.scope,
-          runId: run.runId,
-          node,
-          verification: node.verification,
-          outputs: actionResult.outputs,
-          evidenceRefs: actionResult.evidenceRefs,
-        });
+        try {
+          const verification = await this.dependencies.verifier.verify({
+            scope: request.scope,
+            runId: run.runId,
+            node,
+            verification: node.verification,
+            outputs: actionResult.outputs,
+            evidenceRefs: actionResult.evidenceRefs,
+          });
 
-        actionResult = {
-          ...actionResult,
-          evidenceRefs: [
-            ...actionResult.evidenceRefs,
-            ...verification.evidenceRefs,
-          ],
-        };
+          actionResult = {
+            ...actionResult,
+            evidenceRefs: [
+              ...actionResult.evidenceRefs,
+              ...verification.evidenceRefs,
+            ],
+          };
 
-        if (!verification.verified) {
-          nodeFailure = makeFailure(
-            "EFFECT_NOT_VERIFIED",
-            verification.detail,
+          if (!verification.verified) {
+            nodeFailure = makeFailure(
+              "EFFECT_NOT_VERIFIED",
+              verification.detail,
+              node.id,
+              actionResult.evidenceRefs,
+              true,
+            );
+          }
+        } catch (error) {
+          const failure = classifyExecutionError(
+            error,
             node.id,
-            actionResult.evidenceRefs,
-            true,
+            "effect verification",
           );
+          actionResult = {
+            ...actionResult,
+            evidenceRefs: [
+              ...actionResult.evidenceRefs,
+              ...failure.evidenceRefs,
+            ],
+          };
+          nodeFailure = failure;
         }
       }
 
@@ -360,6 +386,21 @@ export class WorkflowExecutionEngine {
           actionResult.evidenceRefs,
           false,
         );
+      }
+
+      let successor: string | null = null;
+      if (!nodeFailure) {
+        try {
+          successor = nextNodeId(node, actionResult.outputs);
+        } catch {
+          nodeFailure = makeFailure(
+            "POLICY_BLOCKED",
+            `Node '${node.id}' produced an invalid successor selection`,
+            node.id,
+            actionResult.evidenceRefs,
+            false,
+          );
+        }
       }
 
       if (nodeFailure) {
@@ -450,7 +491,6 @@ export class WorkflowExecutionEngine {
 
       variables = mergeOutputs(node, variables, actionResult.outputs);
       evidenceRefs = [...evidenceRefs, ...actionResult.evidenceRefs];
-      const successor = nextNodeId(node, actionResult.outputs);
 
       if (!successor) {
         const terminalFailure = makeFailure(
@@ -538,12 +578,23 @@ export class WorkflowExecutionEngine {
       return this.executeSemantic(scope, run, graph, node, inputs);
     }
 
-    const deterministic = await this.dependencies.browser.executeDeterministic(
-      scope,
-      run.runId,
-      node,
-      inputs,
-    );
+    let deterministic: BrowserActionResult;
+    try {
+      deterministic = await this.dependencies.browser.executeDeterministic(
+        scope,
+        run.runId,
+        node,
+        inputs,
+      );
+    } catch (error) {
+      return failureResult(
+        classifyExecutionError(
+          error,
+          node.id,
+          "deterministic browser execution",
+        ),
+      );
+    }
 
     if (
       !deterministic.failure ||
@@ -586,15 +637,22 @@ export class WorkflowExecutionEngine {
       };
     }
 
-    const decision = await this.dependencies.reasoner.decide({
-      scope,
-      automationId: graph.automationId,
-      runId: run.runId,
-      node,
-      objective: node.objective,
-      context: inputs,
-      allowedActions,
-    });
+    let decision: ReasoningDecision;
+    try {
+      decision = await this.dependencies.reasoner.decide({
+        scope,
+        automationId: graph.automationId,
+        runId: run.runId,
+        node,
+        objective: node.objective,
+        context: inputs,
+        allowedActions,
+      });
+    } catch (error) {
+      return failureResult(
+        classifyExecutionError(error, node.id, "semantic reasoning"),
+      );
+    }
 
     const invalidDecision = validateDecision(node, decision, allowedActions);
     if (invalidDecision) {
@@ -606,13 +664,19 @@ export class WorkflowExecutionEngine {
       };
     }
 
-    return this.dependencies.browser.executeSemantic(
-      scope,
-      run.runId,
-      node,
-      decision,
-      inputs,
-    );
+    try {
+      return await this.dependencies.browser.executeSemantic(
+        scope,
+        run.runId,
+        node,
+        decision,
+        inputs,
+      );
+    } catch (error) {
+      return failureResult(
+        classifyExecutionError(error, node.id, "semantic browser execution"),
+      );
+    }
   }
 
   private async putCheckpoint(
