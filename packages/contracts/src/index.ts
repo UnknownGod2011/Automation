@@ -137,6 +137,14 @@ export interface AutomationRecord {
   updatedAt: string;
 }
 
+export interface RunFailure {
+  code: FailureCode;
+  message: string;
+  retryable: boolean;
+  nodeId?: string;
+  evidenceRefs: readonly string[];
+}
+
 export interface RunCheckpoint {
   runId: string;
   automationId: string;
@@ -145,16 +153,11 @@ export interface RunCheckpoint {
   completedNodeIds: readonly string[];
   attempt: number;
   stateFingerprint?: string;
+  fingerprintRepeatCount: number;
+  variables: Readonly<Record<string, unknown>>;
   evidenceRefs: readonly string[];
+  lastFailure?: RunFailure;
   updatedAt: string;
-}
-
-export interface RunFailure {
-  code: FailureCode;
-  message: string;
-  retryable: boolean;
-  nodeId?: string;
-  evidenceRefs: readonly string[];
 }
 
 export interface RunRecord {
@@ -197,6 +200,18 @@ export function assertWorkflowGraph(graph: WorkflowGraph): void {
     }
     if (node.retryPolicy.maxAttempts < 1) {
       throw new Error(`Node '${node.id}' must allow at least one attempt`);
+    }
+    if (node.retryPolicy.initialBackoffMs < 0 || node.retryPolicy.maxBackoffMs < 0) {
+      throw new Error(`Node '${node.id}' retry backoff cannot be negative`);
+    }
+    if (
+      node.retryPolicy.initialBackoffMs > node.retryPolicy.maxBackoffMs &&
+      node.retryPolicy.maxAttempts > 1
+    ) {
+      throw new Error(`Node '${node.id}' initial retry backoff cannot exceed max backoff`);
+    }
+    if (node.allowedSideEffects.length > 0 && !node.verification) {
+      throw new Error(`Node '${node.id}' has side effects but no verification contract`);
     }
     for (const nextNodeId of node.next ?? []) {
       if (!graph.nodes[nextNodeId]) {
