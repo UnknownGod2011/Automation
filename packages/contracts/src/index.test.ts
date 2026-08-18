@@ -61,13 +61,17 @@ describe("workflow contracts", () => {
 
   it("rejects missing graph references", () => {
     const graph = baseGraph();
-    graph.nodes.start.next = ["missing"];
+    const start = graph.nodes.start;
+    if (!start) throw new Error("test fixture missing start node");
+    start.next = ["missing"];
     expect(() => assertWorkflowGraph(graph)).toThrow(/missing node/);
   });
 
   it("rejects invalid retry budgets", () => {
     const graph = baseGraph();
-    graph.nodes.start.retryPolicy.maxAttempts = 0;
+    const start = graph.nodes.start;
+    if (!start) throw new Error("test fixture missing start node");
+    start.retryPolicy.maxAttempts = 0;
     expect(() => assertWorkflowGraph(graph)).toThrow(/at least one attempt/);
   });
 });
