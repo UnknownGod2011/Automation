@@ -230,6 +230,7 @@ export * from "./execution.js";
 export * from "./human-resolution.js";
 export * from "./human-resume-lease.js";
 export * from "./human-resume.js";
+export * from "./human-resume-worker.js";
 export * from "./memory.js";
 export * from "./run-finalization.js";
 export * from "./run-state.js";
