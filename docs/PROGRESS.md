@@ -18,7 +18,7 @@ This file is the continuity checkpoint for automated development runs. Read `END
 ### Validation
 - Manually reviewed strict TypeScript access patterns and corrected an unsafe test index access.
 - Attempted clean clone + `pnpm install && pnpm check && pnpm test` in the execution container, but the container could not resolve `github.com`; no local test-pass claim is made.
-- GitHub Actions is now the authoritative validation path until a network-capable local checkout is available.
+- GitHub Actions is the authoritative validation path until a network-capable local checkout is available.
 
 ### Architectural decisions locked
 - Durable orchestration state belongs outside the model/browser runtime.
@@ -29,14 +29,41 @@ This file is the continuity checkpoint for automated development runs. Read `END
 - BYOK secrets stay behind a secret/token-vault adapter; normal tables hold references/health metadata only.
 - Multi-tenant ownership/idempotency/concurrency fields exist from the first schema.
 
+## 2026-08-18 — Provider-neutral core ports and local adapters
+
+### Completed
+- Added `@automation/core`, with no AWS or GCP SDK dependency.
+- Defined explicit ports for AutomationRepository, WorkflowVersionRepository, RunRepository, CheckpointRepository, AutomationLockManager, ArtifactStore, BrowserProfileStore, CredentialVault, CredentialMetadataRepository, SchedulerPort, NotificationPort, ReasoningProvider, BrowserExecutor, and VerificationEngine.
+- Added deterministic in-memory adapters for metadata repositories, immutable workflow versions, idempotent runs, checkpoints, expiring automation locks, artifacts, browser-profile references, credential secrets/metadata, schedules, and notifications.
+- Added explicit run lifecycle state machine with guarded transitions, terminal-state handling, timestamps, failure requirements, retry/human-resume paths, and rejection of impossible transitions.
+- Added tests proving immutable workflow versions, ordered version listing, at-least-once run deduplication by occurrence key, immutable run identity, concurrency-lock exclusion/expiry, lock-owner protection, cross-tenant secret isolation, legal run lifecycle, retry/human resume, invalid transition rejection, and structured terminal failure requirements.
+- Adjusted workspace package type resolution so clean `pnpm check` does not depend on a prior `dist` build.
+
+### Validation
+- Reviewed new code against strict TypeScript settings (`strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`).
+- Corrected an invalid test-only type-use expression before finalizing the slice.
+- Reviewed PR review threads; no unresolved inline review threads were present at this checkpoint.
+- GitHub combined commit status currently reports CodeRabbit success. GitHub Actions workflow discovery through the connector has not yet surfaced the newest run, so no CI-pass claim is made for this slice yet.
+- Local container execution remains unavailable because the prior environment could not resolve GitHub/package dependencies; tests are therefore designed to be deterministic and credential-free while repository CI remains authoritative.
+
+### Architectural decisions reinforced
+- Core ports are the only dependency direction for cloud adapters: AWS and Google implementations must implement these interfaces rather than introducing cloud APIs into workflow/compiler/executor code.
+- Workflow-version storage is immutable by contract.
+- At-least-once scheduler delivery is absorbed at RunRepository creation using occurrence identity.
+- Automation concurrency is an explicit lease, not an in-process mutex.
+- Secret material and credential metadata remain separate abstractions.
+- Run state is governed by an explicit state machine; adapters may persist state but must not invent lifecycle transitions.
+
 ### Next highest-value tasks
-1. Add repository/service interfaces for Automations, WorkflowVersions, Runs, Checkpoints, Locks, ArtifactStore, BrowserProfiles, CredentialVault, Scheduler, Notifications, and ReasoningProvider.
-2. Implement deterministic in-memory adapters and tests so the full lifecycle is locally executable without AWS keys.
-3. Build the workflow execution engine/state reducer with retry fingerprints, verification, pause/resume, and idempotent checkpoints.
-4. Add a mock browser executor and a semantic fallback interface; prove a complete scheduled run in tests.
-5. Add AWS infrastructure-as-code skeleton and environment contracts without requiring credentials at build time.
-6. Add Next.js control-plane UI only after lifecycle/domain APIs are stable enough not to encode temporary assumptions.
+1. Build the provider-neutral execution engine that walks WorkflowGraph nodes using BrowserExecutor/ReasoningProvider/VerificationEngine and persists checkpoints after meaningful effects.
+2. Add retry-state fingerprints and deterministic retry/backoff planning; prove repeated unresolved states transition to WAITING_FOR_HUMAN instead of looping.
+3. Add mock BrowserExecutor, ReasoningProvider, and VerificationEngine implementations and an end-to-end scheduled-run lifecycle test including deterministic success, semantic fallback, verification failure, pause, correction, and resume.
+4. Add a run coordinator/preflight service around idempotent run creation, automation-state validation, immutable workflow loading, lock acquisition/release, browser-profile readiness, and credential readiness.
+5. Add AWS adapter package/infrastructure skeleton only after the above execution lifecycle is green: DynamoDB/S3/SQS/Step Functions/EventBridge/SES/AgentCore behind existing ports.
+6. Add environment/config contracts that produce explicit NOT_CONFIGURED states when cloud/provider credentials are absent.
+7. Add Next.js control-plane UI only after lifecycle/domain APIs are stable enough not to encode temporary assumptions.
 
 ### Current blockers
 - No AWS credentials/API keys are required for current development. Real cloud integration tests will remain disabled until credentials exist.
-- Container network could not reach GitHub during this run; repository CI covers validation.
+- Current connector tooling has not surfaced a GitHub Actions run for the latest commits yet; validation status must be rechecked on the next run.
+- Local container network could not reach GitHub during the bootstrap run; repository CI covers authoritative validation once surfaced.
