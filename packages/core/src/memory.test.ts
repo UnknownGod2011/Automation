@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AutomationRecord, RunRecord, WorkflowGraph } from "@automation/contracts";
+import type { RunRecord, WorkflowGraph } from "@automation/contracts";
 import {
   InMemoryAutomationLockManager,
   InMemoryCredentialVault,
@@ -128,5 +128,3 @@ describe("InMemoryCredentialVault", () => {
     ).toBeNull();
   });
 });
-
-void ({} satisfies AutomationRecord);
