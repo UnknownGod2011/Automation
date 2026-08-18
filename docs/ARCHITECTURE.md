@@ -15,7 +15,7 @@ The web application is a control plane. Scheduled automation execution is a sepa
 Owns automation CRUD, workflow versioning, schedules, credential metadata, run inspection, and human-resolution commands.
 
 ### Persistence
-- DynamoDB: users, automations, workflow-version metadata, runs, run steps, locks, credential metadata.
+- DynamoDB: users, automations, workflow-version metadata, runs, run steps, locks, human-resolution claims, credential metadata.
 - S3: capture recordings, screenshots, DOM/event artifacts, compiled workflow documents, run evidence.
 - Browser Profiles: target-site session state.
 - AgentCore Identity: provider credential secrets/references.
@@ -79,6 +79,8 @@ A durable checkpoint contains the current node, completed nodes, attempt count, 
 Persist checkpoint + evidence, save browser profile, terminate browser, notify owner. Resume later in a new browser session reconstructed from checkpoint/profile. Human resume resets the failed-attempt/fingerprint circuit for the repaired node while retaining durable workflow variables and prior evidence.
 
 An explicit `HUMAN` workflow node is a durable pause boundary. Until human branch-selection output is represented as an explicit typed resolution command, resuming an explicit `HUMAN` node requires exactly one declared successor. The engine validates that successor before changing the persisted run out of `WAITING_FOR_HUMAN`, marks the human node completed, checkpoints the declared successor, clears the human failure/fingerprint circuit, and preserves the run's immutable workflow version, variables, and prior evidence. Ambiguous human control flow is rejected rather than guessed.
+
+Human-resolution delivery is at-least-once. A resolution command is scoped to tenant + user + run + paused node and carries a stable resolution ID. Durable cloud adapters must atomically accept exactly one resolution ID for that pause boundary. The AWS adapter uses a conditional DynamoDB put; a losing writer performs a strongly consistent read and resolves to `REPLAY` only when the winning resolution ID matches, otherwise `CONFLICT`. Transport/throttling failures are not converted into duplicate outcomes. Claim acceptance is intentionally cheaper than browser/model startup so duplicate delivery can be rejected before execution-plane cost or side effects.
 
 ## Workflow intermediate representation
 
@@ -146,13 +148,14 @@ Future managed-model mode implements the same router interface.
 
 ## Multi-tenancy and authorization
 
-Every durable entity is keyed/owned by tenant_id + user_id where appropriate. Browser-profile and secret access are resolved server-side from an authorized automation; clients never choose arbitrary secret/profile identifiers for execution.
+Every durable entity is keyed/owned by tenant_id + user_id where appropriate. Browser-profile and secret access are resolved server-side from an authorized automation; clients never choose arbitrary secret/profile identifiers for execution. Human-resolution claims use the same ownership partition and validate the embedded claim identity when read.
 
 ## Idempotency/concurrency
 
 - Schedule delivery may be at-least-once; run creation uses an idempotency key based on automation + scheduled occurrence.
 - Automation lock prevents overlapping mutable browser runs by default.
 - Retryable steps carry attempt IDs and must not duplicate irreversible effects without verification/idempotency support.
+- Human-resolution command delivery may be duplicated or concurrent; exactly one resolution ID may be durably accepted for a given ownership + run + paused-node boundary.
 
 ## Observability
 
