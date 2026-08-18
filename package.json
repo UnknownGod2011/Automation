@@ -1,0 +1,19 @@
+{
+  "name": "automation-platform",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.15.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "check": "pnpm -r check",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
