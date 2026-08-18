@@ -25,6 +25,8 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Persist run/checkpoint state before acknowledging work that may be retried.
 - Human-resolution commands must be idempotent by stable resolution ID and pause boundary. Production claim stores must use an atomic conditional write or equivalent transaction; read-then-unconditional-write implementations are invalid.
 - A duplicate of the already-accepted resolution may return `REPLAY`, while a different resolution ID for the same run/node boundary must return `CONFLICT` and must not start resume execution.
+- `REPLAY` is never execution permission. Human resume browser/model execution may start only for a newly `ACCEPTED` claim unless a separate durable recovery-lease state machine explicitly grants execution ownership.
+- Worker crash recovery must not rely on claim replay alone. A recovery lease must prevent concurrent execution and node-level idempotency/effect verification must address the unknown-side-effect window before automatic recovery can be considered safe.
 
 ### 4. Failure handling
 - Classify failures before retrying.
@@ -34,6 +36,7 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Paused runs must retain enough checkpoint/evidence state for deterministic recovery.
 - Explicit `HUMAN`-node resume must never infer control flow. Until a typed human branch-selection contract exists, resume requires exactly one declared successor and must reject ambiguous topology before mutating the persisted run out of `WAITING_FOR_HUMAN`.
 - Database/network uncertainty during human-resolution claiming must propagate as a failure; it must never be guessed to mean replay, conflict, or acceptance.
+- If resume execution fails after claim acceptance and no durable recovery lease exists, fail closed; do not reinterpret a later replay as permission to rerun side effects.
 
 ### 5. Security and tenant isolation
 - Never store raw external API keys in application metadata tables or logs.
@@ -62,6 +65,7 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Version workflow definitions; a run must remain bound to the workflow version it started with unless an explicit migration/resume rule exists.
 - Browser compute may terminate while waiting for a human; persistent browser/session state and checkpoint evidence must be saved first.
 - Human-resolution acceptance must be durable before browser/model resume work starts so duplicate workers can be rejected before side effects.
+- Automatic recovery after accepted human resolution requires durable execution ownership distinct from the immutable resolution claim; ownership must be conditionally acquired/renewed/completed and must not overlap across workers.
 
 ### 9. Observability
 - Every run needs a stable run ID and correlation context.
@@ -75,6 +79,7 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - A red CI run must be root-caused from logs; do not disable a failing check simply to make CI green.
 - Never claim a test/check passed unless it was actually executed successfully.
 - Durable idempotency adapters require contention tests, same-command replay tests, conflicting-command tests, tenant-isolation tests, and non-conditional failure propagation tests.
+- Human resume orchestration tests must prove replay/conflict outcomes are non-executing, including concurrent duplicate delivery and executor-failure cases.
 
 ### 11. Dependency discipline
 - Avoid dependencies when a small well-tested internal abstraction is sufficient.
