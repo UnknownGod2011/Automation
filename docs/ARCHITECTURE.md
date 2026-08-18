@@ -82,6 +82,8 @@ An explicit `HUMAN` workflow node is a durable pause boundary. Until human branc
 
 Human-resolution delivery is at-least-once. A resolution command is scoped to tenant + user + run + paused node and carries a stable resolution ID. Durable cloud adapters must atomically accept exactly one resolution ID for that pause boundary. The AWS adapter uses a conditional DynamoDB put; a losing writer performs a strongly consistent read and resolves to `REPLAY` only when the winning resolution ID matches, otherwise `CONFLICT`. Transport/throttling failures are not converted into duplicate outcomes. Claim acceptance is intentionally cheaper than browser/model startup so duplicate delivery can be rejected before execution-plane cost or side effects.
 
+`HumanResumeOrchestrator` is the provider-neutral production command boundary between durable human-resolution claims and resume execution. Only a newly `ACCEPTED` claim may invoke the resume executor. `REPLAY` and `CONFLICT` are explicitly non-executing outcomes; replay idempotency must never be interpreted as permission to repeat browser/model side effects. If a worker fails after claim acceptance, current behavior fails closed rather than replaying automatically. Recoverable execution ownership requires a separate durable lease/state machine with conditional acquisition, expiry, and completion semantics; lease expiry alone still cannot prove whether an external side effect occurred before a crash.
+
 ## Workflow intermediate representation
 
 The compiler emits a versioned DAG/state graph rather than generated one-off Playwright code.
@@ -156,6 +158,7 @@ Every durable entity is keyed/owned by tenant_id + user_id where appropriate. Br
 - Automation lock prevents overlapping mutable browser runs by default.
 - Retryable steps carry attempt IDs and must not duplicate irreversible effects without verification/idempotency support.
 - Human-resolution command delivery may be duplicated or concurrent; exactly one resolution ID may be durably accepted for a given ownership + run + paused-node boundary.
+- Human resume execution is started only for the newly accepted claim; replay/conflict outcomes do not start browser/model work.
 
 ## Observability
 
