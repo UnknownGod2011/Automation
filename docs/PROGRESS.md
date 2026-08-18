@@ -198,3 +198,43 @@ This file is the continuity checkpoint for automated development runs. Read `END
 3. Add structured audit events for human pause, claim accepted/replayed/conflicted, resume checkpoint, and successor start without sensitive payloads.
 4. Align the AWS SDK package versions deliberately and run the full workspace CI again.
 5. Continue browser-profile pause/resume reconstruction, then proceed outward through capture -> compile -> test -> publish -> schedule.
+
+## 2026-08-19 — Guarded human resume orchestration
+
+### Completed
+- Added provider-neutral `HumanResumeOrchestrator` and `HumanResumeExecutor` boundaries in `@automation/core`.
+- Resume execution now has an explicit orchestration rule: only a newly durable `ACCEPTED` human-resolution claim is allowed to invoke the resume executor. `REPLAY` and `CONFLICT` outcomes are returned as non-executing results.
+- Added regression coverage proving accepted commands execute once, identical delivery does not execute twice, competing resolution IDs do not execute, concurrent duplicate delivery starts only one executor, and executor failure fails closed rather than turning a later replay into implicit re-execution.
+- Exported the orchestration boundary through the core package public surface; no provider SDK dependency was introduced.
+
+### Validation
+- Code commit `1d9f605b8e1e137e7882a566a4b549b3f6c7e029` was pushed to PR #1.
+- GitHub Actions CI run #107 completed successfully on that code head: dependency installation, `pnpm check`, and the full workspace test suite all passed.
+- Local clone/install remains unavailable because this execution container cannot resolve `github.com`; no local test pass is claimed.
+
+### Invariants and failure-mode review
+- Claim idempotency is not execution idempotency. `REPLAY` is never interpreted as permission to rerun browser/model work.
+- A competing resolution ID cannot reach resume execution after another resolution has been accepted for the same tenant/user/run/node boundary.
+- The orchestration layer passes the already-validated durable run/checkpoint to the executor so downstream code does not need to re-resolve untrusted client identity.
+- If execution throws after claim acceptance, the current behavior is deliberately fail-closed: the same resolution subsequently returns `REPLAY` and does not execute again automatically.
+- This avoids duplicate external side effects but means worker-crash recovery after acceptance is not yet available. Recovery requires a separate durable lease/state-machine design rather than overloading claim replay semantics.
+
+### Security, tenancy, retries, observability, cost, and scaling review
+- Ownership validation remains in `HumanResolutionCoordinator` before any executor call. The new layer introduces no new secret, browser-profile, provider-key, or credential surface.
+- Duplicate/conflicting deliveries are rejected before browser/model startup, keeping contention cost limited to durable metadata operations.
+- No retry loop or timeout policy was added. Infrastructure uncertainty still propagates from the claim adapter; callers must retry the same resolution ID and receive a non-executing replay unless a future recovery lease explicitly grants execution ownership.
+- The orchestration result is suitable for structured audit events (`ACCEPTED/EXECUTED`, `REPLAY/NOT_EXECUTED`, `CONFLICT/NOT_EXECUTED`) without logging hidden reasoning or sensitive browser state.
+
+### Known risks / unresolved questions
+- The AWS production worker/API path is not yet wired to `HumanResumeOrchestrator`; direct engine invocation with `resumeFromHuman=true` still exists internally and must not be exposed as a production command path.
+- Crash recovery after claim acceptance remains intentionally unavailable rather than unsafe. A durable execution lease with owner token, expiry, conditional acquisition/renewal, and completion state is the next correctness-critical requirement.
+- Even after an execution lease exists, crash recovery across an unknown external side effect requires node-level idempotency/effect verification; lease expiry alone cannot prove whether an external action happened before worker death.
+- Explicit HUMAN branch-selection output is still absent; one-successor restriction remains.
+- AWS SDK peer-version alignment remains unresolved.
+
+### Next highest-value tasks
+1. Add a provider-neutral human-resume execution lease/state contract with `ACQUIRED`, `HELD`, `COMPLETED`, and conflict semantics, then implement it atomically in DynamoDB so the same resolution can recover only after lease expiry while concurrent workers cannot execute.
+2. Wire `HumanResumeOrchestrator` into a production resume worker that reconstructs browser profile/runtime and calls `WorkflowExecutionEngine` with `resumeFromHuman=true` only after claim + execution ownership are proven.
+3. Add structured human-resolution audit events and redaction tests.
+4. Align AWS SDK package versions deliberately and re-run the full workspace CI.
+5. Continue browser-profile pause/resume reconstruction and then return outward through capture -> compile -> test -> publish -> schedule.
