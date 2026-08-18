@@ -51,6 +51,48 @@ const node = (overrides: Partial<WorkflowNode> = {}): WorkflowNode => ({
   ...overrides,
 });
 
+const endNode = (id = "end"): WorkflowNode => ({
+  id,
+  kind: "END",
+  objective: "Finish",
+  deterministicStrategies: [],
+  inputBindings: {},
+  outputBindings: {},
+  allowedSideEffects: [],
+  retryPolicy: {
+    maxAttempts: 1,
+    initialBackoffMs: 0,
+    maxBackoffMs: 0,
+    jitter: false,
+    retryableFailureCodes: [],
+  },
+  timeoutMs: 1_000,
+  escalation: "FAIL",
+});
+
+const humanNode = (
+  id = "human",
+  next: readonly string[] = ["end"],
+): WorkflowNode => ({
+  id,
+  kind: "HUMAN",
+  objective: "Confirm the report is ready",
+  deterministicStrategies: [],
+  inputBindings: {},
+  outputBindings: {},
+  allowedSideEffects: [],
+  retryPolicy: {
+    maxAttempts: 1,
+    initialBackoffMs: 0,
+    maxBackoffMs: 0,
+    jitter: false,
+    retryableFailureCodes: [],
+  },
+  timeoutMs: 1_000,
+  next,
+  escalation: "HUMAN",
+});
+
 const graph = (entry: WorkflowNode): WorkflowGraph => ({
   schemaVersion: 1,
   workflowId: "wf-1",
@@ -61,24 +103,7 @@ const graph = (entry: WorkflowNode): WorkflowGraph => ({
   createdAt: "2026-08-18T00:00:00.000Z",
   nodes: {
     [entry.id]: entry,
-    end: {
-      id: "end",
-      kind: "END",
-      objective: "Finish",
-      deterministicStrategies: [],
-      inputBindings: {},
-      outputBindings: {},
-      allowedSideEffects: [],
-      retryPolicy: {
-        maxAttempts: 1,
-        initialBackoffMs: 0,
-        maxBackoffMs: 0,
-        jitter: false,
-        retryableFailureCodes: [],
-      },
-      timeoutMs: 1_000,
-      escalation: "FAIL",
-    },
+    end: endNode(),
   },
 });
 
@@ -431,5 +456,122 @@ describe("WorkflowExecutionEngine", () => {
     expect(browser.deterministicCalls[0]).toEqual({ reportId: "R-42" });
     expect(result.checkpoint?.fingerprintRepeatCount).toBe(0);
     expect(result.checkpoint?.lastFailure).toBeUndefined();
+  });
+
+  it("pauses at an explicit HUMAN node and resumes through its sole successor without losing durable state", async () => {
+    const initialRun = run();
+    const runs = new MemoryRuns(initialRun);
+    const checkpoints = new MemoryCheckpoints();
+    const browser = new ScriptedBrowser([success("report-open")]);
+    const click = node({ next: ["human"] });
+    const workflow: WorkflowGraph = {
+      schemaVersion: 1,
+      workflowId: "wf-1",
+      automationId: "auto-1",
+      version: 1,
+      entryNodeId: "click",
+      objective: "Open then confirm a report",
+      createdAt: "2026-08-18T00:00:00.000Z",
+      nodes: {
+        click,
+        human: humanNode(),
+        end: endNode(),
+      },
+    };
+    const workflowEngine = engine(browser, runs, checkpoints);
+
+    const paused = await workflowEngine.execute({
+      scope,
+      run: initialRun,
+      graph: workflow,
+    });
+
+    expect(paused.run.status).toBe("WAITING_FOR_HUMAN");
+    expect(paused.checkpoint?.currentNodeId).toBe("human");
+    expect(paused.checkpoint?.lastFailure?.code).toBe("HUMAN_DECISION_REQUIRED");
+    expect(paused.checkpoint?.variables).toEqual({ result: "report-open" });
+    expect(paused.checkpoint?.evidenceRefs).toEqual([
+      "evidence://action",
+      "evidence://verify",
+    ]);
+
+    const resumed = await workflowEngine.execute({
+      scope,
+      run: paused.run,
+      graph: workflow,
+      resumeFromHuman: true,
+    });
+
+    expect(resumed.run.status).toBe("SUCCEEDED");
+    expect(resumed.checkpoint?.completedNodeIds).toEqual([
+      "click",
+      "human",
+      "end",
+    ]);
+    expect(resumed.checkpoint?.variables).toEqual({ result: "report-open" });
+    expect(resumed.checkpoint?.evidenceRefs).toEqual([
+      "evidence://action",
+      "evidence://verify",
+    ]);
+    expect(resumed.checkpoint?.lastFailure).toBeUndefined();
+    expect(browser.deterministicCalls).toHaveLength(1);
+  });
+
+  it("rejects ambiguous explicit HUMAN resume before mutating the persisted run", async () => {
+    const waitingRun = run("WAITING_FOR_HUMAN");
+    const checkpoint: RunCheckpoint = {
+      runId: waitingRun.runId,
+      automationId: waitingRun.automationId,
+      workflowVersion: waitingRun.workflowVersion,
+      currentNodeId: "human",
+      completedNodeIds: [],
+      attempt: 0,
+      fingerprintRepeatCount: 0,
+      variables: { reportId: "R-42" },
+      evidenceRefs: ["evidence://before-human"],
+      lastFailure: {
+        code: "HUMAN_DECISION_REQUIRED",
+        message: "Choose a path",
+        retryable: false,
+        nodeId: "human",
+        evidenceRefs: ["evidence://before-human"],
+      },
+      updatedAt: "2026-08-18T12:00:00.000Z",
+    };
+    const runs = new MemoryRuns(waitingRun);
+    const checkpoints = new MemoryCheckpoints(checkpoint);
+    const browser = new ScriptedBrowser([]);
+    const workflow: WorkflowGraph = {
+      schemaVersion: 1,
+      workflowId: "wf-1",
+      automationId: "auto-1",
+      version: 1,
+      entryNodeId: "human",
+      objective: "Choose a path",
+      createdAt: "2026-08-18T00:00:00.000Z",
+      nodes: {
+        human: humanNode("human", ["end-a", "end-b"]),
+        "end-a": endNode("end-a"),
+        "end-b": endNode("end-b"),
+      },
+    };
+
+    await expect(
+      engine(
+        browser,
+        runs,
+        checkpoints,
+        new ScriptedVerifier([]),
+      ).execute({
+        scope,
+        run: waitingRun,
+        graph: workflow,
+        resumeFromHuman: true,
+      }),
+    ).rejects.toThrow("requires exactly one declared successor");
+
+    expect(runs.updates).toHaveLength(0);
+    expect(runs.value.status).toBe("WAITING_FOR_HUMAN");
+    expect(checkpoints.value).toEqual(checkpoint);
   });
 });
