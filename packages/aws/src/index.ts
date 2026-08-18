@@ -4,5 +4,6 @@ export * from "./browser-session.js";
 export * from "./config.js";
 export * from "./dynamodb-state.js";
 export * from "./identity-vault.js";
+export * from "./playwright-runtime.js";
 export * from "./reasoning.js";
 export * from "./workflow-version.js";
