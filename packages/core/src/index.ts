@@ -51,6 +51,7 @@ export interface LockLease {
 
 export interface AutomationLockManager {
   acquire(scope: OwnershipScope, automationId: string, ownerToken: string, ttlMs: number): Promise<LockLease | null>;
+  renew(scope: OwnershipScope, lease: LockLease, ttlMs: number): Promise<LockLease | null>;
   release(scope: OwnershipScope, lease: LockLease): Promise<void>;
 }
 
@@ -69,6 +70,40 @@ export interface BrowserProfileStore {
   create(scope: OwnershipScope, automationId: string): Promise<string>;
   exists(scope: OwnershipScope, profileRef: string): Promise<boolean>;
   delete(scope: OwnershipScope, profileRef: string): Promise<void>;
+}
+
+export interface BrowserViewport {
+  width: number;
+  height: number;
+}
+
+export interface BrowserSessionStartRequest {
+  automationId: string;
+  runId: string;
+  profileRef?: string;
+  timeoutSeconds: number;
+  viewport?: BrowserViewport;
+}
+
+/**
+ * Ephemeral connection material for an active browser session. Implementations may
+ * include signed headers. Never persist this handle in checkpoints or dashboard data.
+ */
+export interface BrowserAutomationConnection {
+  endpoint: string;
+  headers: Readonly<Record<string, string>>;
+}
+
+export interface BrowserSessionHandle {
+  sessionId: string;
+  connection: BrowserAutomationConnection;
+  liveViewEndpoint?: string;
+}
+
+export interface BrowserSessionManager {
+  start(scope: OwnershipScope, request: BrowserSessionStartRequest): Promise<BrowserSessionHandle>;
+  saveProfile(scope: OwnershipScope, session: BrowserSessionHandle, profileRef: string): Promise<void>;
+  stop(scope: OwnershipScope, session: BrowserSessionHandle): Promise<void>;
 }
 
 export interface CredentialSecret {
@@ -177,6 +212,7 @@ export interface VerificationEngine {
   verify(context: VerificationContext): Promise<VerificationResult>;
 }
 
+export * from "./coordinator.js";
 export * from "./execution.js";
 export * from "./memory.js";
 export * from "./run-state.js";
