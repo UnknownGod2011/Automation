@@ -143,6 +143,24 @@ function nextNodeId(
   return selected;
 }
 
+function explicitHumanSuccessor(
+  graph: WorkflowGraph,
+  checkpoint: RunCheckpoint | null,
+): { humanNodeId: string; successorNodeId: string } | null {
+  if (!checkpoint) return null;
+  const node = graph.nodes[checkpoint.currentNodeId];
+  if (!node || node.kind !== "HUMAN") return null;
+
+  const successors = node.next ?? [];
+  if (successors.length !== 1 || !successors[0]) {
+    throw new Error(
+      `HUMAN node '${node.id}' requires exactly one declared successor before it can resume`,
+    );
+  }
+
+  return { humanNodeId: node.id, successorNodeId: successors[0] };
+}
+
 function makeFailure(
   code: RunFailure["code"],
   message: string,
@@ -232,11 +250,13 @@ export class WorkflowExecutionEngine {
     let run = request.run;
     let checkpoint = await this.dependencies.checkpoints.get(request.scope, run.runId);
     this.assertCheckpointMatchesRun(checkpoint, run);
+    let humanResume: { humanNodeId: string; successorNodeId: string } | null = null;
 
     if (run.status === "WAITING_FOR_HUMAN") {
       if (!request.resumeFromHuman) {
         throw new Error("WAITING_FOR_HUMAN run requires resumeFromHuman=true");
       }
+      humanResume = explicitHumanSuccessor(request.graph, checkpoint);
       run = transitionRun(run, "RUNNING", {
         now: this.now().toISOString(),
         ...(checkpoint ? { currentNodeId: checkpoint.currentNodeId } : {}),
@@ -265,6 +285,24 @@ export class WorkflowExecutionEngine {
     let fingerprintRepeatCount = request.resumeFromHuman
       ? 0
       : (checkpoint?.fingerprintRepeatCount ?? 0);
+
+    if (humanResume) {
+      if (!completedNodeIds.includes(humanResume.humanNodeId)) {
+        completedNodeIds = [...completedNodeIds, humanResume.humanNodeId];
+      }
+      currentNodeId = humanResume.successorNodeId;
+      checkpoint = await this.putCheckpoint(
+        request.scope,
+        run,
+        currentNodeId,
+        completedNodeIds,
+        0,
+        variables,
+        evidenceRefs,
+      );
+      run = { ...run, currentNodeId };
+      await this.dependencies.runs.update(run);
+    }
 
     for (
       let executionCount = 0;
