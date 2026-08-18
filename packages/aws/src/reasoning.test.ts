@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { ReasoningRequest, WorkflowNode } from "@automation/core";
+import type { ReasoningRequest } from "@automation/core";
 import {
   AwsStrandsReasoningProvider,
   classifyAwsReasoningError,
   type StructuredDecisionInvoker,
 } from "./index.js";
 
-const node: WorkflowNode = {
+const node: ReasoningRequest["node"] = {
   id: "click",
   kind: "CLICK",
   objective: "Choose the safe click",
