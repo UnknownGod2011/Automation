@@ -33,7 +33,9 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - CI #112 passed on `2c5cde839a3aebe229942fa5ee7dba5e4e16ea7c` with production human-resume runtime reconstruction.
 - CI #114 passed on `130510e16b16e8b12a77d995fb90e729ef09a368` after heartbeat ownership-loss regression alignment.
 - CI #115 passed on `59bef6806f21ff8710b17dc334cf40b1c2f48c88` with the durable redacted human-resume audit trail.
-- CI #116 passed on `b09a32fda4bfe0b2cb7957395ff69e4f94310545` with durable first-successor effect reconciliation authority. This was the validated head before the current slice.
+- CI #116 passed on `b09a32fda4bfe0b2cb7957395ff69e4f94310545` with durable first-successor effect reconciliation authority.
+- CI #118 passed on `f22d0e1402d5ba3659d6ad3c2362e70c5f3e768f` with the provider-neutral read-only reconciliation verifier boundary.
+- CI #119 passed on `11be1b0804a70174fa0279233b359de9ad21ac9d` with the AWS observation-only Playwright reconciliation verifier. This was the validated head before the current slice.
 - The execution container still cannot resolve `github.com`, so no local install/check/test pass is claimed. GitHub Actions is authoritative.
 
 ## 2026-08-19 — Read-only human-resume reconciliation verifier boundary
@@ -88,17 +90,8 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - `AMBIGUOUS`: return/keep the run in human attention rather than risking a duplicate effect.
 - Verifier/storage failure should surface as a platform reconciliation failure with no claim that the action is safe to repeat.
 
-### Validation status for this slice
-
-- The prior head `b09a32fda4bfe0b2cb7957395ff69e4f94310545` is confirmed green in GitHub Actions CI #116 before this change.
-- Code, tests, exports, architecture, quality gates, and this progress entry are being published together in one Git-data commit to avoid per-file CI churn.
-- A local clone/install remains impossible because the execution container cannot resolve `github.com`; no local check or test pass is claimed.
-- GitHub Actions on the exact resulting commit is authoritative. If CI fails, inspect the failing job logs before any corrective commit and do not weaken checks.
-
 ### Known risks / unresolved questions
 
-- No production `HumanResumeEffectVerifier` implementation is wired to AgentCore/Playwright yet; this slice defines and tests the provider-neutral contract/coordinator only.
-- The current browser runtime abstraction exposes action execution and ordinary boolean verification. A production reconciliation verifier needs an observation-only runtime surface capable of proving presence/absence without action methods.
 - Automatic same-resolution lease reacquisition and crash recovery remain disabled.
 - `ALREADY_APPLIED` still needs checkpoint/output reconstruction so the engine can advance without executing the successor.
 - `DEFINITELY_NOT_APPLIED` still needs one safe, lease-owned retry path that consumes the durable decision exactly once.
@@ -108,15 +101,6 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - Explicit HUMAN branch-selection data is still absent; the exactly-one-successor rule remains.
 - The AWS SDK peer-version warning still needs deliberate package alignment rather than suppression.
 - Live AgentCore/DynamoDB behavior remains unvalidated without cloud credentials; deterministic tests are the current evidence.
-
-### Next highest-value tasks
-
-1. Add an observation-only reconciliation runtime adapter for the AWS Playwright/AgentCore path that can evaluate DOM/URL/TEXT verification contracts without exposing action execution and conservatively returns `AMBIGUOUS` when absence cannot be proven.
-2. Wire `HumanResumeWorker` recovery so an expired same-resolution lease can reacquire ownership, prepare/reconcile the first successor, advance without replay on `ALREADY_APPLIED`, execute only on `DEFINITELY_NOT_APPLIED`, and pause safely on `AMBIGUOUS`.
-3. Define post-effect checkpoint/output reconstruction for `ALREADY_APPLIED` so durable variables/evidence remain correct when the action itself is skipped.
-4. Add redacted audit milestones for effect preparation, inspection outcome, reconciliation decision, and human-attention fallback.
-5. Deliberately align AWS SDK peer versions and rerun the full workspace suite.
-6. Continue outward through capture -> compile -> test -> publish -> schedule once crash recovery is fully reconciled end to end.
 
 ## 2026-08-19 — AWS observation-only Playwright reconciliation adapter
 
@@ -165,12 +149,6 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - A positive observation enables the existing future `ALREADY_APPLIED` path; a negative observation keeps the user in a recoverable ambiguous state rather than risking a duplicate action.
 - This slice does not enable automatic lease reacquisition, successor replay, or checkpoint advancement.
 
-### Validation status for this slice
-
-- The incoming PR head `f22d0e1402d5ba3659d6ad3c2362e70c5f3e768f` is confirmed green in GitHub Actions CI #118 before this change.
-- Local clone/install/check/test remains unavailable because the execution container cannot resolve `github.com`; no local validation is claimed.
-- Code, tests, export, and this progress entry are published together in one Git-data commit. GitHub Actions on the exact resulting commit is authoritative; if it fails, inspect job logs before any corrective change.
-
 ### Known risks / unresolved questions
 
 - Because `VerificationSpec` currently describes only positive expected state, this adapter cannot safely produce `DEFINITELY_NOT_APPLIED`. A future explicit absence/idempotency proof contract is required before negative observation may grant retry permission.
@@ -182,10 +160,46 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - AWS SDK peer-version alignment remains queued.
 - Live AgentCore/S3 behavior is not credential-validated; deterministic tests and CI remain the current evidence.
 
-### Next highest-value tasks
+## 2026-08-19 — Provider-neutral ALREADY_APPLIED checkpoint reconstruction plan
 
-1. Wire the AWS human-resume recovery worker to instantiate this observation-only verifier after safe same-resolution lease reacquisition and consume the durable reconciliation decision without action replay.
-2. Define and test post-effect checkpoint/output reconstruction for `ALREADY_APPLIED` before allowing control-flow advancement without executing the successor.
-3. Add an explicit proof-of-absence/idempotency contract for cases that can safely produce `DEFINITELY_NOT_APPLIED`; keep unsupported cases `AMBIGUOUS`.
-4. Add redacted audit milestones for effect preparation, inspection outcome, decision persistence, and human-attention fallback.
+### Completed in this slice
+
+- Added `planAlreadyAppliedHumanResumeRecovery`, a pure provider-neutral recovery primitive for the post-effect checkpoint reconstruction path.
+- The planner accepts only a durable `DECIDED` / `ALREADY_APPLIED` effect record matching the exact tenant, user, run, paused HUMAN node, immutable workflow version, and declared first successor.
+- It reconstructs the checkpoint that ordinary successful execution would have produced after that successor: marks the HUMAN node and successor completed, merges only declared output bindings into durable variables, appends reconciliation evidence, clears retry/fingerprint/failure state, and advances to the successor's declared next node without executing the successor again.
+- Multi-successor control flow remains constrained: reconstructed `nextNodeId` must exactly match a declared successor; arbitrary destinations are rejected.
+- The planner requires the reconciled successor to remain side-effecting and explicitly verifiable, preventing the recovery record from being repurposed for a different node class.
+- Added tests for output/evidence reconstruction, immutable input preservation, branch validation, durable-decision enforcement, tenant/user/run isolation, control-flow drift, non-verifiable successor rejection, workflow/run/checkpoint identity drift, and timestamp validation.
+- Exported the planner through `@automation/core`. No dependency or third-party source was added.
+
+### Invariants / concurrency / persistence review
+
+- This planner is deliberately pure and is not execution permission. It does not acquire/reacquire leases, mutate the reconciliation authority, persist a checkpoint, update a run, or dispatch browser/model work.
+- A caller must still hold valid same-resolution execution ownership before using the plan in production.
+- The function does not persist a run/checkpoint pair because the current repository interfaces do not provide an atomic combined transition. Wiring this into the worker before defining the crash semantics of checkpoint-write vs run-update ordering would create a new recovery race, so integration remains intentionally deferred.
+- Re-running the pure planner with the same durable inputs is deterministic and side-effect free. It cannot duplicate a target-site action.
+- Existing checkpoint variables/evidence are preserved; only declared output bindings are merged. Arbitrary reconstruction outputs do not become durable variables unless the immutable node mapped them.
+- Old human failure/fingerprint/attempt state is cleared exactly as on a successful resumed successor, while the prior evidence history remains retained.
+
+### Security / timeout / retry / observability / cost review
+
+- No cloud/provider-specific type enters core. AWS and a future Google adapter can supply the same reconstruction data.
+- Tenant/user/run/version/HUMAN-node/successor identity is validated before any plan is returned.
+- The planner stores or logs no secrets and introduces no browser/model/network call, timeout, retry loop, or additional cloud cost.
+- Reconciliation evidence references may be carried forward; raw DOM/browser content remains outside the checkpoint authority as before.
+- Invalid or ambiguous reconciliation states fail closed and cannot create a synthetic success checkpoint.
+
+### Validation status
+
+- Incoming head `11be1b0804a70174fa0279233b359de9ad21ac9d` is confirmed green in GitHub Actions CI #119.
+- Local installation/check/test is still unavailable because the execution container cannot resolve `github.com`; no local pass is claimed.
+- Code, tests, export, and this progress update are being published as one Git-data commit. GitHub Actions on that exact commit is authoritative.
+
+### Known risks / next highest-value tasks
+
+1. Define a lease-owned durable recovery transition that can persist the reconstructed checkpoint and run-state advancement with explicit crash semantics; do not rely on an unsafe read-then-write pair.
+2. Wire same-resolution expired-lease recovery to consume the observation-only verifier and this planner: skip action on `ALREADY_APPLIED`, execute only on durable `DEFINITELY_NOT_APPLIED`, and return to human attention on `AMBIGUOUS`.
+3. Define an explicit proof-of-absence/idempotency contract before any production verifier may return `DEFINITELY_NOT_APPLIED`.
+4. Add redacted audit milestones for effect preparation, inspection, decision, reconstructed advancement, and ambiguity fallback.
 5. Deliberately align AWS SDK peer versions and rerun the full workspace suite.
+6. Continue outward through capture -> compile -> test -> publish -> schedule after crash recovery is fully reconciled end to end.
