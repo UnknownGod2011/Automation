@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AutomationRecord, RunRecord, WorkflowGraph } from "@automation/contracts";
+import { InMemoryCaptureSessionStore } from "./capture-completion.js";
 import { InMemoryAutomationRepository, InMemoryRunRepository } from "./memory.js";
 import {
   AutomationControlPlaneService,
@@ -103,6 +104,7 @@ function makeLifecycle(record: AutomationRecord): AutomationLifecyclePort {
 async function setup() {
   const automations = new InMemoryAutomationRepository();
   const runs = new InMemoryRunRepository();
+  const captureState = new InMemoryCaptureSessionStore();
   const record = automation();
   await automations.put(record);
   const lifecycle = makeLifecycle(record);
@@ -117,6 +119,7 @@ async function setup() {
     runs,
     lifecycle,
     captureSessions,
+    captureState,
     capabilities: {
       auth: "LOCAL_MOCK",
       capture: "NOT_CONFIGURED",
@@ -125,7 +128,7 @@ async function setup() {
       notifications: "NOT_CONFIGURED",
     },
   });
-  return { automations, runs, lifecycle, captureSessions, service, record };
+  return { automations, runs, lifecycle, captureSessions, captureState, service, record };
 }
 
 describe("AutomationControlPlaneService", () => {
@@ -149,6 +152,36 @@ describe("AutomationControlPlaneService", () => {
     expect(dashboard.automations).toHaveLength(1);
     expect(dashboard.automations[0]?.needsAttention).toBe(true);
     expect(JSON.stringify(dashboard)).not.toContain("profile-secret-server-ref");
+  });
+
+  it("surfaces only safe latest-completed capture metadata for compile readiness", async () => {
+    const { captureState, service } = await setup();
+    await captureState.putStarted({
+      tenantId: owner.tenantId,
+      userId: owner.userId,
+      automationId: "auto-1",
+      captureSessionId: "capture-1",
+      browserSessionId: "browser-session-secret",
+      browserProfileRef: "profile-secret-server-ref",
+      startedAt: "2026-08-19T12:00:00.000Z",
+      expiresAt: "2026-08-19T13:00:00.000Z",
+      status: "STARTED",
+    });
+    await captureState.complete(
+      owner,
+      "capture-1",
+      "trace-ready-1",
+      "2026-08-19T12:10:00.000Z",
+    );
+
+    const summary = await service.getAutomation(owner, "auto-1");
+
+    expect(summary.latestCompletedCapture).toEqual({
+      traceId: "trace-ready-1",
+      completedAt: "2026-08-19T12:10:00.000Z",
+    });
+    expect(JSON.stringify(summary)).not.toContain("browser-session-secret");
+    expect(JSON.stringify(summary)).not.toContain("profile-secret-server-ref");
   });
 
   it("keeps tenant scope server-side and cannot read another tenant automation", async () => {
@@ -186,13 +219,14 @@ describe("AutomationControlPlaneService", () => {
 
 describe("AutomationControlPlaneHttpHandler", () => {
   it("uses authenticated context rather than spoofable ownership fields in request JSON", async () => {
-    const { automations, runs, lifecycle, captureSessions } = await setup();
+    const { automations, runs, lifecycle, captureSessions, captureState } = await setup();
     const emptyAutomations = new InMemoryAutomationRepository();
     const service = new AutomationControlPlaneService({
       automations: emptyAutomations,
       runs,
       lifecycle,
       captureSessions,
+      captureState,
       capabilities: {
         auth: "LOCAL_MOCK",
         capture: "NOT_CONFIGURED",
