@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { AutomationSchedule } from "@automation/contracts";
 import type {
   OwnershipScope,
@@ -48,12 +47,14 @@ function nonEmpty(value: string, name: string): string {
   return trimmed;
 }
 
-function scheduleName(scope: OwnershipScope, scheduleId: string): string {
-  const digest = createHash("sha256")
-    .update(`${scope.tenantId}\u0000${scope.userId}\u0000${scheduleId}`)
-    .digest("hex")
-    .slice(0, 48);
-  return `automation-${digest}`;
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function scheduleName(scope: OwnershipScope, scheduleId: string): Promise<string> {
+  const digest = await sha256Hex(`${scope.tenantId}\u0000${scope.userId}\u0000${scheduleId}`);
+  return `automation-${digest.slice(0, 48)}`;
 }
 
 function assertAwsScheduleExpression(expression: string): string {
@@ -90,7 +91,7 @@ export class AwsEventBridgeSchedulerAdapter implements SchedulerPort {
   }
 
   async upsert(scope: OwnershipScope, registration: ScheduleRegistration): Promise<void> {
-    const name = scheduleName(scope, nonEmpty(registration.scheduleId, "scheduleId"));
+    const name = await scheduleName(scope, nonEmpty(registration.scheduleId, "scheduleId"));
     const envelope: ScheduledDispatchEnvelope = {
       schemaVersion: 1,
       scope: { ...scope },
@@ -120,14 +121,14 @@ export class AwsEventBridgeSchedulerAdapter implements SchedulerPort {
   }
 
   async delete(scope: OwnershipScope, scheduleId: string): Promise<void> {
-    const name = scheduleName(scope, nonEmpty(scheduleId, "scheduleId"));
+    const name = await scheduleName(scope, nonEmpty(scheduleId, "scheduleId"));
     if (await this.api.get(name, this.target.groupName)) {
       await this.api.delete(name, this.target.groupName);
     }
   }
 
   async get(scope: OwnershipScope, scheduleId: string): Promise<ScheduleRegistration | null> {
-    const name = scheduleName(scope, nonEmpty(scheduleId, "scheduleId"));
+    const name = await scheduleName(scope, nonEmpty(scheduleId, "scheduleId"));
     const definition = await this.api.get(name, this.target.groupName);
     if (!definition) return null;
     const persisted = JSON.parse(definition.target.input) as Partial<ScheduledDispatchEnvelope> & { scheduleKind?: unknown };
@@ -162,9 +163,9 @@ export class AwsStepFunctionsScheduledExecutionStarter implements ScheduledExecu
   }
 
   async start(envelope: ScheduledDispatchEnvelope): Promise<ScheduledExecutionStartResult> {
-    const occurrenceHash = createHash("sha256")
-      .update(`${envelope.scope.tenantId}\u0000${envelope.scope.userId}\u0000${envelope.automationId}\u0000${envelope.scheduledAt}`)
-      .digest("hex");
+    const occurrenceHash = await sha256Hex(
+      `${envelope.scope.tenantId}\u0000${envelope.scope.userId}\u0000${envelope.automationId}\u0000${envelope.scheduledAt}`,
+    );
     const name = `scheduled-${occurrenceHash}`;
     try {
       const started = await this.api.startExecution({
