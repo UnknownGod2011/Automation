@@ -12,90 +12,83 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 
 - Strict TypeScript/pnpm monorepo with versioned workflow/run/failure contracts, bounded retries, checkpointing, verification, occurrence idempotency, tenant ownership, and in-memory adapters.
 - Provider-neutral execution engine plus AWS DynamoDB/S3/AgentCore/Playwright adapters behind explicit ports.
-- Explicit `HUMAN` pause -> repair -> resume lifecycle with immutable workflow-version pinning, conditional human-resolution claims, durable execution leases, heartbeat fencing, redacted audit history, read-only crash reconciliation, and atomic already-applied recovery primitives. Recovery micro-hardening remains parked unless an end-to-end slice or CI exposes a concrete defect.
-- Build inputs are pinned to validated TypeScript/Vitest/AWS SDK versions. CI uses Node 22.23.2 and pnpm 10.15.0, regenerates the dependency lock snapshot with lifecycle scripts disabled, authenticates its reviewed SHA-256, and only then performs a frozen install.
-- Capture contracts distinguish `AUTH_SETUP` from executable `WORKFLOW` events and keep authentication setup out of scheduled workflow compilation.
-- `compileCaptureTrace` emits semantic `WorkflowGraph` definitions, ranks deterministic selectors first, requires verification for side effects, omits scroll noise, synthesizes fresh-run navigation when required, and emits non-sensitive public literals as graph `initialVariables`.
-- `AutomationProductLifecycleService` proves the local/mock create -> capture -> compile -> fresh test -> publish -> scheduled dispatch -> execution -> history lifecycle without cloud credentials.
-- `AutomationControlPlaneService` and `AutomationControlPlaneHttpHandler` expose sanitized provider-neutral dashboard/API contracts with explicit `CONFIGURED`, `LOCAL_MOCK`, and `NOT_CONFIGURED` capability states.
+- Explicit human pause/repair/resume lifecycle with conditional resolution claims, durable execution leases, heartbeat fencing, redacted audit history, read-only crash reconciliation, and atomic already-applied recovery primitives. Further recovery micro-hardening is parked unless an end-to-end slice or CI exposes a concrete defect.
+- Deterministic dependency bootstrap using pinned Node 22.23.2, pnpm 10.15.0 and reviewed lock SHA-256. The AWS DynamoDB peer mismatch is resolved rather than suppressed.
+- Versioned capture trace contracts distinguish `AUTH_SETUP` from executable `WORKFLOW` events and keep authentication setup out of scheduled workflow compilation.
+- `compileCaptureTrace` emits semantic `WorkflowGraph` definitions, deterministic selectors first, explicit verification for side effects, bounded retry policies, fresh-session navigation, and public literals as `initialVariables`.
+- `AutomationProductLifecycleService` proves local/mock create -> capture -> compile -> fresh test -> publish -> scheduled dispatch -> execution -> history without cloud credentials.
+- `AutomationControlPlaneService` / HTTP handler expose sanitized provider-neutral dashboard/create/capture/compile/test/publish/history contracts with explicit `CONFIGURED`, `LOCAL_MOCK`, and `NOT_CONFIGURED` capability states.
+- `apps/web` provides the Next.js dashboard, create automation, capture state, compile/test/publish controls, recurrence/timezone configuration and run history. Server-only control-plane credentials, same-origin mutation checks, sanitized upstream errors, and explicit missing-integration states are preserved.
 
 ## Authoritative incoming validation
 
-- CI #132 passed on `ab2734265de1df94469634c8278fe98d81d4e1e6` with deterministic lock verification, frozen install, `pnpm check`, and `pnpm test` all successful.
-- CI #134 on `f02757cb255eb2241bec120281d21942f636ff95` verified the reviewed Next.js dependency snapshot and frozen install, then failed in `pnpm check` on strict typing defects isolated to `apps/web`; tests did not run after the type-check failure.
-- PR #1 remains the open draft development PR on `agent/bootstrap-platform`.
+- PR #1 is the open draft development PR on `agent/bootstrap-platform`.
+- Incoming head `ef28e781dd09dbe0115648ecd58d4e39b5bc81ef` is green via GitHub Actions CI #135, including deterministic lock verification, frozen install, `pnpm check`, `next build`, and the full tests.
 
-## 2026-08-19 — Local/mock product lifecycle vertical slice
-
-`AutomationProductLifecycleService` composes repositories, compiler, execution engine, scheduler port, occurrence coordinator, browser-profile state, and lock state into a credential-free local lifecycle. It requires explicit authorization/consent, validates capture ownership and profile identity, seeds graph initial/runtime variables into the first durable checkpoint, requires the latest fresh-tested workflow before publish, validates IANA timezones, and suppresses duplicate schedule delivery before browser effects execute.
-
-## 2026-08-19 — Control-plane service and HTTP boundary
-
-The lifecycle is exposed through provider-neutral service and HTTP contracts covering dashboard/list, automation detail/create, capture start, trusted trace ingestion, compile, fresh test, publish, and run history. Tenant/user ownership comes only from trusted authenticated context; request JSON cannot select ownership. Server-owned browser-profile references are excluded from UI DTOs. Unexpected errors are mapped to fixed sanitized responses. Capture remains an explicit port and returns `NOT_CONFIGURED` until AgentCore Live View is wired.
-
-## 2026-08-19 — Self-contained deterministic lock bootstrap
-
-`scripts/materialize-pnpm-lock.sh` removed the dependency on a retained historical Actions log. It runs pinned pnpm with lifecycle scripts disabled, regenerates the graph, checks the exact reviewed SHA-256, verifies the known compatible DynamoDB/util-DynamoDB peer resolution, and then CI performs a frozen install. Dependency changes intentionally fail this gate until the new graph hash is reviewed and committed.
-
-## 2026-08-19 — Next.js product dashboard and workflow UX
+## 2026-08-19 — AWS scheduling / dispatch + IaC
 
 ### Product slice
 
-Added `apps/web`, the first actual user-facing application. It uses the Next.js App Router and renders:
+Added a provider-neutral scheduled-dispatch transport contract and AWS-first adapters for the published automation path:
 
-- dashboard with automations, schedule, latest run, attention state, and explicit capability state;
-- create-automation form for name, website URL, objective, consent, and notification preferences;
-- automation detail screen with capture, compile, fresh-test, approve/publish, recurrence/timezone, and run-history flows;
-- explicit empty/`NOT_CONFIGURED` states instead of fabricated cloud data.
+EventBridge Scheduler -> SQS dispatch queue -> dispatcher -> Step Functions Standard -> scheduled-run worker.
 
-The web application speaks only to the existing control-plane HTTP contract. The bearer credential and control-plane base URL are read exclusively from server environment (`AUTOMATION_CONTROL_PLANE_URL`, `AUTOMATION_CONTROL_PLANE_BEARER_TOKEN`) and are never emitted into browser JavaScript or form fields. Non-local control-plane endpoints must use HTTPS.
+The existing `ScheduledRunCoordinator` remains authoritative for occurrence idempotency, immutable workflow selection, browser-profile preflight, automation execution locking, and run creation. The AWS transport does not duplicate those state machines.
 
-Mutation forms post only to same-origin Next route handlers. The handlers reject cross-origin/unknown-origin requests, generate automation IDs server-side, pass no tenant/user fields, and redirect using fixed notice codes so upstream/provider exception text cannot enter URLs. The capture command accepts a Live View destination only from the trusted control plane and requires HTTPS before redirecting the user.
+`ScheduledDispatchEnvelope` is a versioned, tenant-scoped payload containing only ownership identity, automation/schedule identity, the exact scheduled instant, and a delivery identifier. Transport parsing rejects malformed schema, ownership, automation identity, and timestamps before durable execution is started.
 
-### Correctness / security / tenancy / concurrency / cost review
+`AwsEventBridgeSchedulerAdapter` maps `SchedulerPort` registrations to tenant-scoped physical schedule names. It uses EventBridge Scheduler context substitution for `<aws.scheduler.scheduled-time>` and `<aws.scheduler.execution-id>`, preserves the original schedule kind for read-back, requires AWS-compatible `rate(...)` / `cron(...)` expressions, disables flexible delivery jitter, and configures bounded delivery retry metadata plus a DLQ through its AWS API boundary.
 
-- The UI cannot choose tenant/user ownership, browser-profile references, or provider credentials; those remain server/control-plane responsibilities.
-- No target-site password, cookie, API key, browser profile, or runtime secret is persisted by this web slice. Runtime-variable JSON is forwarded only to the fresh-test command and is not reflected back into the UI.
-- Existing control-plane publish/test gates, occurrence idempotency, execution locks, bounded retries, verification, and human recovery remain authoritative; the web proxy does not duplicate those state machines.
-- Form retries can still duplicate generic create/compile/test/publish HTTP commands under network uncertainty because durable request-idempotency keys are not yet part of the public API. Automation creation mitigates accidental collision with a server-generated UUID, but this is not claimed as generic command idempotency.
-- The web application adds no browser/model sessions and therefore no execution-plane cost. It adds ordinary Next.js server/render traffic only.
-- Capture/compile UX currently asks for the server-issued trace ID because the automation summary contract does not yet expose capture-completion metadata. AgentCore capture wiring should replace that manual bridge with a trusted durable capture-state pointer.
-- Cognito is not faked. Until authentication middleware is configured, the dashboard shows `NOT_CONFIGURED`; the current bearer-token environment contract is a server-side integration seam for the existing control-plane API.
+`AwsStepFunctionsScheduledExecutionStarter` derives the Step Functions execution name from tenant + user + automation + scheduled instant rather than the Scheduler delivery attempt. A redelivery of the same occurrence therefore resolves to `DUPLICATE` at the durable orchestration boundary instead of starting another state machine. This is an optimization/safety layer in addition to the existing occurrence uniqueness in `RunRepository`.
 
-### Dependencies / reproducibility
+`AwsSqsScheduledDispatchHandler` uses partial batch failure semantics. Successful queue messages are not retried merely because another message in the same Lambda batch fails. Error details are not returned in the batch response.
 
-- Added Next.js `16.2.12` and React/React DOM `19.2.7`, plus pinned TypeScript declaration packages. Next.js is part of the architecture target rather than an optional UI library.
-- The reviewed dependency snapshot is now pinned as SHA-256 `f7d32090ca67a995509dda97b513ec849f2a00cca8c88226f5431aa3c831412e`. CI #134 confirmed both deterministic lock verification and frozen installation on that graph before type checking began.
+### Infrastructure as code
+
+Added `infra/aws/scheduling-dispatch.yaml` with:
+
+- encrypted SQS dispatch queue and 14-day DLQ;
+- bounded redrive (`maxReceiveCount: 5`);
+- EventBridge Scheduler group and least-privilege target role permitted to write only the dispatch queue/DLQ;
+- Step Functions Standard state machine with a bounded Lambda infrastructure retry policy;
+- least-privilege dispatcher permissions for SQS receive/delete/visibility and `states:StartExecution` only on the scheduled-run state machine;
+- Lambda event-source mapping with `ReportBatchItemFailures` for queue backpressure and partial retry.
+
+The template intentionally accepts built dispatcher/worker Lambda ARNs instead of embedding source or credentials into CloudFormation. Cloud runtime assembly remains explicit and can return `NOT_CONFIGURED` until deployed.
+
+### Correctness / security / tenancy / concurrency / retry review
+
+- Physical scheduler names are SHA-256-derived from tenant, user, and logical schedule ID, preventing cross-tenant schedule collisions without exposing raw ownership in resource names.
+- The schedule payload contains no browser profile, cookies, credentials, runtime secret values, provider keys, DOM data, or prompt contents.
+- Scheduler target delivery is bounded and dead-lettered; SQS consumption is bounded by redrive; Step Functions retries only Lambda service/infrastructure errors with a finite retry count. Workflow action retries remain the execution engine's responsibility.
+- Queue backpressure is explicit: SQS decouples Scheduler invocation bursts from dispatcher/worker capacity.
+- Step Functions duplicate start detection is occurrence-based; the existing run occurrence key and automation lock remain the final authority before browser side effects.
+- Dispatcher batch responses contain only failed SQS message IDs, so provider/secret-bearing exception text cannot leak into the SQS response contract.
+- Cost is bounded by managed Scheduler invocations, SQS requests, one Standard state-machine execution per accepted occurrence, and the existing browser/model execution budgets. Duplicate Scheduler deliveries should be suppressed before another state-machine execution is created.
+- Observability can correlate schedule ID, delivery ID, Step Functions execution ARN and the existing run/occurrence identity without storing sensitive browser or credential data.
 
 ### Tests
 
-- Added web-client tests proving no network call/fake data when the control plane is unconfigured, server-only bearer forwarding, automation-ID path encoding, upstream-error sanitization, and rejection of insecure non-local control-plane URLs.
-- Added mutation-security tests proving same-origin enforcement and fixed redirect-notice codes.
-- Added view-model tests for draft/published/attention presentation, schedule formatting without guessed next-run times, and run-status tones.
-- `next build` is part of the workspace build, so the production App Router tree is also compiled during the root test command after dependency installation.
-
-### CI #134 root cause and corrective change
-
-The dependency gate behaved correctly: the reviewed lock materialized and the frozen install passed. `pnpm check` then exposed four strict web-package typing errors rather than a runtime or core-domain defect. `readWebControlPlaneConfig` constructed optional properties with explicit `undefined`, which violates `exactOptionalPropertyTypes`; it now omits absent environment fields. Test fetch mocks were inferred as zero-argument functions, which made their constructor use and `mock.calls` argument destructuring incompatible with the declared `FetchLike` contract; the mocks are now typed against `FetchLike` directly. No production behavior, security check, or CI gate was weakened.
+Added tests for canonical dispatch parsing, validation-before-start, tenant-scoped scheduler names, Scheduler context attributes, schedule round-trip, bounded retry/DLQ configuration, update-vs-create behavior, rejection of unsupported AWS expressions, occurrence-based Step Functions deduplication across delivery attempts, and SQS partial-batch failures.
 
 ### Validation status
 
-- Incoming stable pre-web head `ab2734265de1df94469634c8278fe98d81d4e1e6` is green via CI #132.
-- CI #134 on `f02757cb255eb2241bec120281d21942f636ff95` verified the Next.js dependency graph/frozen install and failed only at the web TypeScript defects described above.
-- The corrective head from this entry must not be considered green until GitHub Actions completes successfully on that exact SHA; `pnpm test`/`next build` were not reached by CI #134.
+- Incoming head is green via CI #135.
+- The scheduling/dispatch head from this entry must not be called green until GitHub Actions completes successfully on that exact SHA. No local validation claim is made.
 
 ## Next product milestones
 
-1. Obtain exact-head green CI for the Next.js slice; if CI exposes another real defect, fix only that defect within the single allowed corrective budget before adding scope.
-2. Add AWS scheduling/dispatch adapters and IaC (EventBridge Scheduler + SQS + durable orchestration or a justified equivalent), preserving occurrence idempotency, automation locking, queue backpressure, timezones, bounded retry behavior, and explicit `NOT_CONFIGURED` deployment states.
-3. Wire AgentCore Live View/capture and real browser-profile restore/save behind `CaptureSessionStarter` and existing browser/profile ports; persist capture-completion metadata so users never manually enter trace IDs.
-4. Replace the temporary server bearer integration seam with Cognito authentication/API authorization, then implement BYOK credential-pool routing through the secure secret boundary.
-5. Add SES/observability and one controlled end-to-end human-recovery demonstration.
+1. Obtain exact-head green CI for AWS scheduling/dispatch + IaC. Fix only a concrete CI defect if one appears; do not weaken checks.
+2. Wire real AWS SDK Scheduler/Step Functions client implementations and deployment composition around the new API boundaries if not already provided by the runtime package, keeping missing configuration explicit.
+3. Wire AgentCore Live View/capture and real browser-profile restore/save behind `CaptureSessionStarter` and existing profile/session ports; persist trusted capture-completion metadata so users never manually enter trace IDs.
+4. Replace the temporary server bearer integration seam with Cognito authentication/API authorization.
+5. Implement BYOK credential-pool routing through the secure secret boundary; provider keys must remain outside ordinary application tables/logs.
+6. Add SES notifications/CloudWatch observability and one controlled end-to-end human-recovery demonstration.
 
 ## Known parked limitations
 
-- Recovery continuation consumption stays parked until the cloud worker needs it; do not spend product cycles on narrower recovery edge cases first.
-- Sensitive runtime values require the later secret-resolution contract; do not place provider keys, passwords, cookies, or equivalent secrets in ordinary workflow/runtime-variable metadata.
-- Workflow publication is represented by the automation's immutable `publishedWorkflowVersion` pointer; the persisted tested graph is not rewritten merely to add publication metadata.
-- The local/mock scheduled path does not restore/save a real browser profile or create cloud browser compute; those semantics remain in the production worker/AWS adapter path.
-- Public HTTP command idempotency, Cognito token verification, rate limiting, and capture callback authentication remain required production control-plane work.
+- Recovery continuation consumption remains parked until the cloud worker requires it; product work takes precedence over narrower recovery micro-edge cases.
+- Sensitive runtime values still require the later secret-resolution contract; never place provider keys, passwords, cookies, or equivalent secrets in workflow/runtime-variable metadata.
+- The local/mock path does not create real cloud browser compute.
+- Public HTTP command idempotency, Cognito verification, rate limiting, and capture callback authentication remain required control-plane work.
+- The AWS scheduler and Step Functions adapters currently depend on narrow injected AWS API interfaces to avoid changing the reviewed dependency graph in this slice. Concrete SDK composition remains a small follow-up, not a reason to fake cloud readiness.

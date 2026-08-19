@@ -47,6 +47,7 @@ export interface VerificationEngine { verify(context: VerificationContext): Prom
 export * from "./control-plane.js";
 export * from "./control-plane-http.js";
 export * from "./coordinator.js";
+export * from "./dispatch.js";
 export * from "./errors.js";
 export * from "./execution.js";
 export * from "./human-resolution.js";
