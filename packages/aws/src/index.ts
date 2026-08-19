@@ -7,6 +7,7 @@ export * from "./human-resolution.js";
 export * from "./human-resume-audit.js";
 export * from "./human-resume-effect.js";
 export * from "./human-resume-lease.js";
+export * from "./human-resume-reconciliation-verifier.js";
 export * from "./identity-vault.js";
 export * from "./playwright-runtime.js";
 export * from "./reasoning.js";

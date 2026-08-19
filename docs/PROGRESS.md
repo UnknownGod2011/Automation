@@ -117,3 +117,75 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 4. Add redacted audit milestones for effect preparation, inspection outcome, reconciliation decision, and human-attention fallback.
 5. Deliberately align AWS SDK peer versions and rerun the full workspace suite.
 6. Continue outward through capture -> compile -> test -> publish -> schedule once crash recovery is fully reconciled end to end.
+
+## 2026-08-19 — AWS observation-only Playwright reconciliation adapter
+
+### Completed in this slice
+
+- Added `AgentCorePlaywrightHumanResumeEffectVerifier`, the first production AWS/Playwright implementation of `HumanResumeEffectVerifier`.
+- The adapter accepts only a deliberately narrowed observation surface (`url`, `title`, text visibility, DOM visibility). Its type does not expose navigation, click, fill/type, keyboard, script evaluation, upload/download, or semantic action methods.
+- DOM, TEXT, and URL positive observations return `ALREADY_APPLIED`.
+- Negative observations return `AMBIGUOUS`; the adapter deliberately never converts an ordinary failed positive verification into `DEFINITELY_NOT_APPLIED` because the current `VerificationSpec` schema has no explicit proof-of-absence contract.
+- MODEL and CUSTOM reconciliation remain `NOT_CONFIGURED` until a separate observation-only adapter exists.
+- Missing `expected` values for DOM/TEXT/URL fail explicitly instead of being interpreted as an empty match.
+- Added scoped, metadata-only reconciliation evidence with a stable run/effect/state-derived key. The evidence includes only node kind, verification mode, decision, state fingerprint, and page origin; it does not persist the expected text/selector, DOM payload, cookies, credentials, raw exception text, or screenshots.
+- Exported the adapter through `@automation/aws`.
+- Added regression tests covering positive URL/TEXT/DOM observations, conservative negative observations, zero browser-action dispatch, tenant-scoped metadata evidence, absence of expected text in evidence, unsupported/malformed verification contracts, observation uncertainty, and evidence-storage failure.
+- No dependency or third-party source was added. Existing architecture and quality-gate guarantees already required this observation-only behavior, so those documents did not require semantic changes in this slice.
+
+### Invariants and failure-mode review
+
+- Observation cannot authorize execution. This adapter can return only classification data and evidence references; it has no browser-action capability in its public/narrow runtime surface.
+- `ALREADY_APPLIED` requires a positive observation of the workflow's existing verification contract.
+- `DEFINITELY_NOT_APPLIED` remains unavailable from these positive-only verification contracts. Negative state is `AMBIGUOUS`, preserving fail-closed recovery.
+- Browser timeout/closed-session uncertainty is classified as retryable `TRANSIENT_NETWORK`; other unexpected observation failures are non-retryable `UNKNOWN`. Neither path returns a reconciliation decision.
+- Evidence persistence failure is non-retryable `UNKNOWN` and prevents a decision from being returned to the coordinator, preserving the rule that reconciliation evidence and decision handling are not silently decoupled.
+- MODEL/CUSTOM are rejected with `NOT_CONFIGURED`; no model fallback is invoked implicitly.
+
+### Concurrency / idempotency / persistence review
+
+- The adapter itself is read-only with respect to the target site. Concurrent inspection may duplicate browser reads and metadata writes but cannot duplicate the external workflow action.
+- Durable decision authority remains in `HumanResumeEffectReconciliationStore`; this adapter does not bypass or replace its conditional first-writer-wins semantics.
+- Evidence keys include stable run, effect, and page-state digests. Repeated inspection of the same effect in the same observed state is naturally idempotent at the evidence-key level, while a changed observed page state produces a different evidence object.
+- No additional lock or lease was introduced; current duplicate-inspection cost remains accepted until it becomes operationally material.
+
+### Security / tenancy review
+
+- Artifact writes use `context.scope` from the already tenant/user-scoped reconciliation identity.
+- Evidence paths hash scoped run/effect identity rather than embedding raw tenant/user/run/effect identifiers in object keys.
+- Reconciliation evidence intentionally excludes screenshots because a paused browser may contain user-entered secrets or private page content.
+- The positive expected value is used only in-memory for inspection and is not written into metadata evidence.
+- Classified errors surface fixed messages; underlying provider/storage error text remains only as an internal cause and is not placed into reconciliation records or evidence.
+
+### Timeout, retry, cost, scaling, and user recovery review
+
+- DOM/TEXT visibility checks are bounded by the workflow verification timeout. URL observation is immediate.
+- The adapter adds one metadata artifact write per performed inspection; it adds no model call and no action-capable browser operation.
+- Duplicate concurrent inspection can still add browser/S3 cost, but target-site effect cost remains zero.
+- A positive observation enables the existing future `ALREADY_APPLIED` path; a negative observation keeps the user in a recoverable ambiguous state rather than risking a duplicate action.
+- This slice does not enable automatic lease reacquisition, successor replay, or checkpoint advancement.
+
+### Validation status for this slice
+
+- The incoming PR head `f22d0e1402d5ba3659d6ad3c2362e70c5f3e768f` is confirmed green in GitHub Actions CI #118 before this change.
+- Local clone/install/check/test remains unavailable because the execution container cannot resolve `github.com`; no local validation is claimed.
+- Code, tests, export, and this progress entry are published together in one Git-data commit. GitHub Actions on the exact resulting commit is authoritative; if it fails, inspect job logs before any corrective change.
+
+### Known risks / unresolved questions
+
+- Because `VerificationSpec` currently describes only positive expected state, this adapter cannot safely produce `DEFINITELY_NOT_APPLIED`. A future explicit absence/idempotency proof contract is required before negative observation may grant retry permission.
+- The worker still does not instantiate this verifier during expired-lease crash recovery; production recovery remains intentionally disabled.
+- `ALREADY_APPLIED` still needs durable checkpoint/output reconstruction before the successor can be skipped safely.
+- `AMBIGUOUS` still needs explicit worker transition/audit/UI wiring back to human attention.
+- Stable effect-ID derivation is still not wired to the first resumed successor at runtime.
+- Effect preparation/reconciliation audit events remain incomplete.
+- AWS SDK peer-version alignment remains queued.
+- Live AgentCore/S3 behavior is not credential-validated; deterministic tests and CI remain the current evidence.
+
+### Next highest-value tasks
+
+1. Wire the AWS human-resume recovery worker to instantiate this observation-only verifier after safe same-resolution lease reacquisition and consume the durable reconciliation decision without action replay.
+2. Define and test post-effect checkpoint/output reconstruction for `ALREADY_APPLIED` before allowing control-flow advancement without executing the successor.
+3. Add an explicit proof-of-absence/idempotency contract for cases that can safely produce `DEFINITELY_NOT_APPLIED`; keep unsupported cases `AMBIGUOUS`.
+4. Add redacted audit milestones for effect preparation, inspection outcome, decision persistence, and human-attention fallback.
+5. Deliberately align AWS SDK peer versions and rerun the full workspace suite.
