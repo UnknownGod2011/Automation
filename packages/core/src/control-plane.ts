@@ -6,6 +6,7 @@ import type {
   RunRecord,
   WorkflowGraph,
 } from "@automation/contracts";
+import type { CaptureSessionRecord } from "./capture-completion.js";
 import type { AutomationRepository, OwnershipScope, RunRepository } from "./index.js";
 import type {
   AutomationProductLifecycleService,
@@ -28,6 +29,11 @@ export interface ControlPlaneCapabilities {
   notifications: ControlPlaneCapabilityState;
 }
 
+export interface LatestCompletedCaptureView {
+  traceId: string;
+  completedAt: string;
+}
+
 export interface AutomationSummaryView {
   automationId: string;
   name: string;
@@ -40,6 +46,7 @@ export interface AutomationSummaryView {
   notifyOnFailure: boolean;
   createdAt: string;
   updatedAt: string;
+  latestCompletedCapture?: LatestCompletedCaptureView;
   lastRun?: RunSummaryView;
   needsAttention: boolean;
 }
@@ -99,6 +106,13 @@ export interface CaptureSessionStarter {
   start(scope: OwnershipScope, automation: AutomationRecord): Promise<CaptureStartResult>;
 }
 
+export interface CaptureCompletionReader {
+  latestCompletedForAutomation(
+    scope: OwnershipScope,
+    automationId: string,
+  ): Promise<CaptureSessionRecord | null>;
+}
+
 export interface AutomationLifecyclePort {
   createDraft(request: Parameters<AutomationProductLifecycleService["createDraft"]>[0]): ReturnType<AutomationProductLifecycleService["createDraft"]>;
   persistCapture(request: Parameters<AutomationProductLifecycleService["persistCapture"]>[0]): ReturnType<AutomationProductLifecycleService["persistCapture"]>;
@@ -113,6 +127,7 @@ export interface AutomationControlPlaneDependencies {
   runs: RunRepository;
   lifecycle: AutomationLifecyclePort;
   captureSessions: CaptureSessionStarter;
+  captureState: CaptureCompletionReader;
   capabilities: ControlPlaneCapabilities;
 }
 
@@ -153,8 +168,21 @@ function toRunSummary(run: RunRecord): RunSummaryView {
   };
 }
 
-function toAutomationSummary(record: AutomationRecord, runs: readonly RunRecord[]): AutomationSummaryView {
+function toLatestCompletedCapture(record: CaptureSessionRecord | null): LatestCompletedCaptureView | undefined {
+  if (!record) return undefined;
+  if (record.status !== "COMPLETED" || !record.traceId || !record.completedAt) {
+    throw new ControlPlaneError("CONFLICT", "capture completion state is invalid");
+  }
+  return { traceId: record.traceId, completedAt: record.completedAt };
+}
+
+function toAutomationSummary(
+  record: AutomationRecord,
+  runs: readonly RunRecord[],
+  latestCapture: CaptureSessionRecord | null = null,
+): AutomationSummaryView {
   const lastRun = [...runs].sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt))[0];
+  const latestCompletedCapture = toLatestCompletedCapture(latestCapture);
   return {
     automationId: record.automationId,
     name: record.name,
@@ -169,6 +197,7 @@ function toAutomationSummary(record: AutomationRecord, runs: readonly RunRecord[
     notifyOnFailure: record.notifyOnFailure,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    ...(latestCompletedCapture ? { latestCompletedCapture } : {}),
     ...(lastRun ? { lastRun: toRunSummary(lastRun) } : {}),
     needsAttention:
       attentionStatuses.has(record.status) || lastRun?.status === "WAITING_FOR_HUMAN",
@@ -181,12 +210,13 @@ export class AutomationControlPlaneService {
   async dashboard(scope: OwnershipScope): Promise<DashboardView> {
     const automations = await this.dependencies.automations.list(scope);
     const summaries = await Promise.all(
-      automations.map(async (automation) =>
-        toAutomationSummary(
-          automation,
-          await this.dependencies.runs.listForAutomation(scope, automation.automationId),
-        ),
-      ),
+      automations.map(async (automation) => {
+        const [runs, latestCapture] = await Promise.all([
+          this.dependencies.runs.listForAutomation(scope, automation.automationId),
+          this.dependencies.captureState.latestCompletedForAutomation(scope, automation.automationId),
+        ]);
+        return toAutomationSummary(automation, runs, latestCapture);
+      }),
     );
     return {
       capabilities: structuredClone(this.dependencies.capabilities),
@@ -198,8 +228,11 @@ export class AutomationControlPlaneService {
     const id = requireToken(automationId, "automationId");
     const automation = await this.dependencies.automations.get(scope, id);
     if (!automation) throw new ControlPlaneError("NOT_FOUND", "automation not found");
-    const runs = await this.dependencies.runs.listForAutomation(scope, id);
-    return toAutomationSummary(automation, runs);
+    const [runs, latestCapture] = await Promise.all([
+      this.dependencies.runs.listForAutomation(scope, id),
+      this.dependencies.captureState.latestCompletedForAutomation(scope, id),
+    ]);
+    return toAutomationSummary(automation, runs, latestCapture);
   }
 
   async createAutomation(scope: OwnershipScope, command: CreateAutomationCommand): Promise<AutomationSummaryView> {
@@ -289,8 +322,11 @@ export class AutomationControlPlaneService {
         workflowVersion: command.workflowVersion,
         schedule: structuredClone(command.schedule),
       });
-      const runs = await this.dependencies.runs.listForAutomation(scope, published.automationId);
-      return toAutomationSummary(published, runs);
+      const [runs, latestCapture] = await Promise.all([
+        this.dependencies.runs.listForAutomation(scope, published.automationId),
+        this.dependencies.captureState.latestCompletedForAutomation(scope, published.automationId),
+      ]);
+      return toAutomationSummary(published, runs, latestCapture);
     } catch {
       throw new ControlPlaneError("CONFLICT", "automation is not ready to publish with this schedule");
     }

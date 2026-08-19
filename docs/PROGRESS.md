@@ -24,7 +24,7 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 ## Authoritative incoming validation
 
 - PR #1 is the open draft development PR on `agent/bootstrap-platform`.
-- Incoming head `93617e96e83de109a1cb1f3e8e1cced4038cd100` is green via GitHub Actions CI #141.
+- Incoming head `786b4b5f1fd1a76d358ad1fe8ab2a1ba7882a35f` is red via GitHub Actions CI #143 only because one new capture-completion test incorrectly expected the lost trace-write acknowledgement path to reject. Deterministic lock verification, frozen installation, `pnpm check`, and the full Next.js production build all passed before the single core-test assertion failure.
 
 ## 2026-08-19 — AWS scheduling / dispatch + IaC
 
@@ -136,24 +136,49 @@ This specifically handles a worker losing acknowledgement after trace persistenc
 
 ### Tests
 
-Added regression coverage for the precise crash window: trace storage succeeds, acknowledgement is lost, the session remains STARTED, and the exact callback retry completes safely. A negative test proves same-ID/different-content persistence is rejected and leaves the capture session STARTED.
+Added regression coverage for the precise crash window: trace storage succeeds, acknowledgement is lost, and the same invocation reads back the exact scoped trace and completes safely. A negative test proves same-ID/different-content persistence is rejected and leaves the capture session STARTED.
 
 ### Validation status
 
-- This commit must be validated by GitHub Actions on its exact head before it is called green.
+- CI #143 proved the implementation path itself completed successfully but exposed one stale test assertion that still expected a rejection. This run corrects that assertion without changing the production replay behavior.
+
+## 2026-08-20 — Capture-ready control-plane and compile UX
+
+### Product slice
+
+The sanitized automation summary now includes only the latest completed capture's `{traceId, completedAt}`. The control plane reads that state through a provider-neutral capture-completion reader scoped by the authenticated tenant/user and never returns the durable browser-session ID or Browser Profile reference.
+
+The Next.js automation detail page now treats capture completion as product state: before a trusted completed capture exists it tells the user to finish capture; once completion is durable it renders a ready-to-compile state and submits the server-issued trace ID automatically. The user no longer has to copy or type a Trace ID between Live View capture and compile.
+
+### Correctness / security / tenancy / cost review
+
+- Latest-capture lookup always uses the same trusted ownership scope as the automation lookup.
+- Only trace identity and completion time cross the summary boundary; browser-session and Browser Profile identifiers remain server-side.
+- Malformed durable completion records fail closed instead of being shown as compile-ready.
+- This adds one capture-state read per automation summary. Dashboard reads are parallelized; at current MVP scale the cost is bounded, while a future denormalized readiness projection can remove the fan-out if dashboard cardinality grows.
+- Compile still flows through the existing tenant-scoped lifecycle compiler, so a client-tampered trace ID cannot compile another tenant's capture.
+
+### Tests
+
+- Corrected the CI #143 capture replay assertion to require successful same-invocation reconciliation.
+- Added control-plane coverage proving safe latest-capture exposure and explicit suppression of browser-session/Profile identifiers.
+- Next.js strict type/build validation remains part of the repository-wide CI gate for the new compile-ready rendering path.
+
+### Validation status
+
+- This batched product commit must be validated by GitHub Actions on its exact PR head before it is called green.
 
 ## Next product milestones
 
-1. Surface `latestCompletedForAutomation().traceId` through the sanitized control-plane automation summary and remove the manual Trace ID field from the Next.js compile step.
-2. Wire concrete AWS SDK Scheduler/Step Functions composition around the already-tested narrow scheduling APIs, keeping missing deployment configuration explicit.
-3. Replace the temporary server bearer integration seam with Cognito authentication/API authorization.
-4. Implement BYOK credential-pool routing through the secure secret boundary; provider keys must remain outside ordinary application tables/logs.
-5. Add SES notifications/CloudWatch observability and one controlled end-to-end human-recovery demonstration.
+1. Wire concrete AWS SDK Scheduler/Step Functions composition around the already-tested narrow scheduling APIs, keeping missing deployment configuration explicit.
+2. Replace the temporary server bearer integration seam with Cognito authentication/API authorization.
+3. Implement BYOK credential-pool routing through the secure secret boundary; provider keys must remain outside ordinary application tables/logs.
+4. Add SES notifications/CloudWatch observability and one controlled end-to-end human-recovery demonstration.
 
 ## Known parked limitations
 
 - Recovery continuation consumption remains parked until the cloud worker requires it; product work takes precedence over narrower recovery micro-edge cases.
 - Sensitive runtime values still require the later secret-resolution contract; never place provider keys, passwords, cookies, or equivalent secrets in workflow/runtime-variable metadata.
-- Capture completion is durable and trusted, and exact trace-persistence replay is now defined, but the user-facing summary still does not surface the latest completed trace ID automatically. The compile form therefore remains manual for one more slice.
 - Public HTTP command idempotency, Cognito verification, rate limiting, and production capture-worker authentication middleware remain required control-plane work.
 - The AWS scheduler and Step Functions adapters currently depend on narrow injected AWS API interfaces. Concrete SDK composition remains a small follow-up.
+- Dashboard latest-capture lookup currently performs one extra durable read per automation; optimize with a denormalized capture-readiness projection only if observed scale/cost justifies it.
