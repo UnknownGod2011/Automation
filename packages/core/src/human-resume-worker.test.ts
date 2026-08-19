@@ -285,7 +285,7 @@ describe("HumanResumeWorker", () => {
       now: "2026-08-19T00:02:00.000Z",
     });
 
-    await expect(worker.execute(request)).rejects.toThrow("lease expired or ownership was lost");
+    await expect(worker.execute(request)).rejects.toThrow("heartbeat lost ownership");
     expect(sessions.started).toHaveLength(0);
     expect(runtimeFactory.createCalls).toBe(0);
   });
