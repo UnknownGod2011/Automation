@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { WebControlPlaneClient } from "./control-plane-client.js";
+import { WebControlPlaneClient, type FetchLike } from "./control-plane-client.js";
 
 describe("WebControlPlaneClient", () => {
   it("returns an explicit NOT_CONFIGURED dashboard without making a network request", async () => {
-    const fetchImpl = vi.fn();
+    const fetchImpl = vi.fn<FetchLike>();
     const client = new WebControlPlaneClient({}, fetchImpl);
 
     const dashboard = await client.dashboard();
@@ -20,7 +20,7 @@ describe("WebControlPlaneClient", () => {
   });
 
   it("keeps the bearer token server-side and encodes automation ids", async () => {
-    const fetchImpl = vi.fn(async () =>
+    const fetchImpl = vi.fn<FetchLike>(async () =>
       new Response(JSON.stringify({ runs: [] }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -40,7 +40,7 @@ describe("WebControlPlaneClient", () => {
   });
 
   it("does not surface remote error bodies", async () => {
-    const fetchImpl = vi.fn(async () =>
+    const fetchImpl = vi.fn<FetchLike>(async () =>
       new Response(JSON.stringify({ error: { message: "provider secret: abc123" } }), { status: 500 }),
     );
     const client = new WebControlPlaneClient(

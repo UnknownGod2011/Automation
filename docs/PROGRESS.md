@@ -22,6 +22,7 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 ## Authoritative incoming validation
 
 - CI #132 passed on `ab2734265de1df94469634c8278fe98d81d4e1e6` with deterministic lock verification, frozen install, `pnpm check`, and `pnpm test` all successful.
+- CI #134 on `f02757cb255eb2241bec120281d21942f636ff95` verified the reviewed Next.js dependency snapshot and frozen install, then failed in `pnpm check` on strict typing defects isolated to `apps/web`; tests did not run after the type-check failure.
 - PR #1 remains the open draft development PR on `agent/bootstrap-platform`.
 
 ## 2026-08-19 — Local/mock product lifecycle vertical slice
@@ -64,7 +65,7 @@ Mutation forms post only to same-origin Next route handlers. The handlers reject
 ### Dependencies / reproducibility
 
 - Added Next.js `16.2.12` and React/React DOM `19.2.7`, plus pinned TypeScript declaration packages. Next.js is part of the architecture target rather than an optional UI library.
-- The incoming lock hash remains intentionally unchanged in the first product commit. CI is expected to stop at the lock-drift gate and print the newly generated SHA-256. That failure is the dependency-review mechanism, not permission to bypass the gate. One corrective commit may update only the reviewed lock hash (and any real code/type defect proven by CI logs), after which the exact corrective head must pass the full frozen install, `pnpm check`, and `pnpm test` suite before this slice is called green.
+- The reviewed dependency snapshot is now pinned as SHA-256 `f7d32090ca67a995509dda97b513ec849f2a00cca8c88226f5431aa3c831412e`. CI #134 confirmed both deterministic lock verification and frozen installation on that graph before type checking began.
 
 ### Tests
 
@@ -73,14 +74,19 @@ Mutation forms post only to same-origin Next route handlers. The handlers reject
 - Added view-model tests for draft/published/attention presentation, schedule formatting without guessed next-run times, and run-status tones.
 - `next build` is part of the workspace build, so the production App Router tree is also compiled during the root test command after dependency installation.
 
+### CI #134 root cause and corrective change
+
+The dependency gate behaved correctly: the reviewed lock materialized and the frozen install passed. `pnpm check` then exposed four strict web-package typing errors rather than a runtime or core-domain defect. `readWebControlPlaneConfig` constructed optional properties with explicit `undefined`, which violates `exactOptionalPropertyTypes`; it now omits absent environment fields. Test fetch mocks were inferred as zero-argument functions, which made their constructor use and `mock.calls` argument destructuring incompatible with the declared `FetchLike` contract; the mocks are now typed against `FetchLike` directly. No production behavior, security check, or CI gate was weakened.
+
 ### Validation status
 
-- Incoming head `ab2734265de1df94469634c8278fe98d81d4e1e6` is green via CI #132.
-- This Next.js slice is not considered validated until GitHub Actions completes on the exact new head. The first run is expected to fail closed at the reviewed lock-hash gate because the dependency graph changed; its reported actual hash must be inspected before the single corrective commit.
+- Incoming stable pre-web head `ab2734265de1df94469634c8278fe98d81d4e1e6` is green via CI #132.
+- CI #134 on `f02757cb255eb2241bec120281d21942f636ff95` verified the Next.js dependency graph/frozen install and failed only at the web TypeScript defects described above.
+- The corrective head from this entry must not be considered green until GitHub Actions completes successfully on that exact SHA; `pnpm test`/`next build` were not reached by CI #134.
 
 ## Next product milestones
 
-1. Finish exact-head CI validation of the Next.js slice by reviewing the dependency snapshot produced by the lock gate; do not weaken the gate.
+1. Obtain exact-head green CI for the Next.js slice; if CI exposes another real defect, fix only that defect within the single allowed corrective budget before adding scope.
 2. Add AWS scheduling/dispatch adapters and IaC (EventBridge Scheduler + SQS + durable orchestration or a justified equivalent), preserving occurrence idempotency, automation locking, queue backpressure, timezones, bounded retry behavior, and explicit `NOT_CONFIGURED` deployment states.
 3. Wire AgentCore Live View/capture and real browser-profile restore/save behind `CaptureSessionStarter` and existing browser/profile ports; persist capture-completion metadata so users never manually enter trace IDs.
 4. Replace the temporary server bearer integration seam with Cognito authentication/API authorization, then implement BYOK credential-pool routing through the secure secret boundary.
