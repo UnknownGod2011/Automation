@@ -10,92 +10,64 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 
 ## Completed foundation
 
-- Strict pnpm/TypeScript monorepo with versioned workflow/run/failure contracts, bounded retries, checkpointing, verification, occurrence idempotency, and tenant ownership.
+- Strict TypeScript/pnpm monorepo with versioned workflow/run/failure contracts, bounded retries, checkpointing, verification, occurrence idempotency, and tenant ownership.
 - Provider-neutral execution engine plus AWS DynamoDB/S3/AgentCore/Playwright adapters behind explicit ports.
 - Explicit `HUMAN` pause -> repair -> resume lifecycle with immutable workflow-version pinning and no guessed human branching.
 - Atomic human-resolution claims, durable execution leases, heartbeat fencing, redacted audit history, and AWS conditional persistence.
 - Durable first-successor effect reconciliation with stable effect identity and immutable `ALREADY_APPLIED` / `DEFINITELY_NOT_APPLIED` / `AMBIGUOUS` authority.
-- Provider-neutral read-only reconciliation coordinator plus AWS observation-only Playwright verifier. Positive expected-state evidence can establish `ALREADY_APPLIED`; current positive-only verification contracts cannot establish `DEFINITELY_NOT_APPLIED`.
+- Provider-neutral read-only reconciliation coordinator plus AWS observation-only Playwright verifier.
 - Pure `planAlreadyAppliedHumanResumeRecovery` checkpoint reconstruction without replaying the external action.
-- Lease-owned atomic `ALREADY_APPLIED` recovery transition for run + checkpoint.
+- Lease-owned atomic `ALREADY_APPLIED` recovery transition for run + checkpoint + a create-only durable continuation handoff.
 - Crash-recovery admission for replayed same-resolution human commands and a heartbeat-fenced observation-only recovery worker.
 
 ## Recent authoritative validation
 
-- CI #119 passed on `11be1b0804a70174fa0279233b359de9ad21ac9d` with the AWS observation-only reconciliation verifier.
-- CI #120 passed on `47b7d4805d6a10c7f405bab73d386d94bc14b15b` with provider-neutral `ALREADY_APPLIED` checkpoint reconstruction.
-- CI #121 passed on `72e8168dbb42551954c6dd8ea7ccfe30b908d593` with the lease-owned atomic recovery transition.
-- CI #122 failed one new test assertion; log inspection showed production behavior correctly failed closed. The test-only correction passed CI #123 on `0352ad8c27570a0f2930807c12aaf0fa24c1edeb`.
+- CI #123 passed on `0352ad8c27570a0f2930807c12aaf0fa24c1edeb` after correcting one stale test expectation without weakening production behavior.
 - CI #124 passed on `2b3ca598355efd61b43832492c727f7125c19f3d` with replay crash-recovery admission.
 - CI #125 passed on `6b0df3506d84bb1c5623c2c45cd0d3f084405b1e` with heartbeat-fenced observation-only crash reconciliation.
-- No local install/check/test pass is claimed; GitHub Actions on the exact published head remains authoritative.
+- CI #126 passed on `eaa3b1b15883eb45d7af28a71fe11eecf5753201` with the atomic continuation handoff.
+- The execution container cannot resolve GitHub/npm directly, so no local install/check/test pass is claimed. GitHub Actions on the exact published head remains authoritative.
 
-## 2026-08-19 — Make reconstructed advancement crash-safe with an atomic continuation record
+## 2026-08-19 — Build reproducibility and dependency hygiene
 
-### Completed in this slice
+### Why this slice is first
 
-- Tightened `HumanResumeAlreadyAppliedTransitionStore`: a successful `ALREADY_APPLIED` recovery commit now requires one durable `HumanResumeRecoveryContinuation` to be persisted atomically with the reconstructed `RUNNING` run and checkpoint.
-- The continuation is provider-neutral and contains only bounded ownership/control-flow identity: tenant, user, run, automation, immutable workflow version, paused HUMAN node, resolution/effect IDs, reconstructed next node, `PENDING` state, and creation time.
-- Added `buildAlreadyAppliedRecoveryContinuation(...)` so every adapter derives the handoff from the same validated recovery boundary rather than inventing provider-specific continuation payloads.
-- Added timestamp validation preventing the transition commit from preceding the reconstructed checkpoint timestamp.
-- AWS DynamoDB recovery transition now writes four transactional components under the same live-lease condition: lease condition check, run replacement, checkpoint replacement, and a create-only continuation/outbox record.
-- Duplicate classification now performs strongly consistent reads of run, checkpoint, and continuation and returns `REPLAY` only if all three carry the same transition identity and exact expected state. Missing, corrupted, or competing continuation state returns `CONFLICT`.
-- Added regression coverage for atomic continuation persistence, exact three-record replay, competing continuation conflict, tenant isolation, lease loss, timestamp ordering, and propagation of DynamoDB transport/non-conditional uncertainty.
-- No dependency, third-party source, AWS/GCP type in core, secret, browser content, raw exception, or lease owner token was added to the continuation payload.
+The recovery subsystem now has a durable crash-safe continuation handoff. Per product priority, further continuation-consumer hardening is deferred until an end-to-end vertical slice actually needs it. The next blocking foundation issue is reproducibility: CI currently resolves dependencies without a checked-in lockfile, and CI #126 showed a concrete AWS SDK peer mismatch.
 
-### Invariants / failure semantics
+### Changes in this slice
 
-- Reconstructed advancement must never durably leave a run `RUNNING` without also leaving a durable fact that continuation work is pending.
-- The continuation is a handoff record, not external-action authority. It cannot authorize replay of the reconciled successor and does not weaken the rule that `DEFINITELY_NOT_APPLIED` requires a future explicit proof-of-absence/idempotency contract.
-- The continuation is created only while the exact same-resolution recovery lease is live and only in the same transaction that advances run/checkpoint.
-- A second continuation for the same run/HUMAN boundary cannot overwrite the first. Contention is classified only after strongly consistent reads.
-- DynamoDB throttling, transport uncertainty, permissions failures, or non-conditional transaction cancellation propagate. They are never guessed to mean APPLIED/REPLAY/CONFLICT.
+- Pin root `typescript` and `vitest` versions to the exact versions already resolved by the last authoritative green CI instead of caret ranges.
+- Align direct DynamoDB client compatibility by moving `@aws-sdk/client-dynamodb` to `3.1111.0`, satisfying the peer requirement emitted by the currently resolved `@aws-sdk/util-dynamodb` dependency instead of suppressing the warning.
+- Replace the permissive CI install with a lockfile bootstrap gate: pnpm 10.15.0 resolves `pnpm-lock.yaml`, prints it into the job log without uploading an Actions artifact, and fails if the resulting lockfile is missing or differs from the checked-in repository state.
+- Once that gate produces the authoritative lockfile, the single allowed corrective commit for this run will check in that exact file and switch CI to `pnpm install --frozen-lockfile`.
 
-### Concurrency / idempotency / scaling review
+### Security / tenancy / side effects
 
-- The existing execution lease remains the single-owner gate. The new record adds no competing ownership primitive.
-- The transaction adds one DynamoDB write item to this rare crash-recovery path. Normal healthy execution cost is unchanged.
-- Replay classification adds one strongly consistent read only after a conditional transaction loses; normal successful recovery performs no follow-up read.
-- The continuation key is scoped by tenant/user partition plus run/HUMAN boundary, so concurrent tenants and unrelated runs remain isolated.
+- This slice changes dependency resolution and CI only. It does not change browser execution authority, tenant scoping, credential storage, retry semantics, schedules, external side effects, or user recovery behavior.
+- No new package, secret, artifact upload, or runtime permission is introduced.
+- Printing `pnpm-lock.yaml` in the temporary bootstrap CI log exposes package metadata only; it contains no repository or user secrets.
 
-### Security / tenant isolation / observability
+### Cost / observability / operations
 
-- Continuation records contain no cookies, profile data, DOM/text evidence, API keys, raw provider errors, model prompts, or worker owner tokens.
-- Tenant/user ownership is derived from the already-validated recovery boundary and persisted with immutable run/workflow identity.
-- This slice does not yet emit a new user-visible event; the record is execution-plane persistence authority for the next dispatcher/consumer slice.
+- No new Actions artifacts are produced, avoiding additional Actions artifact-storage pressure.
+- Frozen installs should reduce nondeterministic dependency drift and make future CI failures attributable to source changes rather than unrecorded registry resolution.
+- The lockfile becomes the authoritative dependency graph; package manifests remain exact for intentionally managed top-level versions.
 
-### User-visible recovery impact
+### Validation status
 
-- The platform now has a durable crash-safe handoff after an `ALREADY_APPLIED` reconstruction. If a worker dies immediately after the atomic transition, durable state still records that continuation is pending instead of relying on the dead process to remember to continue.
-- Automatic end-to-end continuation is still deliberately disabled until a consumer can idempotently claim this pending record and resume from the reconstructed checkpoint.
-- `AMBIGUOUS` remains human attention only. `DEFINITELY_NOT_APPLIED` remains non-executable in production.
+- Incoming head `eaa3b1b15883eb45d7af28a71fe11eecf5753201` is confirmed green via CI #126.
+- The exact new head is not considered validated until its GitHub Actions result exists.
+- A first CI failure solely because the newly enforced lockfile is not yet checked in is expected and will be used to capture the exact pnpm-generated lock for the one permitted corrective commit. Any other failure must be root-caused before changing code.
 
-### Validation status for this slice
+### Next product milestones after reproducibility is green
 
-- Incoming head `6b0df3506d84bb1c5623c2c45cd0d3f084405b1e` is confirmed green via CI #125.
-- This implementation, tests, and progress update are published as one Git-data commit. GitHub Actions on the exact resulting SHA is authoritative; no green result is claimed until that run completes successfully.
+1. Define capture trace/event contracts with bounded semantic target metadata, artifact references, and tenant ownership.
+2. Add a provider-neutral compiler that converts realistic capture fixtures + objective into a validated semantic `WorkflowGraph`.
+3. Build a local/mock vertical slice covering create -> capture fixture -> compile -> test -> approve/publish -> scheduled dispatch -> execution -> run history without cloud credentials.
+4. Add control-plane service/API contracts and a minimal Next.js dashboard/create/capture/test/publish UX.
+5. Add AWS scheduling/dispatch adapters and IaC, then real AgentCore Live View/capture integration behind existing ports.
+6. Implement BYOK credential-pool routing, notifications/observability, and one controlled human-recovery demo.
 
-### Known risks / next highest-value tasks
+## Recovery boundary intentionally parked
 
-1. Add a provider-neutral continuation repository/claim contract and AWS conditional consumer semantics (`PENDING` -> owned/consumed tombstone) so duplicate dispatch cannot resume the reconstructed checkpoint twice.
-2. Wire the recovery worker so `ALREADY_APPLIED` plans reconstruction and performs this atomic run+checkpoint+continuation commit under the still-live heartbeat-fenced replacement lease.
-3. Add a durable `AMBIGUOUS` -> explicit human-attention transition with owner command semantics that do not conflict with the immutable original resolution claim.
-4. Define positive proof-of-absence/idempotency before any production path may execute from `DEFINITELY_NOT_APPLIED`.
-5. Add redacted audit milestones for recovery admission, observation runtime, reconciliation decision, reconstructed advancement, continuation claim/finish, and ambiguity fallback.
-6. Deliberately align the existing AWS SDK peer-version warning rather than suppressing it.
-7. After crash recovery is closed end-to-end, continue outward through capture -> compile -> test -> publish -> schedule hardening.
-
-## Earlier recovery milestones retained as architectural guarantees
-
-- Explicit HUMAN pause/resume and immutable workflow pinning.
-- Atomic human-resolution claims and durable AWS conditional claim store.
-- Resume orchestration where only newly accepted claims execute.
-- Durable human-resume lease with completed tombstones and same-resolution-only reacquisition semantics.
-- Production human-resume worker with browser/profile reconstruction.
-- Continuous heartbeat fencing around long browser/model/verification/checkpoint/profile operations.
-- Redacted append-only human-resume audit history.
-- Durable first-successor effect reconciliation authority and AWS conditional persistence.
-- Read-only reconciliation coordinator and AWS observation-only Playwright verifier.
-- Pure `ALREADY_APPLIED` checkpoint reconstruction planning.
-- Lease-owned atomic DynamoDB run+checkpoint recovery transition.
-- Crash-recovery admission and observation-only recovery runtime.
+The current recovery continuation record is a durable handoff, not action authority. A future continuation consumer must remain idempotent before automatic post-reconstruction execution is enabled. `AMBIGUOUS` remains human-attention only, and `DEFINITELY_NOT_APPLIED` remains non-executable until an explicit proof-of-absence/idempotency contract exists. No additional recovery micro-hardening should preempt the product milestones above unless CI or an end-to-end slice exposes a concrete correctness defect.
