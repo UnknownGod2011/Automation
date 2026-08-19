@@ -124,7 +124,7 @@ describe("CaptureCompletionService", () => {
     expect(finalizer.events).toEqual([]);
   });
 
-  it("accepts exact same-trace persistence replay after the previous worker lost acknowledgement", async () => {
+  it("reconciles exact same-trace persistence when the trace write acknowledgement is lost", async () => {
     const sessions = new InMemoryCaptureSessionStore();
     await sessions.putStarted(session);
     const finalizer = new FakeFinalizer();
@@ -133,23 +133,12 @@ describe("CaptureCompletionService", () => {
     const service = makeService(sessions, finalizer, traces);
 
     await expect(service.complete({ scope, automationId: "auto-1", captureSessionId: "capture-1", trace }))
-      .rejects.toThrow("lost acknowledgement");
-    expect((await sessions.get(scope, "capture-1"))?.status).toBe("STARTED");
-
-    traces.failAfterPersist = false;
-    await expect(service.complete({ scope, automationId: "auto-1", captureSessionId: "capture-1", trace }))
       .resolves.toEqual({ traceId: "trace-1", replayed: false, cleanupPending: false });
     expect(await sessions.latestCompletedForAutomation(scope, "auto-1")).toMatchObject({
       status: "COMPLETED",
       traceId: "trace-1",
     });
-    expect(finalizer.events).toEqual([
-      "save-profile",
-      "persist-trace",
-      "save-profile",
-      "persist-trace",
-      "stop",
-    ]);
+    expect(finalizer.events).toEqual(["save-profile", "persist-trace", "stop"]);
   });
 
   it("rejects same trace ID with different immutable content", async () => {
