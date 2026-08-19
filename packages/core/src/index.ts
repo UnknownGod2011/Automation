@@ -85,10 +85,7 @@ export interface BrowserSessionStartRequest {
   viewport?: BrowserViewport;
 }
 
-/**
- * Ephemeral connection material for an active browser session. Implementations may
- * include signed headers. Never persist this handle in checkpoints or dashboard data.
- */
+/** Ephemeral browser connection material. Never persist this handle. */
 export interface BrowserAutomationConnection {
   endpoint: string;
   headers: Readonly<Record<string, string>>;
@@ -106,25 +103,11 @@ export interface BrowserSessionManager {
   stop(scope: OwnershipScope, session: BrowserSessionHandle): Promise<void>;
 }
 
-export interface CredentialSecret {
-  value: string;
-}
-
-/**
- * Opaque identity material supplied by the execution host when a provider requires
- * workload-bound authorization to read a stored secret. Cloud adapters may ignore it.
- */
-export interface CredentialAccessContext {
-  executionIdentityToken?: string;
-}
-
+export interface CredentialSecret { value: string; }
+export interface CredentialAccessContext { executionIdentityToken?: string; }
 export interface CredentialVault {
   put(scope: OwnershipScope, credentialId: string, secret: CredentialSecret): Promise<string>;
-  get(
-    scope: OwnershipScope,
-    secretRef: string,
-    access?: CredentialAccessContext,
-  ): Promise<CredentialSecret | null>;
+  get(scope: OwnershipScope, secretRef: string, access?: CredentialAccessContext): Promise<CredentialSecret | null>;
   delete(scope: OwnershipScope, secretRef: string): Promise<void>;
 }
 
@@ -190,19 +173,8 @@ export interface BrowserActionResult {
 }
 
 export interface BrowserExecutor {
-  executeDeterministic(
-    scope: OwnershipScope,
-    runId: string,
-    node: WorkflowNode,
-    inputs: Readonly<Record<string, unknown>>,
-  ): Promise<BrowserActionResult>;
-  executeSemantic(
-    scope: OwnershipScope,
-    runId: string,
-    node: WorkflowNode,
-    decision: ReasoningDecision,
-    inputs: Readonly<Record<string, unknown>>,
-  ): Promise<BrowserActionResult>;
+  executeDeterministic(scope: OwnershipScope, runId: string, node: WorkflowNode, inputs: Readonly<Record<string, unknown>>): Promise<BrowserActionResult>;
+  executeSemantic(scope: OwnershipScope, runId: string, node: WorkflowNode, decision: ReasoningDecision, inputs: Readonly<Record<string, unknown>>): Promise<BrowserActionResult>;
 }
 
 export interface VerificationContext {
@@ -228,6 +200,7 @@ export * from "./coordinator.js";
 export * from "./errors.js";
 export * from "./execution.js";
 export * from "./human-resolution.js";
+export * from "./human-resume-audit.js";
 export * from "./human-resume-heartbeat.js";
 export * from "./human-resume-lease.js";
 export * from "./human-resume.js";

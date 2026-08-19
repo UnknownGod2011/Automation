@@ -21,73 +21,70 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - `HumanResumeOrchestrator` executes only newly `ACCEPTED` claims and requires a durable human-resume execution lease before browser/model work.
 - Human-resume execution leases are tenant/user/run/node/resolution scoped, have opaque owner tokens, support conditional renewal, and complete into durable tombstones. AWS uses conditional DynamoDB writes and strongly consistent contention reads.
 - `HumanResumeWorker` reconstructs the immutable workflow/browser profile, revalidates ownership, refuses disabled automations, renews before checkpoints/profile persistence, and prevents profile-save failure from being reported as durable success.
+- `HumanResumeLeaseHeartbeat` renews during long browser/model operations and permanently fences a worker after rejected or uncertain ownership renewal.
 
 ## Validation history before this slice
 
-- CI #95 passed on `1dc9ad43b32d628d81f50bb83a221b88321c1359` after Playwright package/import fixes and explicit-HUMAN resume regression coverage.
 - CI #103 passed on `b7951c0d5c1c4429570959ca6e533ab6769dab10` with durable DynamoDB human-resolution claims.
 - CI #107 passed on `1d9f605b8e1e137e7882a566a4b549b3f6c7e029` with guarded human-resume orchestration.
 - CI #111 passed on `b13d815bf087da799f441991378bb715fcd41c4a` with durable human-resume execution leases and orchestration lease gating.
 - CI #112 passed on `2c5cde839a3aebe229942fa5ee7dba5e4e16ea7c` with production human-resume runtime reconstruction.
+- CI #114 passed on `130510e16b16e8b12a77d995fb90e729ef09a368` after heartbeat ownership-loss regression alignment. This was the validated head before the current slice.
 - The execution container cannot resolve `github.com`, so no local install/check/test pass is claimed. GitHub Actions is authoritative.
 
-## 2026-08-19 — Human-resume lease heartbeat and operation fencing
+## 2026-08-19 — Durable redacted human-resume audit trail
 
 ### Completed in this slice
 
-- Added provider-neutral `HumanResumeLeaseHeartbeat`; no AWS/GCP type or new dependency was introduced.
-- Timer-driven and boundary-driven renewals share one serialized renewal promise, preventing concurrent renewal responses from regressing the in-memory lease state.
-- The heartbeat renews periodically while resumed browser/model execution is active, closing the checkpoint-only renewal gap for long-running operations.
-- Any rejected or uncertain renewal permanently marks ownership lost for that worker. The ownership-loss error is deliberately sanitized and does not include the owner token or underlying storage error text.
-- `HumanResumeWorker` now validates `leaseHeartbeatIntervalMs`; it must be positive and strictly smaller than `leaseTtlMs`. The default is approximately one third of the TTL.
-- Browser-session start, runtime creation, deterministic browser actions, semantic reasoning, semantic browser actions, verification, checkpoint writes, success profile persistence, and pause/failure profile persistence are fenced through the same ownership guard.
-- Every fenced external operation performs an immediate renewal before starting. Periodic renewal continues while the operation is in flight. When the operation returns, the worker rejects its result if heartbeat ownership was lost before allowing another effect.
-- Once ownership is lost, later browser/model/verifier/checkpoint/profile operations cannot start. Ephemeral runtime/session cleanup remains allowed because it only tears down the stale worker's own resources.
-- Added deterministic tests for concurrent-renewal serialization, renewal during a long operation, permanent post-loss fencing, suppression of later operations, sanitized ownership-loss messages, and invalid heartbeat interval rejection.
-- Updated `ARCHITECTURE.md` and `QUALITY_GATES.md` with heartbeat semantics, validation requirements, failure limitations, and cost/scaling expectations.
+- Added provider-neutral `HumanResumeAuditEvent` / `HumanResumeAuditStore` contracts with a deliberately closed schema: event ID, timestamp, lifecycle event type, tenant/user/run/node/resolution identity only. There is no arbitrary metadata or error-text field through which cookies, browser state, DOM values, provider secrets, or lease owner tokens can be accidentally persisted.
+- Added audit event validation for required bounded identifiers and ISO-8601 timestamps.
+- Wired `HumanResumeOrchestrator` to emit typed lifecycle events for resolution accepted/replayed/conflicted, lease acquired/not-acquired, execution started/succeeded/failed, and lease completed/completion-failed.
+- Audit persistence is intentionally derived/best-effort observability rather than a new execution authority. Claim and lease stores remain authoritative; an audit backend outage cannot cause the orchestrator to retry or duplicate a website side effect. Audit failures are reduced to a fixed sanitized warning hook.
+- When audit persistence is configured, an explicit audit-event-ID factory is required so event identity does not rely on hidden process-global behavior.
+- Added `AwsDynamoHumanResumeAuditStore`. It stores append-only events under a tenant/user-derived + run-scoped partition and timestamp/event-ID sort key, uses a conditional put so a duplicate event cannot overwrite history, and performs strongly consistent ordered reads for a run.
+- Added provider-neutral tests proving the exact successful lifecycle event sequence, absence of the private lease owner token, fail-open behavior during audit backend outage, sanitized warnings, and malformed audit-boundary rejection.
+- Added AWS adapter tests for append/list ordering, tenant isolation, conditional duplicate rejection, and strongly consistent run-history reads.
+- No dependency or third-party source was added.
 
-### Invariants and failure-mode review
+### Correctness / failure-mode review
 
-- Durable lease ownership remains the authority; the heartbeat is only a renewal/fencing mechanism and cannot manufacture ownership.
-- Storage rejection, transport failure, throttling, or any other uncertain renewal outcome fails closed. No retry outcome is guessed.
-- Timer and explicit renewals cannot overlap at the adapter boundary because the heartbeat serializes them.
-- Heartbeat loss is terminal for the worker instance even if a later storage call might have succeeded; this avoids a stale process oscillating back into execution permission.
-- A heartbeat cannot retroactively cancel an external effect already in flight when ownership becomes uncertain. Its returned result is discarded and every subsequent effect is fenced, but the external system may already have observed the effect.
-- Automatic same-resolution crash recovery therefore remains disabled until effect reconciliation/idempotency can resolve that unknown-side-effect window.
-- Workflow retry budgets are unchanged. Heartbeat/lease failures escape the execution path instead of being widened into generic node retries.
+- Durable claim acceptance, execution lease ownership, heartbeat fencing, checkpoint state, and browser-profile persistence continue to decide whether execution may proceed. Audit writes never grant execution permission.
+- An audit write failure is not retried by re-running the human-resolution command and does not reinterpret `REPLAY`, `CONFLICT`, `BUSY`, lease loss, or execution failure.
+- Event IDs are append identity only. A duplicate event key fails instead of overwriting an earlier record; no last-write-wins history mutation is permitted.
+- The orchestrator records `EXECUTION_FAILED` without persisting exception text. Detailed operational errors remain in the existing sanitized execution/error channels rather than the durable audit record.
+- This slice does not make crash replay safe. It improves the evidence needed to diagnose recovery but cannot prove whether an external website effect completed in the lease-loss window.
 
-### Security and tenant isolation review
+### Security / tenancy review
 
-- The heartbeat operates only on the already validated tenant/user/run/node/resolution lease supplied to the worker; it does not accept client-selected resource identifiers.
-- Lease owner tokens remain capability material used only by durable compare-and-set persistence and are not included in heartbeat error messages, logs, user-visible histories, or evidence.
-- No browser cookies, auth headers, provider keys, DOM secrets, session storage, or profile payloads are newly persisted.
-- Profile persistence after ownership loss is forbidden, preventing a stale worker from overwriting the profile state of a newer owner.
+- Audit partitions are derived from tenant + user scope and additionally separated by run ID. Reads require the same ownership scope and validate the embedded event identity before returning data.
+- The event contract has no owner-token field and no arbitrary map/payload. Lease owner tokens, browser cookies, auth headers, session storage, provider credentials, raw DOM values, reasoning prompt context, and exception text are excluded by construction.
+- Warning callbacks receive only the fixed string `human resume audit persistence failed`; storage error details are not surfaced through this path.
 
-### Timeout, observability, cost, and scaling review
+### Timeout, retry, observability, cost, and scaling review
 
-- Default heartbeat frequency is roughly three renewals per lease TTL while a human-resume worker is active, plus immediate boundary renewals. This intentionally increases DynamoDB writes to reduce stale-owner risk during expensive browser/model work.
-- The interval is explicit so production deployments can balance storage latency, service quotas, and lease TTL. It must remain comfortably below TTL; the constructor rejects unsafe interval >= TTL configurations.
-- Heartbeat timers are stopped before cleanup, so completed/failed workers do not continue lease write traffic while closing runtime resources.
-- Structured durable audit events for heartbeat renewal/loss remain missing; current ownership-loss exceptions are sanitized but not yet emitted into a first-class audit stream.
+- Audit writes add a small fixed DynamoDB write cost per human-resume lifecycle transition. They do not add browser/model calls.
+- Run history uses a dedicated run-scoped partition and ordered sort keys, avoiding table scans. A very large number of human-resume events for one run can still create a hot logical partition; pagination/retention should be added before histories become unbounded.
+- Audit backend throttling/transport failure does not widen execution retries and therefore cannot multiply target-site effects. A warning is emitted for external operational telemetry to count dropped audit events.
+- Heartbeat-specific events inside `HumanResumeWorker` are still not emitted by this slice; the durable lease state plus orchestration events remain available, but exact periodic-renewal/loss history needs a later worker integration.
 
 ### Validation status for this slice
 
-- All code/tests/docs are intended to be published in one atomic multi-file Git commit using Git data primitives.
+- Code, tests, exports, AWS adapter, and this progress update are intended to be published in one atomic multi-file Git commit using Git data primitives.
 - No local validation is claimed because the execution container cannot resolve GitHub/package dependencies.
 - GitHub Actions must complete successfully on the exact resulting commit before this slice is considered validated. If CI fails, inspect the failing job logs and root-cause before any corrective commit; do not weaken checks.
 
 ### Known risks / unresolved questions
 
-- The unknown-side-effect window still exists for the operation that was already in flight at the instant lease ownership became uncertain. Heartbeat fencing prevents later effects but cannot undo that external operation.
-- Automatic crash recovery after lease expiry remains intentionally disabled until node-level effect reconciliation/idempotency can verify-before-retry.
+- The unknown-side-effect window remains for an operation already in flight when lease ownership becomes uncertain. Audit history cannot by itself establish whether the target website applied the operation.
+- Automatic same-resolution crash recovery after lease expiry remains disabled until durable effect reconciliation/idempotency can verify-before-retry.
+- Heartbeat renewal/loss and runtime/profile milestones are not yet connected to the new audit store.
 - Explicit HUMAN branch-selection data is still absent; the exactly-one-successor rule remains.
-- Structured redacted audit events for human pause/claim/lease/heartbeat/resume lifecycle are not yet persisted.
 - The AWS SDK peer-version warning still needs deliberate package alignment rather than suppression.
 - Live AgentCore/DynamoDB behavior remains unvalidated without cloud credentials; deterministic tests are the current evidence.
 
 ### Next highest-value tasks
 
-1. Add durable first-successor effect reconciliation/idempotency so same-resolution recovery after a crashed worker can verify whether the external effect already occurred before deciding to retry.
-2. Add structured, redacted audit events for human pause, resolution claim, lease acquisition/renewal/loss/completion, heartbeat ownership loss, runtime reconstruction, successor start, and completion/failure.
+1. Add durable first-successor effect identity/reconciliation so replacement ownership can classify an interrupted effect as already-applied, definitely-not-applied, or ambiguous before any retry.
+2. Extend the redacted audit trail into heartbeat ownership loss, runtime reconstruction, profile persistence, and reconciliation decisions without exposing worker tokens or browser data.
 3. Deliberately align AWS SDK peer versions and rerun the full workspace suite.
-4. Continue outward through capture -> compile -> test -> publish -> schedule once the recovery path can reconcile crash ambiguity safely.
+4. Continue outward through capture -> compile -> test -> publish -> schedule once recovery can reconcile crash ambiguity safely.
