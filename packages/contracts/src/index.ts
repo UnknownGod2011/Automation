@@ -110,6 +110,7 @@ export interface WorkflowGraph {
   entryNodeId: string;
   objective: string;
   nodes: Readonly<Record<string, WorkflowNode>>;
+  initialVariables?: Readonly<Record<string, unknown>>;
   createdAt: string;
   publishedAt?: string;
 }
@@ -227,3 +228,5 @@ export function makeOccurrenceKey(automationId: string, scheduledAt: string): st
   if (Number.isNaN(instant.getTime())) throw new Error("scheduledAt must be an ISO-8601 timestamp");
   return `${automationId}:${instant.toISOString()}`;
 }
+
+export * from "./capture.js";
