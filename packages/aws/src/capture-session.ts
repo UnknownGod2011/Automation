@@ -1,5 +1,13 @@
 import type { AutomationRecord } from "@automation/contracts";
-import type { BrowserViewport, CaptureSessionStarter, CaptureStartResult, OwnershipScope } from "@automation/core";
+import type {
+  BrowserViewport,
+  CaptureSessionFinalizer,
+  CaptureSessionRecord,
+  CaptureSessionStarter,
+  CaptureSessionStore,
+  CaptureStartResult,
+  OwnershipScope,
+} from "@automation/core";
 import { Browser } from "bedrock-agentcore/browser";
 import { parseProfileRef } from "./browser-profile.js";
 import { MAX_BROWSER_SESSION_TIMEOUT_SECONDS } from "./config.js";
@@ -14,6 +22,7 @@ export interface AgentCoreBrowserLiveViewSigner {
 }
 
 export interface AgentCoreCaptureSessionStarterOptions {
+  sessionStore?: CaptureSessionStore;
   sessionTimeoutSeconds?: number;
   liveViewTtlSeconds?: number;
   viewport?: BrowserViewport;
@@ -70,6 +79,7 @@ export class AwsAgentCoreBrowserLiveViewSigner implements AgentCoreBrowserLiveVi
 }
 
 export class AgentCoreCaptureSessionStarter implements CaptureSessionStarter {
+  private readonly sessionStore: CaptureSessionStore | undefined;
   private readonly sessionTimeoutSeconds: number;
   private readonly liveViewTtlSeconds: number;
   private readonly viewport: BrowserViewport | undefined;
@@ -83,6 +93,7 @@ export class AgentCoreCaptureSessionStarter implements CaptureSessionStarter {
     options: AgentCoreCaptureSessionStarterOptions = {},
   ) {
     if (!browserIdentifier.trim()) throw new Error("browserIdentifier is required");
+    this.sessionStore = options.sessionStore;
     this.sessionTimeoutSeconds = options.sessionTimeoutSeconds ?? DEFAULT_CAPTURE_TIMEOUT_SECONDS;
     this.liveViewTtlSeconds = options.liveViewTtlSeconds ?? DEFAULT_LIVE_VIEW_TTL_SECONDS;
     validatePositiveInteger(this.sessionTimeoutSeconds, "capture session timeout", MAX_BROWSER_SESSION_TIMEOUT_SECONDS);
@@ -94,6 +105,7 @@ export class AgentCoreCaptureSessionStarter implements CaptureSessionStarter {
 
   async start(scope: OwnershipScope, automation: AutomationRecord): Promise<CaptureStartResult> {
     validateOwnership(scope, automation);
+    if (!this.sessionStore) throw new Error("durable capture session store is not configured");
     if (!automation.browserProfileRef) {
       throw new Error("automation browser profile is required before capture");
     }
@@ -124,6 +136,17 @@ export class AgentCoreCaptureSessionStarter implements CaptureSessionStarter {
       const liveViewUrl = validateLiveViewUrl(
         await this.signer.sign(this.browserIdentifier, session.sessionId, this.liveViewTtlSeconds),
       );
+      await this.sessionStore.putStarted({
+        tenantId: scope.tenantId,
+        userId: scope.userId,
+        automationId: automation.automationId,
+        captureSessionId,
+        browserSessionId: session.sessionId,
+        browserProfileRef: automation.browserProfileRef,
+        startedAt: startedAt.toISOString(),
+        expiresAt: new Date(startedAt.getTime() + this.sessionTimeoutSeconds * 1_000).toISOString(),
+        status: "STARTED",
+      });
       return {
         kind: "READY",
         captureSessionId,
@@ -136,10 +159,40 @@ export class AgentCoreCaptureSessionStarter implements CaptureSessionStarter {
       } catch (cleanupError) {
         throw new AggregateError(
           [error, cleanupError],
-          "AgentCore capture Live View signing failed and session cleanup also failed",
+          "AgentCore capture startup failed and session cleanup also failed",
         );
       }
       throw error;
     }
+  }
+}
+
+export class AgentCoreCaptureSessionFinalizer implements CaptureSessionFinalizer {
+  constructor(
+    private readonly api: AgentCoreBrowserDataApi,
+    private readonly browserIdentifier: string,
+  ) {
+    if (!browserIdentifier.trim()) throw new Error("browserIdentifier is required");
+  }
+
+  async saveProfile(scope: OwnershipScope, record: CaptureSessionRecord): Promise<void> {
+    const profileIdentifier = parseProfileRef(record.browserProfileRef);
+    const identity = scopedResourceIdentity(
+      scope,
+      record.automationId,
+      record.captureSessionId,
+      record.browserSessionId,
+      profileIdentifier,
+    );
+    await this.api.save({
+      browserIdentifier: this.browserIdentifier,
+      sessionId: record.browserSessionId,
+      profileIdentifier,
+      clientToken: agentCoreClientToken("capture-save", identity),
+    });
+  }
+
+  async stop(_scope: OwnershipScope, record: CaptureSessionRecord): Promise<void> {
+    await this.api.stop(this.browserIdentifier, record.browserSessionId);
   }
 }

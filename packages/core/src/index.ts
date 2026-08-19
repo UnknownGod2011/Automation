@@ -44,6 +44,8 @@ export interface VerificationContext { scope: OwnershipScope; runId: string; nod
 export interface VerificationResult { verified: boolean; evidenceRefs: readonly string[]; detail: string; }
 export interface VerificationEngine { verify(context: VerificationContext): Promise<VerificationResult>; }
 
+export * from "./capture-completion.js";
+export * from "./capture-completion-http.js";
 export * from "./control-plane.js";
 export * from "./control-plane-http.js";
 export * from "./coordinator.js";

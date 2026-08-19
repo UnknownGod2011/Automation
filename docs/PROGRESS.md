@@ -24,7 +24,7 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 ## Authoritative incoming validation
 
 - PR #1 is the open draft development PR on `agent/bootstrap-platform`.
-- Incoming head `fcfd8d2b9f81ac24e7c648b0a5820b08aa023c51` is green via GitHub Actions CI #137, including deterministic lock verification, frozen install, `pnpm check`, `next build`, and the full tests.
+- Incoming head `f732a177f0a68f7e77b91f7f1f0bee6fd4ed01f3` is green via GitHub Actions CI #139.
 
 ## 2026-08-19 — AWS scheduling / dispatch + IaC
 
@@ -83,14 +83,45 @@ Added regression coverage for profiled session startup, bounded Live View expiry
 
 ### Validation status
 
-- Incoming head `fcfd8d2b9f81ac24e7c648b0a5820b08aa023c51` is green via CI #137.
 - CI #138 on `c30610ec1ca577372e6cb980546941e4a81117a9` passed deterministic lock verification, frozen installation, contracts/core/web checking, then failed the AWS strict type gate because `exactOptionalPropertyTypes` rejected an optional viewport field assignment of `undefined`. Tests were correctly skipped after type-check failure.
-- The corrective head from this entry changes only that strict optional-property construction (plus the matching missing-profile test fixture) and must not be called green until GitHub Actions completes on its exact SHA.
+- Corrective head `f732a177f0a68f7e77b91f7f1f0bee6fd4ed01f3` is green via CI #139.
+
+## 2026-08-20 — Durable capture completion boundary
+
+### Product slice
+
+Added provider-neutral durable capture-session metadata and a trusted capture-completion service. A cloud capture session is now represented by tenant/user/automation identity, an opaque public capture-session ID, the server-only AgentCore browser-session ID, server-owned browser-profile reference, bounded lifetime, status, and eventual trace ID. `AgentCoreCaptureSessionStarter` now refuses to allocate browser compute when no durable capture-session store is configured, and it persists STARTED metadata before returning a Live View URL. If durable registration fails, the newly-created AgentCore session is stopped.
+
+`CaptureCompletionService` validates the exact ownership/automation/profile boundary, requires the session to still be live, saves the active browser session back into the automation's Browser Profile before accepting the capture trace, persists the trace through the existing lifecycle boundary, then durably marks the capture complete. Exact completed replay returns the existing trace ID without repeating browser/trace side effects. Browser-session stop happens after durable completion; cleanup failure is surfaced as `cleanupPending` rather than revoking an accepted trace.
+
+A separate `TrustedCaptureCompletionHandler` requires deployment middleware to assert `trustedCaptureWorker`; ordinary user-authenticated dashboard traffic is not sufficient to call the completion boundary. Errors are sanitized to a fixed rejection response.
+
+### AWS durability
+
+Added `AwsDynamoCaptureSessionStore` behind a narrow injected DynamoDB document-client interface. STARTED records use conditional create-only writes. Completion uses one DynamoDB transaction to replace the session record and write the automation's latest-completed-capture pointer. Reads used for durable identity/replay classification are strongly consistent. Conditional contention returns replay only when the winning completed record has the exact same trace ID; other contention conflicts and non-conditional DynamoDB uncertainty propagates.
+
+`AgentCoreCaptureSessionFinalizer` uses the existing `SaveBrowserSessionProfile` API with a stable scoped client token before trace acceptance, then stops the ephemeral browser session after completion.
+
+### Security / tenancy / idempotency / cost / recovery review
+
+- Browser-session IDs and browser-profile references stay server-side and never enter the Live View response or trusted-handler error response.
+- Durable records and DynamoDB partitions are scoped by tenant/user; completion also requires exact automation and profile identity.
+- Duplicate completed callbacks are non-executing. The remaining crash window between trace persistence and capture-session completion requires exact trace-persistence replay support before automatic callback retry can be considered fully crash-safe; this is explicitly left as the next narrow completion task rather than broad recovery work.
+- Capture browser compute is stopped after durable completion. If stop fails, the caller receives `cleanupPending=true`; operational retry/metrics are still required before public scale.
+- No new dependency was added and the reviewed pnpm graph is unchanged.
+
+### Tests
+
+Added provider-neutral tests for save-profile-before-trace ordering, completed replay suppression, cross-automation/expiry rejection, and cleanup-pending behavior. Added AWS tests for conditional durable start, strongly consistent reads, atomic completion/latest-pointer persistence, and same-trace contention replay. Existing AgentCore capture tests now verify durable STARTED registration and fail closed when the durable store is absent.
+
+### Validation status
+
+- This run publishes one normal batched commit only. No local pass is claimed because the execution environment cannot resolve github.com; GitHub Actions on the exact new head is authoritative and must complete before this slice is called green.
 
 ## Next product milestones
 
-1. Obtain exact-head green CI for the AgentCore capture starter; do not weaken checks.
-2. Add durable capture-session/completion metadata and a trusted capture-completion path that saves the active AgentCore browser session into the automation profile before accepting the trace. The UI should consume the completed trace ID automatically rather than asking users to enter it.
+1. Obtain exact-head green CI for the durable capture-completion slice; root-cause any real failure before using the single allowed corrective commit.
+2. Close the remaining capture-completion retry seam by making exact same-trace persistence idempotent, then surface `latestCompletedForAutomation().traceId` through the sanitized control-plane summary so the Next.js compile step consumes it automatically instead of asking the user to type a trace ID.
 3. Wire concrete AWS SDK Scheduler/Step Functions composition around the already-tested narrow scheduling APIs, keeping missing deployment configuration explicit.
 4. Replace the temporary server bearer integration seam with Cognito authentication/API authorization.
 5. Implement BYOK credential-pool routing through the secure secret boundary; provider keys must remain outside ordinary application tables/logs.
@@ -100,6 +131,7 @@ Added regression coverage for profiled session startup, bounded Live View expiry
 
 - Recovery continuation consumption remains parked until the cloud worker requires it; product work takes precedence over narrower recovery micro-edge cases.
 - Sensitive runtime values still require the later secret-resolution contract; never place provider keys, passwords, cookies, or equivalent secrets in workflow/runtime-variable metadata.
-- Trusted capture completion is not wired yet: the current starter launches the real profiled browser and Live View, but durable session metadata, trace collection/callback authentication, profile save-on-completion, and automatic trace-ID handoff are the next product slice.
-- Public HTTP command idempotency, Cognito verification, rate limiting, and capture callback authentication remain required control-plane work.
+- Capture completion is now durable and trusted, but the existing user-facing summary still does not surface the latest completed trace ID automatically. The compile form therefore remains manual for one more slice.
+- A callback replay after trace persistence but before durable capture completion can still encounter immutable trace persistence; exact same-trace replay must be added before enabling automatic callback retries.
+- Public HTTP command idempotency, Cognito verification, rate limiting, and production capture-worker authentication middleware remain required control-plane work.
 - The AWS scheduler and Step Functions adapters currently depend on narrow injected AWS API interfaces. Concrete SDK composition remains a small follow-up.
