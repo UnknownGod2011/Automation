@@ -384,7 +384,11 @@ describe("HumanResumeWorker", () => {
     );
     events.length = 0;
 
-    await expect(worker.execute(request)).rejects.toThrow("effect identity conflicts");
+    const result = await worker.execute(request);
+
+    expect(result.run.status).toBe("WAITING_FOR_HUMAN");
+    expect(result.run.currentNodeId).toBe("click-1");
+    expect(result.checkpoint?.lastFailure?.code).toBe("UNKNOWN");
     expect(events).toEqual(["prepare"]);
     expect(runtimeFactory.actionEvents).toHaveLength(0);
   });

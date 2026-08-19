@@ -28,6 +28,7 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - CI #119 passed on `11be1b0804a70174fa0279233b359de9ad21ac9d` with the AWS observation-only reconciliation verifier.
 - CI #120 passed on `47b7d4805d6a10c7f405bab73d386d94bc14b15b` with provider-neutral `ALREADY_APPLIED` checkpoint reconstruction.
 - CI #121 passed on `72e8168dbb42551954c6dd8ea7ccfe30b908d593` with the lease-owned atomic `ALREADY_APPLIED` recovery transition. This is the validated incoming head for the current slice.
+- CI #122 on `64b112031b008e91ad3c6ac6a5a2ae985cfcd6bb` passed install and `pnpm check` but failed one new worker-test assertion. Log inspection showed the production safety invariant held: the conflicting durable effect identity suppressed browser dispatch; `WorkflowExecutionEngine` intentionally converted the boundary failure into a durable `WAITING_FOR_HUMAN` checkpoint instead of propagating the exception. The corrective test now asserts that actual fail-closed state. No production behavior or quality gate was weakened.
 - The execution container has no authenticated GitHub CLI/local checkout path, so no local install/check/test pass is claimed. GitHub Actions on the exact published head remains authoritative.
 
 ## 2026-08-19 — Prepare reconciliation identity before resumed side effects
@@ -40,15 +41,15 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - Immediately before the first resumed successor can dispatch a side-effecting deterministic or semantic browser action, the worker lease-fences a durable `effects.prepare(...)` operation.
 - The same prepared identity is reused across deterministic -> semantic fallback for that same successor. The action is not allowed to start if durable preparation conflicts, has already been decided, or fails/returns uncertain storage state.
 - Non-side-effecting HUMAN successors do not create unnecessary effect records; their execution remains governed by the existing checkpoint/heartbeat path.
-- Added regression coverage proving preparation happens before browser dispatch and that a conflicting durable identity suppresses the website action entirely.
+- Added regression coverage proving preparation happens before browser dispatch and that a conflicting durable identity suppresses the website action entirely while leaving the run durably recoverable through human attention.
 - No new dependency, AWS/GCP-specific type, secret-bearing payload, browser content, or user-provided arbitrary metadata was introduced.
 
 ### Invariants / failure semantics
 
 - A resumed external side effect must never be the first durable fact in the crash window. Its reconciliation identity is persisted first while the same execution lease is demonstrably owned.
-- Effect preparation is execution authority, so storage conflict/uncertainty fails closed before the browser action. It is not converted into a retry/replay guess.
+- Effect preparation is execution authority, so storage conflict/uncertainty fails closed before the browser action. It is not converted into a retry/replay guess. If the execution engine handles that boundary failure under the node's `HUMAN` escalation policy, the durable result is a `WAITING_FOR_HUMAN` checkpoint with no browser action dispatched.
 - The effect record contains only bounded identity metadata already defined by the provider-neutral reconciliation contract. It does not contain cookies, DOM content, credentials, raw exceptions, profile data, or lease owner tokens.
-- A durable record that is already `DECIDED` cannot be silently reused as healthy execution permission; the worker rejects it rather than risking action replay after prior reconciliation.
+- A durable record that is already `DECIDED` cannot be silently reused as healthy execution permission; healthy execution is suppressed rather than risking action replay after prior reconciliation.
 - The existing heartbeat still fences the subsequent action independently. Preparing an identity does not grant action permission if lease ownership is lost before dispatch.
 
 ### Concurrency / idempotency / scaling review
@@ -66,12 +67,14 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 ### User-visible recovery impact
 
 - This closes the most dangerous prerequisite gap for future same-resolution crash recovery: if the first resumed successor reaches the website, a durable reconciliation identity necessarily existed before dispatch.
+- A preparation conflict/uncertain preparation never becomes a website action; the current node escalation can durably return the run to human attention.
 - Automatic crash replay remains disabled. The current worker still executes only newly accepted claims, and a later claim replay is not execution permission.
 
 ### Validation status for this slice
 
 - Incoming head `72e8168dbb42551954c6dd8ea7ccfe30b908d593` is confirmed green via GitHub Actions CI #121.
-- The coherent worker/tests/docs change is being published as one Git-data commit. GitHub Actions on the exact resulting SHA is authoritative; no pass is claimed until that run completes successfully.
+- Initial slice commit `64b112031b008e91ad3c6ac6a5a2ae985cfcd6bb`: install and `pnpm check` passed; CI #122 failed only because the new conflict test expected an uncaught rejection instead of the engine's designed `WAITING_FOR_HUMAN` result. Logs confirmed zero browser dispatch and 88/89 core tests passed.
+- One corrective test/docs commit is being published after root-cause analysis. GitHub Actions on the exact corrective SHA is authoritative; no green pass is claimed until that run completes successfully.
 
 ### Known risks / next highest-value tasks
 
