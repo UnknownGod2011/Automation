@@ -10,80 +10,83 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 
 ## Completed foundation
 
-- Strict TypeScript/pnpm monorepo with versioned workflow/run/failure contracts, bounded retries, checkpointing, verification, occurrence idempotency, and tenant ownership.
+- Strict TypeScript/pnpm monorepo with versioned workflow/run/failure contracts, bounded retries, checkpointing, verification, occurrence idempotency, tenant ownership, and in-memory adapters.
 - Provider-neutral execution engine plus AWS DynamoDB/S3/AgentCore/Playwright adapters behind explicit ports.
-- Explicit `HUMAN` pause -> repair -> resume lifecycle with immutable workflow-version pinning and no guessed human branching.
-- Atomic human-resolution claims, durable execution leases, heartbeat fencing, redacted audit history, and AWS conditional persistence.
-- Durable first-successor effect reconciliation with stable effect identity and immutable `ALREADY_APPLIED` / `DEFINITELY_NOT_APPLIED` / `AMBIGUOUS` authority.
-- Provider-neutral read-only reconciliation coordinator plus AWS observation-only Playwright verifier.
-- Pure `planAlreadyAppliedHumanResumeRecovery`, lease-owned atomic recovery transition, durable continuation handoff, recovery admission, and heartbeat-fenced observation-only recovery worker.
+- Explicit `HUMAN` pause -> repair -> resume lifecycle with immutable workflow-version pinning, conditional human-resolution claims, durable execution leases, heartbeat fencing, redacted audit history, and read-only crash reconciliation.
 - Recovery micro-hardening is intentionally parked unless an end-to-end slice or CI exposes a concrete correctness defect.
+- Build inputs are pinned to the validated TypeScript/Vitest/AWS SDK versions. CI uses Node 22.23.2 and a frozen pnpm 10.15.0 dependency snapshot; the checked-in-lockfile shape remains preferable when the connector runtime can materialize it directly.
+- Capture contracts distinguish `AUTH_SETUP` from executable `WORKFLOW` events and keep authentication setup out of scheduled workflow compilation.
+- `compileCaptureTrace` emits the semantic `WorkflowGraph`, ranks deterministic selectors first, requires verification for side effects, omits scroll noise, synthesizes a fresh-run navigation when capture begins on an already-open page, and emits non-sensitive public literals as graph `initialVariables`.
 
-## Build reproducibility status
+## Authoritative incoming validation
 
-- Root TypeScript and Vitest are pinned to the exact validated versions: `typescript@5.9.3` and `vitest@3.2.7`.
-- Direct `@aws-sdk/client-dynamodb` is aligned to `3.1111.0`, resolving the concrete util-dynamodb peer mismatch rather than suppressing it.
-- CI runs Node `22.23.2`; the repository engine floor is `>=22.12.0`, matching the resolved Vite requirement.
-- CI materializes the exact pnpm 10.15.0 lock snapshot captured by CI #127 from its immutable job log, validates the snapshot, and installs with `pnpm install --frozen-lockfile`. This is deterministic but remains a bootstrap strategy; a conventional checked-in `pnpm-lock.yaml` is still preferable once the development runtime can materialize it directly.
-- CI #128 passed on `60bee7e9c2bd9592f66d3449df3c181ecc2e7723` with install, `pnpm check`, and `pnpm test` all green. That SHA is the authoritative incoming baseline for the capture/compiler work.
+- CI #129 passed on `776dd184eceea91685561701636aabb428cae76e` with deterministic install, `pnpm check`, and `pnpm test` all successful.
+- PR #1 remains the development PR on `agent/bootstrap-platform`.
 
-## 2026-08-19 — Capture trace contracts and workflow compiler
+## 2026-08-19 — Local/mock product lifecycle vertical slice
 
 ### Product slice
 
-This run moves outward from recovery into the create -> capture -> compile lifecycle. It introduces provider-neutral capture contracts and a deterministic first compiler that emits the existing semantic `WorkflowGraph` rather than generated Playwright code.
+This run proves the product contracts outward from capture rather than adding another recovery edge case. A provider-neutral `AutomationProductLifecycleService` now composes the existing repositories, compiler, execution engine, scheduler port, occurrence coordinator, and in-memory browser-profile/lock state into a local/mock lifecycle that requires no cloud credentials.
 
-### Capture contracts
+The covered lifecycle is:
 
-- Added a versioned `CaptureTrace` owned by tenant + user + automation and tied to a server-resolved browser profile reference.
-- Events carry contiguous ordering, timestamps, page identity, bounded semantic target metadata, optional protected artifact references, explicit expected-effect verification, and an `AUTH_SETUP` vs `WORKFLOW` purpose boundary.
-- Authentication setup activity may remain in the capture trace for product/audit context but is excluded from executable workflow compilation. This prevents demonstrated login/password entry from becoming a scheduled replay step.
-- Input values are closed to two forms: explicitly non-sensitive `PUBLIC_LITERAL` data or `RUNTIME_VARIABLE` placeholders. Sensitive values therefore do not need to enter the workflow graph or normal metadata.
-- Capture validation rejects invalid HTTP(S) URLs, duplicate event IDs, non-contiguous sequence numbers, timestamp drift outside the trace window, missing targets for actionable events, and malformed input/artifact metadata.
+create draft -> create isolated browser-profile reference -> persist capture trace -> compile immutable workflow version -> seed fresh-run variables -> execute a fresh test -> mark ready to publish -> publish schedule/version -> dispatch a scheduled occurrence -> execute -> inspect run history.
 
-### Provider-neutral compiler
+### New lifecycle boundary
 
-- Added `compileCaptureTrace`, which accepts a validated trace plus immutable workflow ID/version/time and emits the existing `WorkflowGraph` contract.
-- `NAVIGATION` compiles to deterministic `NAVIGATE`; `CLICK` and `SUBMIT` compile to deterministic `CLICK`; `INPUT` compiles to `TYPE`; `SCROLL` remains capture evidence but is intentionally omitted as execution noise.
-- Semantic target strategies are ranked deterministic-first: test ID, role/name, text, CSS, XPath. This aligns with the current Playwright executor and leaves semantic/model recovery as fallback.
-- Every compiled side-effecting action requires a verification contract. Navigation can infer a URL verification from its captured destination; click/type/submit fail compilation if capture did not record an expected effect.
-- Compiler retry budgets are bounded and use the existing failure taxonomy. Compiled actions escalate to human or constrained semantic recovery rather than broadening control flow.
-- Explicitly non-sensitive captured literals are stored in optional graph `initialVariables`; sensitive/runtime inputs remain unresolved variable bindings. The next local vertical-slice service must seed these defaults plus authorized runtime variables into fresh execution state before invoking the engine.
-- Auth-setup events and scroll noise do not appear in the resulting graph, and compiler tests assert that auth variable identifiers are absent from serialized workflow output.
+- Draft creation validates HTTP(S) target URL, requires explicit authorization/consent, creates the server-owned browser-profile reference, and writes a tenant/user-owned `AutomationRecord`.
+- Capture persistence is immutable by trace ID and validates tenant/user/automation identity, objective, website, and exact server-owned browser profile before storing the trace.
+- Compilation reads the persisted trace, allocates the next immutable workflow version, invokes `compileCaptureTrace`, persists the graph, and moves the automation to `READY_TO_TEST`.
+- Fresh tests are durable `RunRecord`s. Duplicate test-run IDs/occurrence keys return the existing run rather than executing twice.
+- Fresh-run variable seeding is now explicit at the lifecycle boundary: graph `initialVariables` are merged with caller-supplied runtime variables into the first checkpoint before the execution engine starts. Runtime values are not added to the compiled graph.
+- A successful fresh test moves the automation to `READY_TO_PUBLISH`. Publish is rejected before a successful test and may publish only the latest tested workflow version.
+- Publish validates the IANA timezone, writes the schedule through `SchedulerPort`, and then marks the automation `ACTIVE` with its immutable published workflow version.
+- Scheduled dispatch reuses `ScheduledRunCoordinator`, so duplicate schedule delivery is suppressed by the existing automation+scheduled-occurrence idempotency key before browser effects execute.
+- Run history is read through the existing tenant-scoped `RunRepository`.
 
-### Tests added
+### Local/mock adapters and tests
 
-Realistic fixture coverage includes auth setup, navigation, deterministic target selection, public literal typing, submit verification, and scroll noise. Negative coverage includes sensitive runtime-variable handling, missing expected effects, and trace sequence drift.
+- Added `CaptureTraceRepository` plus `InMemoryCaptureTraceRepository` with immutable, tenant-scoped capture storage.
+- Added deterministic end-to-end fixture coverage with an auth-setup password event, a fresh-page synthetic navigation, deterministic click/type/submit actions, a compiled public literal, a non-sensitive runtime variable, explicit verification, publish, scheduled execution, duplicate delivery suppression, and run history.
+- Tests assert that auth variable identifiers and runtime values do not appear in the compiled graph, while the first durable checkpoint contains the merged public/runtime values needed by execution.
+- Negative coverage includes missing consent, immutable capture replacement, cross-tenant access, publish-before-test rejection, and invalid IANA timezone rejection.
 
-### Security / tenancy / idempotency / side effects
+### Correctness / security / tenant isolation
 
-- Capture and compiler contracts are provider-neutral; no AWS/GCP SDK type is introduced into core workflow representation.
-- Ownership identity exists on the capture boundary from the first schema. Artifact/profile references remain opaque server-side identifiers; the compiler never fetches arbitrary client-selected secrets or profiles.
-- Raw login credentials are not representable as compiled auth steps through the `AUTH_SETUP` boundary; future capture adapters must mark password/MFA/security-control interaction as auth setup and/or sensitive runtime data and must never persist secret field contents in screenshots/DOM artifacts.
-- Compilation is pure and deterministic for the same validated request; it performs no browser/model/network side effect and creates no concurrency race.
-- Side-effect execution safety remains enforced by the existing workflow verification contract and bounded retry/human escalation rules.
+- Core remains provider-neutral; this slice introduces no AWS/GCP SDK types or new dependency.
+- Browser-profile references are created and resolved server-side through the existing profile port. A capture cannot substitute another profile reference.
+- Capture ownership and automation ownership must match tenant + user + automation before compilation.
+- Authentication-setup secret values remain absent from the compiled workflow. The local fixture uses a non-sensitive runtime variable for execution; secret/BYOK material still belongs behind the later credential-vault boundary rather than normal metadata.
+- Side-effect success is still determined by the existing verification engine, not by attempted browser actions.
+- Test and scheduled execution use durable run/checkpoint records. Duplicate scheduled delivery reaches `DUPLICATE` before execution and therefore cannot repeat browser effects.
+- Publish ordering is fail-closed: the schedule is registered before the automation is marked `ACTIVE`, so a control-plane write failure cannot leave an active automation with no schedule registration.
 
-### Cost / observability / recovery review
+### Concurrency / retry / timeout / cost / observability / recovery review
 
-- This slice adds no cloud resources or runtime model/browser calls, so direct cloud cost is unchanged.
-- Trace artifact payloads remain references rather than embedded binary/DOM data, keeping the core graph bounded. Retention/lifecycle policy for screenshots/recordings remains a later S3/control-plane concern.
-- Stable trace/event/workflow IDs provide future correlation points from capture -> compile -> test/run history.
-- If capture evidence is incomplete, compilation fails before publish rather than guessing a dangerous action. The user recovery path is to recapture/correct the demonstration, not to silently weaken verification.
+- The scheduled path keeps the existing automation lock and occurrence idempotency behavior. This mock slice does not add a second concurrency mechanism.
+- Execution continues to use the existing bounded retry/fingerprint/human-escalation engine. Tests use deterministic no-delay jitter so the fixture is stable.
+- No cloud browser/model/SQS/Step Functions resource is created here, so direct cloud cost is unchanged.
+- Stable automation, capture, workflow, run, and occurrence IDs now connect the local product lifecycle and are ready to become API/telemetry correlation fields.
+- The local scheduled path intentionally uses the provider-neutral browser executor directly instead of creating an ephemeral cloud browser session. Real profile restore/save and AgentCore session lifecycle remain the AWS integration milestone; this local slice proves control-plane contracts, not cloud-session behavior.
+- Recovery behavior is unchanged. Existing bounded failure/human takeover remains available to the execution engine; no new recovery authority was added.
 
 ### Validation status
 
-- Incoming head `60bee7e9c2bd9592f66d3449df3c181ecc2e7723` is green via CI #128.
-- The capture/compiler change is not considered validated until GitHub Actions completes install, `pnpm check`, and `pnpm test` successfully on the exact new head. No local pass is claimed because the development container has no authenticated GitHub/npm runtime.
+- Incoming head `776dd184eceea91685561701636aabb428cae76e` is green via CI #129.
+- The new vertical-slice head is not considered validated until GitHub Actions completes install, `pnpm check`, and `pnpm test` successfully on that exact SHA. No green claim should be made before that run exists.
 
 ## Next product milestones
 
-1. Build the local/mock vertical slice: automation draft -> persisted capture fixture -> compile -> seed graph initial/runtime variables -> fresh test execution -> approve/publish -> scheduled occurrence dispatch -> execution -> run history, all without cloud credentials.
-2. While doing that, make fresh execution consume compiled initial variables through an explicit control-plane/test-run boundary rather than hidden global state; add tenant/idempotency tests around creation, publishing, and dispatch.
-3. Add control-plane service/API contracts and a minimal Next.js dashboard/create-automation/capture/test/publish UX.
-4. Add AWS scheduling/dispatch adapters and IaC, then real AgentCore Live View/capture integration behind existing ports.
-5. Implement BYOK credential-pool routing, notifications/observability, and one controlled human-recovery demo.
+1. Add provider-neutral control-plane request/response service contracts suitable for HTTP APIs, then expose the lifecycle through minimal API handlers.
+2. Add a minimal Next.js dashboard/create-automation/capture/test/publish UI using those contracts; missing auth/cloud configuration must render explicit `NOT_CONFIGURED` states rather than break builds.
+3. Add AWS scheduling/dispatch adapters and IaC (EventBridge Scheduler + SQS + durable orchestration), preserving occurrence idempotency and queue backpressure.
+4. Wire AgentCore Live View/capture and real browser-profile restore/save behind the existing capture/browser ports.
+5. Implement BYOK credential-pool routing through the secure secret boundary, then notifications/observability and one controlled human-recovery demo.
 
 ## Known parked limitations
 
-- The current recovery continuation record is a durable handoff, not action authority. A future continuation consumer must remain idempotent before automatic post-reconstruction execution is enabled. `AMBIGUOUS` remains human-attention only, and `DEFINITELY_NOT_APPLIED` remains non-executable until an explicit proof-of-absence/idempotency contract exists.
-- Graph `initialVariables` are compiler output only in this slice; fresh-run orchestration does not yet seed them automatically. That integration is explicitly part of the next local/mock vertical slice and must be tested before claiming capture -> execution end-to-end completion.
+- The recovery continuation record remains a durable handoff, not execution authority; further recovery continuation consumption stays parked until the end-to-end cloud worker needs it.
+- Runtime variables are supplied explicitly to fresh-test/scheduled dispatch in this local slice and seeded into durable checkpoint variables. Sensitive runtime values require the later credential/secret-resolution contract; do not place provider keys, passwords, cookies, or equivalent secrets in this map.
+- Workflow publication is represented by the automation's immutable `publishedWorkflowVersion` pointer; the already-persisted tested graph is not rewritten merely to add `publishedAt`.
+- The local/mock scheduled path does not restore/save a real browser profile or create cloud browser compute. Those semantics remain in the existing production worker/AWS adapter path and must be exercised when cloud integration is wired.
