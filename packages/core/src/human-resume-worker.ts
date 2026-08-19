@@ -1,4 +1,4 @@
-import type { RunCheckpoint } from "@automation/contracts";
+import type { RunCheckpoint, WorkflowNode } from "@automation/contracts";
 import type {
   AutomationRepository,
   BrowserExecutor,
@@ -23,6 +23,10 @@ import type {
   HumanResumeExecutionLease,
   HumanResumeExecutionLeaseStore,
 } from "./human-resume-lease.js";
+import type {
+  HumanResumeEffectIdentity,
+  HumanResumeEffectReconciliationStore,
+} from "./human-resume-effect.js";
 import { HumanResumeLeaseHeartbeat } from "./human-resume-heartbeat.js";
 import { FinalizingRunRepository } from "./run-finalization.js";
 import type { BrowserExecutionRuntime, BrowserExecutionRuntimeFactory } from "./worker.js";
@@ -36,6 +40,8 @@ export interface HumanResumeWorkerDependencies {
   runs: RunRepository;
   checkpoints: CheckpointRepository;
   leases: HumanResumeExecutionLeaseStore;
+  effects: HumanResumeEffectReconciliationStore;
+  effectId: () => string;
   browserSessionTimeoutSeconds: number;
   leaseTtlMs: number;
   leaseHeartbeatIntervalMs?: number;
@@ -77,10 +83,36 @@ function sameLeaseBoundary(
   );
 }
 
+function requiredGeneratedId(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) throw new Error("human resume effectId generator returned an empty id");
+  if (normalized.length > 512) throw new Error("human resume effectId generator returned an oversized id");
+  return normalized;
+}
+
+function firstHumanSuccessor(graphNode: WorkflowNode | undefined, nodes: Readonly<Record<string, WorkflowNode>>): WorkflowNode {
+  if (!graphNode || graphNode.kind !== "HUMAN") {
+    throw new Error("human resume durable node is not an explicit HUMAN workflow node");
+  }
+  const successors = graphNode.next ?? [];
+  if (successors.length !== 1 || !successors[0]) {
+    throw new Error("human resume requires exactly one declared HUMAN successor");
+  }
+  const successor = nodes[successors[0]];
+  if (!successor) throw new Error(`human resume successor '${successors[0]}' is missing from workflow`);
+  return successor;
+}
+
 /**
  * Provider-neutral production resume worker. It reconstructs the exact immutable
  * workflow/browser-profile runtime and continuously fences browser/model work behind
  * durable human-resume execution ownership.
+ *
+ * Before the first resumed successor can dispatch an external side effect, the worker
+ * durably prepares one reconciliation identity for the exact pause/resolution/successor
+ * boundary. Preparation is lease-fenced and is reused across deterministic/semantic
+ * fallback for the same node. A storage conflict or uncertainty fails closed before
+ * the browser action starts.
  */
 export class HumanResumeWorker implements HumanResumeExecutor {
   private readonly now: () => Date;
@@ -133,6 +165,7 @@ export class HumanResumeWorker implements HumanResumeExecutor {
     if (graph.automationId !== run.automationId || graph.version !== run.workflowVersion) {
       throw new Error("human resume workflow identity does not match durable run");
     }
+    const firstSuccessor = firstHumanSuccessor(graph.nodes[request.command.expectedNodeId], graph.nodes);
 
     const profileRef = automation.browserProfileRef;
     if (!profileRef) {
@@ -167,6 +200,36 @@ export class HumanResumeWorker implements HumanResumeExecutor {
       () => heartbeat.renewNow(),
     );
 
+    let preparedFirstSuccessorEffect = false;
+    let effectIdentity: HumanResumeEffectIdentity | null = null;
+    const prepareFirstSuccessorEffect = async (node: WorkflowNode): Promise<void> => {
+      if (node.id !== firstSuccessor.id || node.allowedSideEffects.length === 0) return;
+      if (preparedFirstSuccessorEffect) return;
+      if (!node.verification) {
+        throw new Error("side-effecting human resume successor has no verification contract");
+      }
+      effectIdentity ??= {
+        tenantId: scope.tenantId,
+        userId: scope.userId,
+        runId: run.runId,
+        humanNodeId: request.command.expectedNodeId,
+        successorNodeId: node.id,
+        resolutionId: request.command.resolutionId,
+        effectId: requiredGeneratedId(this.dependencies.effectId()),
+      };
+      const identity = effectIdentity;
+      const prepared = await heartbeat.runFenced(() =>
+        this.dependencies.effects.prepare(identity, this.now().toISOString()),
+      );
+      if (prepared.status === "CONFLICT") {
+        throw new Error("human resume first-successor effect identity conflicts with durable reconciliation state");
+      }
+      if (prepared.record.state !== "PREPARED") {
+        throw new Error("human resume first-successor effect was already durably reconciled before execution");
+      }
+      preparedFirstSuccessorEffect = true;
+    };
+
     let session: BrowserSessionHandle | null = null;
     let runtime: BrowserExecutionRuntime | null = null;
     let successProfilePersisted = false;
@@ -190,14 +253,18 @@ export class HumanResumeWorker implements HumanResumeExecutor {
       runtime = activeRuntime;
 
       const fencedBrowser: BrowserExecutor = {
-        executeDeterministic: (actionScope, runId, node, inputs) =>
-          heartbeat.runFenced(() =>
+        executeDeterministic: async (actionScope, runId, node, inputs) => {
+          await prepareFirstSuccessorEffect(node);
+          return heartbeat.runFenced(() =>
             activeRuntime.browser.executeDeterministic(actionScope, runId, node, inputs),
-          ),
-        executeSemantic: (actionScope, runId, node, decision, inputs) =>
-          heartbeat.runFenced(() =>
+          );
+        },
+        executeSemantic: async (actionScope, runId, node, decision, inputs) => {
+          await prepareFirstSuccessorEffect(node);
+          return heartbeat.runFenced(() =>
             activeRuntime.browser.executeSemantic(actionScope, runId, node, decision, inputs),
-          ),
+          );
+        },
       };
       const fencedVerifier: VerificationEngine = {
         verify: (context) => heartbeat.runFenced(() => activeRuntime.verifier.verify(context)),

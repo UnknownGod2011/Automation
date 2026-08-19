@@ -4,11 +4,13 @@ import type {
   RunCheckpoint,
   RunRecord,
   WorkflowGraph,
+  WorkflowNode,
 } from "@automation/contracts";
 import {
   HumanResumeWorker,
   InMemoryAutomationRepository,
   InMemoryCheckpointRepository,
+  InMemoryHumanResumeEffectReconciliationStore,
   InMemoryHumanResumeExecutionLeaseStore,
   InMemoryRunRepository,
   InMemoryWorkflowVersionRepository,
@@ -17,6 +19,8 @@ import {
   type BrowserSessionHandle,
   type BrowserSessionManager,
   type HumanResumeExecutionRequest,
+  type HumanResumeEffectIdentity,
+  type HumanResumeEffectReconciliationStore,
   type OwnershipScope,
 } from "./index.js";
 
@@ -69,7 +73,7 @@ const node = (
   id: string,
   kind: "HUMAN" | "END",
   next: readonly string[] = [],
-) => ({
+): WorkflowNode => ({
   id,
   kind,
   objective: id,
@@ -86,26 +90,58 @@ const node = (
   },
   timeoutMs: 1_000,
   next,
-  escalation: "HUMAN" as const,
+  escalation: "HUMAN",
 });
 
-const graph = (pauseAgain = false): WorkflowGraph => ({
+const clickNode = (): WorkflowNode => ({
+  id: "click-1",
+  kind: "CLICK",
+  objective: "submit the repaired form",
+  deterministicStrategies: [{ kind: "ROLE", value: "button:Submit" }],
+  inputBindings: {},
+  outputBindings: {},
+  allowedSideEffects: ["submit repaired form"],
+  verification: {
+    description: "success text is visible",
+    mode: "TEXT",
+    expected: "Saved",
+    timeoutMs: 1_000,
+  },
+  retryPolicy: {
+    maxAttempts: 1,
+    initialBackoffMs: 0,
+    maxBackoffMs: 0,
+    jitter: false,
+    retryableFailureCodes: [],
+  },
+  timeoutMs: 1_000,
+  next: ["end"],
+  escalation: "HUMAN",
+});
+
+const graph = (options: { pauseAgain: boolean | undefined; sideEffect: boolean | undefined }): WorkflowGraph => ({
   schemaVersion: 1,
   workflowId: "workflow-1",
   automationId: "auto-1",
   version: 3,
   entryNodeId: "human-1",
   objective: "resume safely",
-  nodes: pauseAgain
+  nodes: options.sideEffect
     ? {
-        "human-1": node("human-1", "HUMAN", ["human-2"]),
-        "human-2": node("human-2", "HUMAN", ["end"]),
+        "human-1": node("human-1", "HUMAN", ["click-1"]),
+        "click-1": clickNode(),
         end: node("end", "END"),
       }
-    : {
-        "human-1": node("human-1", "HUMAN", ["end"]),
-        end: node("end", "END"),
-      },
+    : options.pauseAgain
+      ? {
+          "human-1": node("human-1", "HUMAN", ["human-2"]),
+          "human-2": node("human-2", "HUMAN", ["end"]),
+          end: node("end", "END"),
+        }
+      : {
+          "human-1": node("human-1", "HUMAN", ["end"]),
+          end: node("end", "END"),
+        },
   createdAt: "2026-08-18T00:00:00.000Z",
   publishedAt: "2026-08-18T00:01:00.000Z",
 });
@@ -145,21 +181,44 @@ class RecordingSessions implements BrowserSessionManager {
 class RecordingRuntimeFactory implements BrowserExecutionRuntimeFactory {
   createCalls = 0;
   closeCalls = 0;
+  readonly actionEvents: string[] = [];
+
+  constructor(
+    private readonly allowAction = false,
+    private readonly sharedEvents?: string[],
+  ) {}
 
   async create(): Promise<BrowserExecutionRuntime> {
     this.createCalls += 1;
     return {
       browser: {
-        executeDeterministic: async () => {
-          throw new Error("browser action should not run in HUMAN -> END fixture");
+        executeDeterministic: async (_scope, _runId, node) => {
+          if (!this.allowAction) {
+            throw new Error("browser action should not run in HUMAN -> END fixture");
+          }
+          this.actionEvents.push(node.id);
+          this.sharedEvents?.push("action");
+          return {
+            effectObserved: true,
+            evidenceRefs: ["evidence://clicked"],
+            outputs: {},
+            stateFingerprint: "clicked",
+          };
         },
         executeSemantic: async () => {
-          throw new Error("semantic browser action should not run in HUMAN -> END fixture");
+          throw new Error("semantic browser action should not run in fixture");
         },
       },
       verifier: {
         verify: async () => {
-          throw new Error("verification should not run in HUMAN -> END fixture");
+          if (!this.allowAction) {
+            throw new Error("verification should not run in HUMAN -> END fixture");
+          }
+          return {
+            verified: true,
+            evidenceRefs: ["evidence://verified"],
+            detail: "saved",
+          };
         },
       },
       close: async () => {
@@ -169,9 +228,33 @@ class RecordingRuntimeFactory implements BrowserExecutionRuntimeFactory {
   }
 }
 
+class RecordingEffects implements HumanResumeEffectReconciliationStore {
+  private readonly delegate = new InMemoryHumanResumeEffectReconciliationStore();
+
+  constructor(private readonly events: string[]) {}
+
+  async prepare(identity: HumanResumeEffectIdentity, preparedAt: string) {
+    this.events.push("prepare");
+    return this.delegate.prepare(identity, preparedAt);
+  }
+
+  async decide(
+    identity: HumanResumeEffectIdentity,
+    decision: "ALREADY_APPLIED" | "DEFINITELY_NOT_APPLIED" | "AMBIGUOUS",
+    decidedAt: string,
+  ) {
+    return this.delegate.decide(identity, decision, decidedAt);
+  }
+
+  async get(requestScope: OwnershipScope, runId: string, humanNodeId: string) {
+    return this.delegate.get(requestScope, runId, humanNodeId);
+  }
+}
+
 async function setup(options: {
   automation?: AutomationRecord;
   pauseAgain?: boolean;
+  sideEffect?: boolean;
   now?: string;
   failSave?: boolean;
 } = {}) {
@@ -181,10 +264,12 @@ async function setup(options: {
   const checkpoints = new InMemoryCheckpointRepository();
   const leases = new InMemoryHumanResumeExecutionLeaseStore();
   const sessions = new RecordingSessions(options.failSave);
-  const runtimeFactory = new RecordingRuntimeFactory();
+  const events: string[] = [];
+  const effects = new RecordingEffects(events);
+  const runtimeFactory = new RecordingRuntimeFactory(options.sideEffect, events);
 
   await automations.put(options.automation ?? automation());
-  await workflows.putImmutable(scope, graph(options.pauseAgain));
+  await workflows.putImmutable(scope, graph({ pauseAgain: options.pauseAgain, sideEffect: options.sideEffect }));
   await runs.createIfAbsent(waitingRun());
   await checkpoints.put(scope, checkpoint());
 
@@ -229,18 +314,20 @@ async function setup(options: {
     runtimeFactory,
     reasoner: {
       decide: async () => {
-        throw new Error("reasoner should not run in HUMAN -> END fixture");
+        throw new Error("reasoner should not run in fixture");
       },
     },
     runs,
     checkpoints,
     leases,
+    effects,
+    effectId: () => "effect-1",
     browserSessionTimeoutSeconds: 60,
     leaseTtlMs: 60_000,
     now: () => new Date(options.now ?? "2026-08-19T00:00:04.000Z"),
   });
 
-  return { worker, request, runs, checkpoints, leases, sessions, runtimeFactory };
+  return { worker, request, runs, checkpoints, leases, effects, sessions, runtimeFactory, events };
 }
 
 describe("HumanResumeWorker", () => {
@@ -259,6 +346,47 @@ describe("HumanResumeWorker", () => {
     expect(sessions.stopped).toEqual(["session-1"]);
     expect(runtimeFactory.createCalls).toBe(1);
     expect(runtimeFactory.closeCalls).toBe(1);
+  });
+
+  it("prepares the durable first-successor effect identity before dispatching the resumed side effect", async () => {
+    const { worker, request, effects, runtimeFactory, events } = await setup({ sideEffect: true });
+
+    const result = await worker.execute(request);
+
+    expect(result.run.status).toBe("SUCCEEDED");
+    expect(events).toEqual(["prepare", "action"]);
+    expect(runtimeFactory.actionEvents).toEqual(["click-1"]);
+    expect(await effects.get(scope, "run-1", "human-1")).toMatchObject({
+      tenantId: scope.tenantId,
+      userId: scope.userId,
+      runId: "run-1",
+      humanNodeId: "human-1",
+      successorNodeId: "click-1",
+      resolutionId: "resolution-1",
+      effectId: "effect-1",
+      state: "PREPARED",
+    });
+  });
+
+  it("fails closed before the browser action when durable effect preparation conflicts", async () => {
+    const { worker, request, effects, runtimeFactory, events } = await setup({ sideEffect: true });
+    await effects.prepare(
+      {
+        tenantId: scope.tenantId,
+        userId: scope.userId,
+        runId: "run-1",
+        humanNodeId: "human-1",
+        successorNodeId: "click-1",
+        resolutionId: "resolution-1",
+        effectId: "different-effect",
+      },
+      "2026-08-19T00:00:03.500Z",
+    );
+    events.length = 0;
+
+    await expect(worker.execute(request)).rejects.toThrow("effect identity conflicts");
+    expect(events).toEqual(["prepare"]);
+    expect(runtimeFactory.actionEvents).toHaveLength(0);
   });
 
   it("loads the run's immutable workflow version even when a newer version is published", async () => {
