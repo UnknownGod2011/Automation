@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly EXPECTED_PNPM_VERSION="10.15.0"
-readonly EXPECTED_LOCK_SHA256="8b113df1513958078cf6504f527ad6f4916247d95b6205e4927153f00754aece"
+readonly EXPECTED_LOCK_SHA256="f7d32090ca67a995509dda97b513ec849f2a00cca8c88226f5431aa3c831412e"
 
 actual_pnpm_version="$(pnpm --version)"
 if [[ "${actual_pnpm_version}" != "${EXPECTED_PNPM_VERSION}" ]]; then
