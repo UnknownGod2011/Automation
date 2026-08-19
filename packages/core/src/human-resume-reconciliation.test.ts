@@ -132,9 +132,12 @@ describe("HumanResumeEffectReconciler", () => {
     await expect(reconciler.reconcile(identity(), node({ id: "other" }))).rejects.toThrow(
       "does not match prepared successor identity",
     );
-    await expect(
-      reconciler.reconcile(identity(), node({ allowedSideEffects: [], verification: undefined })),
-    ).rejects.toThrow("only valid for a side-effecting successor");
+
+    const withoutVerification = node({ allowedSideEffects: [] });
+    delete withoutVerification.verification;
+    await expect(reconciler.reconcile(identity(), withoutVerification)).rejects.toThrow(
+      "only valid for a side-effecting successor",
+    );
     expect(effectVerifier.inspect).not.toHaveBeenCalled();
   });
 
@@ -155,13 +158,13 @@ describe("HumanResumeEffectReconciler", () => {
     const firstVerifier: HumanResumeEffectVerifier = {
       inspect: vi.fn(async () => {
         releaseSecond();
-        return { decision: "ALREADY_APPLIED", evidenceRefs: ["evidence/first"] };
+        return { decision: "ALREADY_APPLIED" as const, evidenceRefs: ["evidence/first"] };
       }),
     };
     const secondVerifier: HumanResumeEffectVerifier = {
       inspect: vi.fn(async () => {
         await secondGate;
-        return { decision: "DEFINITELY_NOT_APPLIED", evidenceRefs: ["evidence/second"] };
+        return { decision: "DEFINITELY_NOT_APPLIED" as const, evidenceRefs: ["evidence/second"] };
       }),
     };
 
