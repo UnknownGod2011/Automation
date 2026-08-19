@@ -53,7 +53,7 @@ export function loadAwsCognitoControlPlaneAuthConfig(
   if (!issuer) missing.push("AWS_COGNITO_ISSUER");
   if (!audience) missing.push("AWS_COGNITO_APP_CLIENT_ID");
   if (!tenantId) missing.push("AUTOMATION_TENANT_ID");
-  if (missing.length > 0) {
+  if (!issuer || !audience || !tenantId) {
     return {
       configured: false,
       missing,
