@@ -72,7 +72,7 @@ export class AwsAgentCoreBrowserLiveViewSigner implements AgentCoreBrowserLiveVi
 export class AgentCoreCaptureSessionStarter implements CaptureSessionStarter {
   private readonly sessionTimeoutSeconds: number;
   private readonly liveViewTtlSeconds: number;
-  private readonly viewport?: BrowserViewport;
+  private readonly viewport: BrowserViewport | undefined;
   private readonly now: () => Date;
   private readonly captureId: () => string;
 

@@ -84,11 +84,12 @@ Added regression coverage for profiled session startup, bounded Live View expiry
 ### Validation status
 
 - Incoming head `fcfd8d2b9f81ac24e7c648b0a5820b08aa023c51` is green via CI #137.
-- This AgentCore capture head must not be called green until GitHub Actions completes successfully on the exact new SHA. No local pass is claimed.
+- CI #138 on `c30610ec1ca577372e6cb980546941e4a81117a9` passed deterministic lock verification, frozen installation, contracts/core/web checking, then failed the AWS strict type gate because `exactOptionalPropertyTypes` rejected an optional viewport field assignment of `undefined`. Tests were correctly skipped after type-check failure.
+- The corrective head from this entry changes only that strict optional-property construction (plus the matching missing-profile test fixture) and must not be called green until GitHub Actions completes on its exact SHA.
 
 ## Next product milestones
 
-1. Obtain exact-head green CI for the AgentCore capture starter; fix only a concrete CI defect if one appears.
+1. Obtain exact-head green CI for the AgentCore capture starter; do not weaken checks.
 2. Add durable capture-session/completion metadata and a trusted capture-completion path that saves the active AgentCore browser session into the automation profile before accepting the trace. The UI should consume the completed trace ID automatically rather than asking users to enter it.
 3. Wire concrete AWS SDK Scheduler/Step Functions composition around the already-tested narrow scheduling APIs, keeping missing deployment configuration explicit.
 4. Replace the temporary server bearer integration seam with Cognito authentication/API authorization.

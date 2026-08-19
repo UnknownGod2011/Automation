@@ -113,10 +113,10 @@ describe("AgentCoreCaptureSessionStarter", () => {
 
   it("requires an owned AgentCore browser profile before capture", async () => {
     const { value, api } = starter();
+    const withoutProfile = structuredClone(automation);
+    delete withoutProfile.browserProfileRef;
 
-    await expect(
-      value.start(scope, { ...automation, browserProfileRef: undefined }),
-    ).rejects.toThrow(/browser profile is required/);
+    await expect(value.start(scope, withoutProfile)).rejects.toThrow(/browser profile is required/);
     expect(api.starts).toHaveLength(0);
   });
 
