@@ -15,10 +15,12 @@ const record: CaptureSessionRecord = {
   status: "STARTED",
 };
 
+type CaptureDynamoCommand = Parameters<CaptureDynamoClientLike["send"]>[0];
+
 class FakeClient implements CaptureDynamoClientLike {
-  readonly commands: unknown[] = [];
+  readonly commands: CaptureDynamoCommand[] = [];
   readonly responses: (Record<string, unknown> | Error)[] = [];
-  async send(command: Parameters<CaptureDynamoClientLike["send"]>[0]) {
+  async send(command: CaptureDynamoCommand) {
     this.commands.push(command);
     const response = this.responses.shift();
     if (response instanceof Error) throw response;

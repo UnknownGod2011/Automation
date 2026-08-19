@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly EXPECTED_PNPM_VERSION="10.15.0"
-readonly EXPECTED_LOCK_SHA256="f7d32090ca67a995509dda97b513ec849f2a00cca8c88226f5431aa3c831412e"
+readonly EXPECTED_LOCK_SHA256="631fe590d013579fb42439b20fd1f990da391f8eae528169964faf7450891fb1"
 
 actual_pnpm_version="$(pnpm --version)"
 if [[ "${actual_pnpm_version}" != "${EXPECTED_PNPM_VERSION}" ]]; then
@@ -13,6 +13,12 @@ fi
 # Recreate the lock snapshot from manifests rather than relying on a retained
 # GitHub Actions log or any pre-existing local lockfile. Package lifecycle
 # scripts remain disabled during resolution.
+#
+# pnpm 10.x re-resolves the full graph for lockfile-only generation. That means
+# an upstream transitive release can intentionally trip this hash even when our
+# direct manifests did not change. Treat such a mismatch as a supply-chain
+# review boundary: inspect the authoritative CI resolution before changing this
+# value; never fall back to an unverified fresh install.
 rm -f pnpm-lock.yaml
 pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
 
