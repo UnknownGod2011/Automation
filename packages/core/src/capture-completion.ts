@@ -95,7 +95,7 @@ function sameTrace(left: CaptureTrace, right: CaptureTrace): boolean {
 }
 
 export class CaptureCompletionService {
-  private readonly traceReader?: CaptureTraceReader;
+  private readonly traceReader: CaptureTraceReader | undefined;
   private readonly now: () => Date;
 
   constructor(
