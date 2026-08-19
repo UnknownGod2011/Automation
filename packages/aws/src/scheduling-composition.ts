@@ -4,6 +4,7 @@ import {
   GetScheduleCommand,
   SchedulerClient,
   UpdateScheduleCommand,
+  type GetScheduleCommandOutput,
 } from "@aws-sdk/client-scheduler";
 import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import {
@@ -41,24 +42,6 @@ export type AwsSchedulingCompositionResult =
   | { configured: true; composition: AwsSchedulingComposition }
   | { configured: false; missing: readonly string[]; message: string };
 
-interface SchedulerGetResponse {
-  Name?: unknown;
-  GroupName?: unknown;
-  ScheduleExpression?: unknown;
-  ScheduleExpressionTimezone?: unknown;
-  State?: unknown;
-  Target?: {
-    Arn?: unknown;
-    RoleArn?: unknown;
-    Input?: unknown;
-    DeadLetterConfig?: { Arn?: unknown };
-    RetryPolicy?: {
-      MaximumEventAgeInSeconds?: unknown;
-      MaximumRetryAttempts?: unknown;
-    };
-  };
-}
-
 interface StepFunctionsStartResponse {
   executionArn?: unknown;
 }
@@ -86,7 +69,7 @@ function isNotFound(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "name" in error && error.name === "ResourceNotFoundException");
 }
 
-function toSchedulerDefinition(response: SchedulerGetResponse): AwsSchedulerDefinition {
+function toSchedulerDefinition(response: GetScheduleCommandOutput): AwsSchedulerDefinition {
   const target = response.Target;
   if (!target) throw new Error("AWS Scheduler response target is missing");
   const retryPolicy = target.RetryPolicy;
