@@ -14,14 +14,15 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - Provider-neutral execution engine plus AWS DynamoDB/S3/AgentCore/Playwright adapters behind explicit ports.
 - Explicit `HUMAN` pause -> repair -> resume lifecycle with immutable workflow-version pinning, conditional human-resolution claims, durable execution leases, heartbeat fencing, redacted audit history, and read-only crash reconciliation.
 - Recovery micro-hardening is intentionally parked unless an end-to-end slice or CI exposes a concrete correctness defect.
-- Build inputs are pinned to the validated TypeScript/Vitest/AWS SDK versions. CI uses Node 22.23.2 and a frozen pnpm 10.15.0 dependency snapshot; the checked-in-lockfile shape remains preferable when the connector runtime can materialize it directly.
+- Build inputs are pinned to the validated TypeScript/Vitest/AWS SDK versions. CI uses Node 22.23.2 and pnpm 10.15.0, regenerates the dependency lock snapshot locally with package scripts disabled, checks its exact reviewed SHA-256, and only then performs a frozen install. CI no longer depends on retention of an old Actions job log.
 - Capture contracts distinguish `AUTH_SETUP` from executable `WORKFLOW` events and keep authentication setup out of scheduled workflow compilation.
 - `compileCaptureTrace` emits the semantic `WorkflowGraph`, ranks deterministic selectors first, requires verification for side effects, omits scroll noise, synthesizes a fresh-run navigation when capture begins on an already-open page, and emits non-sensitive public literals as graph `initialVariables`.
 - `AutomationProductLifecycleService` proves the local/mock create -> capture -> compile -> fresh test -> publish -> scheduled dispatch -> execution -> history lifecycle without cloud credentials.
+- `AutomationControlPlaneService` and `AutomationControlPlaneHttpHandler` expose the lifecycle through sanitized provider-neutral dashboard/API contracts with explicit configured/local/mock/not-configured capability states.
 
 ## Authoritative incoming validation
 
-- CI #130 passed on `8c1c6939262e820a0d21e436f45aacf28fcb3373` with deterministic install, `pnpm check`, and `pnpm test` all successful.
+- CI #131 passed on `4f3411c367c99d404afd87521ebc78482f08996c` with the pinned lock snapshot SHA `8b113df1513958078cf6504f527ad6f4916247d95b6205e4927153f00754aece`, frozen install, `pnpm check`, and `pnpm test` all successful.
 - PR #1 remains the development PR on `agent/bootstrap-platform`.
 
 ## 2026-08-19 — Local/mock product lifecycle vertical slice
@@ -81,15 +82,39 @@ The local lifecycle is now exposed through a provider-neutral control-plane serv
 ### Validation status
 
 - Incoming head `8c1c6939262e820a0d21e436f45aacf28fcb3373` is green via CI #130.
-- This new control-plane head must not be considered validated until GitHub Actions completes deterministic install, `pnpm check`, and `pnpm test` successfully on the exact commit.
+- Control-plane head `4f3411c367c99d404afd87521ebc78482f08996c` is green via CI #131.
+
+## 2026-08-19 — Deterministic lock bootstrap without Actions-log retention
+
+### Build-reproducibility slice
+
+The temporary CI bootstrap that reconstructed `pnpm-lock.yaml` from retained GitHub Actions job `96040770342` has been removed. `scripts/materialize-pnpm-lock.sh` now recreates the lock from the workspace manifests using the pinned pnpm `10.15.0`, with lifecycle scripts disabled, and requires the generated file to match the exact previously validated SHA-256 `8b113df1513958078cf6504f527ad6f4916247d95b6205e4927153f00754aece` before installation proceeds.
+
+CI then executes `pnpm install --frozen-lockfile`. A resolver change, manifest drift, pnpm-version drift, or intentional dependency update therefore fails before type checking/tests until the new dependency graph has been reviewed and the pinned snapshot hash is deliberately updated.
+
+The previously-fixed AWS SDK alignment is guarded explicitly: the generated snapshot must retain `@aws-sdk/client-dynamodb` `3.1111.0` and the compatible `@aws-sdk/util-dynamodb` peer resolution `3.1103.0(@aws-sdk/client-dynamodb@3.1111.0)`.
+
+### Security / reliability / cost review
+
+- CI no longer needs `actions: read`, a GitHub API bearer token, or continued retention of a historical job log merely to install dependencies; `contents: read` is sufficient.
+- Lock resolution runs with package lifecycle scripts disabled, reducing install-time code execution before the dependency graph has been authenticated by hash.
+- The frozen install still enforces manifest/lock agreement and package integrity after the hash gate.
+- This change creates no browser/model/cloud execution resources and does not affect tenant data, retries, schedule delivery, side-effect verification, or recovery behavior.
+- Registry availability is still required to regenerate/install dependencies. If the registry later resolves a different graph, CI fails closed rather than silently accepting the drift.
+- A conventional checked-in `pnpm-lock.yaml` remains a reasonable future simplification when the development environment can transfer/generated-file contents directly. The hash-gated regeneration strategy is deterministic and no longer tied to ephemeral Actions retention.
+
+### Validation status
+
+- Incoming head `4f3411c367c99d404afd87521ebc78482f08996c` is green via CI #131 and independently confirms the expected lock SHA plus full test suite.
+- This build-reproducibility change is not considered validated until GitHub Actions successfully regenerates that exact snapshot, completes the frozen install, `pnpm check`, and `pnpm test` on the exact new commit.
 
 ## Next product milestones
 
-1. Add the minimal Next.js dashboard/create-automation/capture/test/publish UI against these transport contracts. Keep auth/capture/cloud states explicit `NOT_CONFIGURED` until real adapters exist; do not add fake cloud success paths.
-2. Resolve the current lock-bootstrap limitation before adding Next.js dependencies if the dependency snapshot cannot be deterministically regenerated through the connector workflow.
-3. Add AWS scheduling/dispatch adapters and IaC (EventBridge Scheduler + SQS + durable orchestration), preserving occurrence idempotency, lock semantics, and queue backpressure.
-4. Wire AgentCore Live View/capture and real browser-profile restore/save behind `CaptureSessionStarter` and the existing browser/profile ports.
-5. Implement BYOK credential-pool routing through the secure secret boundary, then notifications/observability and one controlled human-recovery demo.
+1. Add the minimal Next.js dashboard/create-automation/capture/test/publish UX against the existing control-plane contracts. Dependency additions must intentionally update the reviewed lock snapshot/hash; missing auth/capture/cloud integrations must render `NOT_CONFIGURED` rather than fake success.
+2. Add AWS scheduling/dispatch adapters and IaC (EventBridge Scheduler + SQS + durable orchestration or a justified equivalent), preserving occurrence idempotency, lock semantics, queue backpressure, timezones, and bounded retry behavior.
+3. Wire AgentCore Live View/capture and real browser-profile restore/save behind `CaptureSessionStarter` and the existing browser/profile ports.
+4. Implement BYOK credential-pool routing through the secure secret boundary, keeping provider keys out of normal metadata tables and logs.
+5. Add notifications/observability and one controlled human-recovery demo across the complete product lifecycle.
 
 ## Known parked limitations
 
