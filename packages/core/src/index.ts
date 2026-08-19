@@ -206,6 +206,7 @@ export * from "./human-resume-heartbeat.js";
 export * from "./human-resume-lease.js";
 export * from "./human-resume-reconciliation.js";
 export * from "./human-resume-reconstruction.js";
+export * from "./human-resume-recovery.js";
 export * from "./human-resume-transition.js";
 export * from "./human-resume.js";
 export * from "./human-resume-worker.js";
