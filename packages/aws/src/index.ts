@@ -5,6 +5,7 @@ export * from "./config.js";
 export * from "./dynamodb-state.js";
 export * from "./human-resolution.js";
 export * from "./human-resume-audit.js";
+export * from "./human-resume-effect.js";
 export * from "./human-resume-lease.js";
 export * from "./identity-vault.js";
 export * from "./playwright-runtime.js";

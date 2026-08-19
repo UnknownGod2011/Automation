@@ -15,7 +15,7 @@ The web application is a control plane. Scheduled automation execution is a sepa
 Owns automation CRUD, workflow versioning, schedules, credential metadata, run inspection, and human-resolution commands.
 
 ### Persistence
-- DynamoDB: users, automations, workflow-version metadata, runs, run steps, locks, human-resolution claims, human-resume execution leases, credential metadata.
+- DynamoDB: users, automations, workflow-version metadata, runs, run steps, locks, human-resolution claims, human-resume execution leases, human-resume effect reconciliation, credential metadata.
 - S3: capture recordings, screenshots, DOM/event artifacts, compiled workflow documents, run evidence.
 - Browser Profiles: target-site session state.
 - AgentCore Identity: provider credential secrets/references.
@@ -90,6 +90,10 @@ Healthy human-resume execution uses a provider-neutral heartbeat in addition to 
 
 The heartbeat interval must be positive and strictly smaller than the lease TTL. The default is approximately one third of the TTL, providing multiple renewal opportunities during long browser/model calls while bounding DynamoDB write amplification. A heartbeat cannot cancel an external side effect already in flight at the exact moment ownership becomes uncertain; after the call returns, its result is rejected and all subsequent workflow effects are fenced. Automatic crash replay therefore remains disabled until effect reconciliation can determine whether an in-flight external effect already happened.
 
+Human-resume effect reconciliation is a separate durable authority for that unknown-side-effect window. Before automatic crash recovery can be enabled, the first resumed successor must have one stable effect identity scoped to tenant + user + run + paused HUMAN node + successor node + resolution. Production storage must atomically prepare exactly one identity for that pause boundary and later atomically persist exactly one immutable reconciliation decision. The only decisions are `ALREADY_APPLIED`, `DEFINITELY_NOT_APPLIED`, and `AMBIGUOUS`.
+
+Only `DEFINITELY_NOT_APPLIED` can ever authorize an automatic retry of the external effect. `ALREADY_APPLIED` means the replacement worker must advance by reconstructing/verification rather than replaying the action. `AMBIGUOUS` is a fail-closed human-recovery state: the platform must not guess whether to repeat the effect. Reconciliation persistence is execution authority, unlike best-effort audit history; throttling, transport failure, or conditional-write uncertainty must propagate rather than be translated into any decision. The current slice provides the provider-neutral contract plus AWS conditional persistence, but automatic worker replay remains disabled until runtime verification is wired to produce these decisions before successor execution.
+
 This lease does not by itself make crash replay safe. Current orchestration still treats a claim `REPLAY` as non-executing even if a prior lease later expires. If the accepted executor crashes, the active lease is left to expire and the run requires a future recovery policy. Automatic reacquisition/re-execution must remain disabled until the executor can reconcile the unknown-side-effect window using node-level verification/idempotency. Lease ownership prevents concurrency; it does not prove whether an external side effect happened just before a worker died.
 
 Worker owner tokens are operational capability material. They may be persisted inside the lease record for compare-and-set ownership, but must not be exposed to clients, user-visible run history, heartbeat errors, or logs.
@@ -160,7 +164,7 @@ Future managed-model mode implements the same router interface.
 
 ## Multi-tenancy and authorization
 
-Every durable entity is keyed/owned by tenant_id + user_id where appropriate. Browser-profile and secret access are resolved server-side from an authorized automation; clients never choose arbitrary secret/profile identifiers for execution. Human-resolution claims and resume execution leases use the same ownership partition and validate embedded ownership identity when read.
+Every durable entity is keyed/owned by tenant_id + user_id where appropriate. Browser-profile and secret access are resolved server-side from an authorized automation; clients never choose arbitrary secret/profile identifiers for execution. Human-resolution claims, resume execution leases, and effect-reconciliation records use the same ownership partition and validate embedded ownership identity when read.
 
 ## Idempotency/concurrency
 
@@ -170,7 +174,10 @@ Every durable entity is keyed/owned by tenant_id + user_id where appropriate. Br
 - Human-resolution command delivery may be duplicated or concurrent; exactly one resolution ID may be durably accepted for a given ownership + run + paused-node boundary.
 - Human resume execution is started only for a newly accepted claim that also owns a live execution lease; replay/conflict outcomes do not start browser/model work.
 - Human-resume heartbeat and boundary renewals share one serialized renewal path; once ownership is lost, the worker may not initiate another browser/model/verifier/checkpoint/profile operation.
-- Lease expiry permits same-resolution ownership recovery at the storage-contract level, but orchestration must not convert that into automatic side-effect replay until effect reconciliation is implemented.
+- A human-resume pause boundary may have only one prepared first-successor effect identity. Same-identity preparation is replay; a different effect/resolution/successor identity is conflict.
+- A prepared human-resume effect may receive only one immutable reconciliation decision. Same-decision delivery is replay; a competing decision is conflict.
+- Automatic external-effect retry is permitted only from a durable `DEFINITELY_NOT_APPLIED` decision. `ALREADY_APPLIED` and `AMBIGUOUS` are non-retrying outcomes.
+- Lease expiry permits same-resolution ownership recovery at the storage-contract level, but orchestration must not convert that into automatic side-effect replay until effect reconciliation is fully wired into runtime verification and successor control flow.
 
 ## Observability
 
@@ -182,7 +189,7 @@ All services propagate correlation identifiers:
 - node_id
 - attempt_id
 
-Do not log cookies, secrets, prompt-private DOM fields, raw API keys, sensitive browser storage, or human-resume lease owner tokens. Run UI receives sanitized reasoning summaries/evidence, not hidden model chain-of-thought. Heartbeat ownership-loss errors must remain sanitized and must not include the durable lease payload or owner token.
+Do not log cookies, secrets, prompt-private DOM fields, raw API keys, sensitive browser storage, or human-resume lease owner tokens. Run UI receives sanitized reasoning summaries/evidence, not hidden model chain-of-thought. Heartbeat ownership-loss errors must remain sanitized and must not include the durable lease payload or owner token. Reconciliation records store only bounded identity/timestamps/state/decision; browser content and exception text remain outside this execution-authority record.
 
 ## Deployment strategy
 

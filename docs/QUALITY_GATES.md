@@ -31,6 +31,10 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Completion is a durable tombstone. A completed human-resume boundary must not become executable again merely because a TTL elapsed.
 - Human-resume timer and boundary renewals must be serialized through one ownership path. A renewal failure or uncertainty permanently fences that worker from starting later browser, model, verification, checkpoint, or profile-persistence work.
 - Worker crash recovery must not rely on claim replay or lease expiry alone. Node-level idempotency/effect verification must address the unknown-side-effect window before automatic recovery can be considered safe.
+- The first resumed successor must have one stable durable effect identity for tenant + user + run + paused HUMAN node + successor + resolution before automatic crash replay can be enabled.
+- Production effect-reconciliation stores must atomically prepare exactly one effect identity for a pause boundary. Same identity may replay; a different effect ID, resolution ID, or successor must conflict.
+- A prepared human-resume effect may receive exactly one immutable reconciliation decision: `ALREADY_APPLIED`, `DEFINITELY_NOT_APPLIED`, or `AMBIGUOUS`. Same-decision delivery may replay; a competing decision must conflict.
+- Only a durable `DEFINITELY_NOT_APPLIED` reconciliation may authorize automatic retry of the external effect. `ALREADY_APPLIED` and `AMBIGUOUS` must not replay the action.
 
 ### 4. Failure handling
 - Classify failures before retrying.
@@ -39,10 +43,11 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Authentication, quota, policy, human-decision, and destructive-action failures are not generic transient errors.
 - Paused runs must retain enough checkpoint/evidence state for deterministic recovery.
 - Explicit `HUMAN`-node resume must never infer control flow. Until a typed human branch-selection contract exists, resume requires exactly one declared successor and must reject ambiguous topology before mutating the persisted run out of `WAITING_FOR_HUMAN`.
-- Database/network uncertainty during human-resolution claiming or execution-lease mutation must propagate as a failure; it must never be guessed to mean replay, conflict, acquisition, renewal, or completion.
+- Database/network uncertainty during human-resolution claiming, execution-lease mutation, or effect-reconciliation persistence must propagate as a failure; it must never be guessed to mean replay, conflict, acquisition, renewal, completion, or a reconciliation decision.
 - If resume execution fails after claim acceptance, do not reinterpret a later claim replay as permission to rerun side effects.
 - If execution finishes after its durable lease expired or was lost, do not report durable success from the orchestration boundary; surface the ownership-loss failure for reconciliation.
 - Heartbeat loss cannot retroactively cancel an already in-flight external operation. Its result must be rejected and all later effects fenced until effect reconciliation proves a safe recovery path.
+- `AMBIGUOUS` reconciliation is a human-recovery state, not a transient retry condition.
 
 ### 5. Security and tenant isolation
 - Never store raw external API keys in application metadata tables or logs.
@@ -50,8 +55,9 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Every automation, browser profile, credential reference, artifact, and run must be scoped to an owning tenant/user.
 - Browser executors must not accept arbitrary profile identifiers without ownership authorization.
 - Human approval boundaries must exist for risky/destructive actions.
-- Human-resolution claims and resume execution leases must be partitioned/scoped by tenant and user, and durable payload identity must be validated when read.
+- Human-resolution claims, resume execution leases, and effect-reconciliation records must be partitioned/scoped by tenant and user, and durable payload identity must be validated when read.
 - Human-resume lease owner tokens are operational capability material: persist only where needed for compare-and-set ownership and never expose them to clients, user-visible histories, heartbeat errors, or logs.
+- Effect-reconciliation authority must not persist browser content, cookies, auth material, model prompt context, arbitrary exception text, or worker owner tokens.
 
 ### 6. Browser safety
 - Deterministic Playwright/CDP interaction is preferred when a known validated strategy exists.
@@ -76,13 +82,14 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Lease renewal must occur before expiry. Human-resume workers must also heartbeat during long operations; checkpoint-only renewal is insufficient.
 - The heartbeat interval must be positive and strictly less than the lease TTL, with enough margin for expected storage latency and transient scheduling delay.
 - Expired ownership cannot be completed as though it were still valid.
-- Automatic recovery after lease expiry remains disabled until a durable effect-reconciliation strategy proves rerunning the successor is safe.
+- Automatic recovery after lease expiry remains disabled until durable effect reconciliation is integrated with runtime verification and successor control flow.
+- Reconciliation storage must use strongly consistent reads when classifying a lost conditional race; stale reads must not manufacture replay permission.
 
 ### 9. Observability
 - Every run needs a stable run ID and correlation context.
 - Record node attempts, failure class, retry count, verification result, timing, and checkpoint state without leaking secrets.
 - User-facing run history must distinguish succeeded, retrying, paused, needs-auth, needs-credential, failed, and canceled states.
-- Human-resolution audit events should distinguish claim accepted/replayed/conflicted, lease acquired/busy/completed/expired, heartbeat ownership loss, and executor start/finish without logging lease owner tokens or sensitive browser data.
+- Human-resolution audit events should distinguish claim accepted/replayed/conflicted, lease acquired/busy/completed/expired, heartbeat ownership loss, executor start/finish, and reconciliation decisions without logging lease owner tokens or sensitive browser data.
 
 ### 10. Tests and CI
 - Add or update tests for every behavior changed.
@@ -94,6 +101,8 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Human resume orchestration tests must prove replay/conflict outcomes are non-executing, including concurrent duplicate delivery and executor-failure cases.
 - Human-resume lease tests must prove single-owner acquisition, same-resolution reacquisition only after expiry, conflict isolation, renewal/completion owner checks, completed tombstones, tenant isolation, stale-expiry rejection, and propagation of non-conditional storage failures.
 - Human-resume heartbeat tests must prove renewal serialization, renewal during a long operation, permanent fencing after rejected/uncertain renewal, suppression of later operations after loss, sanitized ownership-loss errors, and heartbeat interval validation.
+- Human-resume effect-reconciliation tests must prove atomic single-identity preparation, same-identity replay, competing-identity conflict, immutable decision replay/conflict, tenant isolation, strongly consistent contention reads, and propagation of non-conditional storage uncertainty.
+- Retry-authorization tests must prove only `DEFINITELY_NOT_APPLIED` permits an automatic external-effect retry.
 
 ### 11. Dependency discipline
 - Avoid dependencies when a small well-tested internal abstraction is sufficient.

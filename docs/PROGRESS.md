@@ -22,6 +22,7 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - Human-resume execution leases are tenant/user/run/node/resolution scoped, have opaque owner tokens, support conditional renewal, and complete into durable tombstones. AWS uses conditional DynamoDB writes and strongly consistent contention reads.
 - `HumanResumeWorker` reconstructs the immutable workflow/browser profile, revalidates ownership, refuses disabled automations, renews before checkpoints/profile persistence, and prevents profile-save failure from being reported as durable success.
 - `HumanResumeLeaseHeartbeat` renews during long browser/model operations and permanently fences a worker after rejected or uncertain ownership renewal.
+- Durable redacted human-resume audit history records lifecycle identity without storing browser state, secrets, raw errors, or lease owner tokens.
 
 ## Validation history before this slice
 
@@ -29,62 +30,85 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - CI #107 passed on `1d9f605b8e1e137e7882a566a4b549b3f6c7e029` with guarded human-resume orchestration.
 - CI #111 passed on `b13d815bf087da799f441991378bb715fcd41c4a` with durable human-resume execution leases and orchestration lease gating.
 - CI #112 passed on `2c5cde839a3aebe229942fa5ee7dba5e4e16ea7c` with production human-resume runtime reconstruction.
-- CI #114 passed on `130510e16b16e8b12a77d995fb90e729ef09a368` after heartbeat ownership-loss regression alignment. This was the validated head before the current slice.
+- CI #114 passed on `130510e16b16e8b12a77d995fb90e729ef09a368` after heartbeat ownership-loss regression alignment.
+- CI #115 passed on `59bef6806f21ff8710b17dc334cf40b1c2f48c88` with the durable redacted human-resume audit trail. This was the validated head before the current slice.
 - The execution container cannot resolve `github.com`, so no local install/check/test pass is claimed. GitHub Actions is authoritative.
 
-## 2026-08-19 — Durable redacted human-resume audit trail
+## 2026-08-19 — Durable first-successor effect reconciliation authority
 
 ### Completed in this slice
 
-- Added provider-neutral `HumanResumeAuditEvent` / `HumanResumeAuditStore` contracts with a deliberately closed schema: event ID, timestamp, lifecycle event type, tenant/user/run/node/resolution identity only. There is no arbitrary metadata or error-text field through which cookies, browser state, DOM values, provider secrets, or lease owner tokens can be accidentally persisted.
-- Added audit event validation for required bounded identifiers and ISO-8601 timestamps.
-- Wired `HumanResumeOrchestrator` to emit typed lifecycle events for resolution accepted/replayed/conflicted, lease acquired/not-acquired, execution started/succeeded/failed, and lease completed/completion-failed.
-- Audit persistence is intentionally derived/best-effort observability rather than a new execution authority. Claim and lease stores remain authoritative; an audit backend outage cannot cause the orchestrator to retry or duplicate a website side effect. Audit failures are reduced to a fixed sanitized warning hook.
-- When audit persistence is configured, an explicit audit-event-ID factory is required so event identity does not rely on hidden process-global behavior.
-- Added `AwsDynamoHumanResumeAuditStore`. It stores append-only events under a tenant/user-derived + run-scoped partition and timestamp/event-ID sort key, uses a conditional put so a duplicate event cannot overwrite history, and performs strongly consistent ordered reads for a run.
-- Added provider-neutral tests proving the exact successful lifecycle event sequence, absence of the private lease owner token, fail-open behavior during audit backend outage, sanitized warnings, and malformed audit-boundary rejection.
-- Added AWS adapter tests for append/list ordering, tenant isolation, conditional duplicate rejection, and strongly consistent run-history reads.
-- No dependency or third-party source was added.
+- Added provider-neutral `HumanResumeEffectIdentity`, `HumanResumeEffectRecord`, `HumanResumeEffectReconciliationStore`, and typed reconciliation outcomes.
+- A first resumed successor is identified by tenant + user + run + paused HUMAN node + successor node + resolution ID + stable effect ID. The durable key is the ownership + run + paused-node boundary, so only one first-successor effect identity can win for that pause.
+- `prepare` is idempotent only for the exact same identity. A competing effect ID, resolution ID, or successor returns `CONFLICT` rather than silently replacing the winner.
+- Added the closed reconciliation decision set `ALREADY_APPLIED`, `DEFINITELY_NOT_APPLIED`, and `AMBIGUOUS`. A prepared effect can receive exactly one immutable decision. Repeating that same decision returns `REPLAY`; attempting to change it returns `CONFLICT`.
+- Added `humanResumeEffectRetryAllowed`, which grants automatic retry permission only for `DEFINITELY_NOT_APPLIED`. `ALREADY_APPLIED` and `AMBIGUOUS` are explicitly non-retrying outcomes.
+- Added `AwsDynamoHumanResumeEffectReconciliationStore`. Preparation uses a conditional `PutCommand`; decision persistence uses a conditional `UpdateCommand`; losing writers use strongly consistent reads to classify the durable winner.
+- DynamoDB transport, throttling, permission, and other non-conditional failures propagate instead of being guessed as replay/conflict/decision outcomes.
+- Added provider-neutral tests for exact-identity replay, competing-identity conflict, immutable decision replay/conflict, tenant/user isolation, prepare-before-decide enforcement, and retry authorization.
+- Added AWS adapter tests for atomic prepare, strongly consistent contention reads, competing identity conflict, immutable decision semantics, tenant/user partition isolation, and propagation of non-conditional DynamoDB uncertainty.
+- Updated core/AWS exports and the architecture/quality contracts. No dependency or third-party source was added.
 
-### Correctness / failure-mode review
+### Invariants and failure-mode review
 
-- Durable claim acceptance, execution lease ownership, heartbeat fencing, checkpoint state, and browser-profile persistence continue to decide whether execution may proceed. Audit writes never grant execution permission.
-- An audit write failure is not retried by re-running the human-resolution command and does not reinterpret `REPLAY`, `CONFLICT`, `BUSY`, lease loss, or execution failure.
-- Event IDs are append identity only. A duplicate event key fails instead of overwriting an earlier record; no last-write-wins history mutation is permitted.
-- The orchestrator records `EXECUTION_FAILED` without persisting exception text. Detailed operational errors remain in the existing sanitized execution/error channels rather than the durable audit record.
-- This slice does not make crash replay safe. It improves the evidence needed to diagnose recovery but cannot prove whether an external website effect completed in the lease-loss window.
+- This reconciliation record is execution authority, not best-effort telemetry. Storage uncertainty fails closed.
+- A pause boundary cannot acquire a second first-successor effect identity after one has been prepared. This prevents a replacement worker from silently changing the operation it is trying to reconcile.
+- A durable decision cannot be rewritten. This prevents two workers/verifiers from alternately authorizing and suppressing retry.
+- `ALREADY_APPLIED` never authorizes replay. Recovery must advance using verification/checkpoint reconstruction once runtime wiring exists.
+- `DEFINITELY_NOT_APPLIED` is the only state from which an automatic retry can eventually be permitted.
+- `AMBIGUOUS` remains a human-recovery state. The platform must not guess whether an external operation happened.
+- This slice deliberately does not enable automatic lease reacquisition or successor replay. Runtime verification has not yet been wired to create/resolve the effect record, so the existing fail-closed no-replay behavior remains in force.
+
+### Concurrency / idempotency review
+
+- Competing `prepare` calls serialize through one conditional DynamoDB put. The loser reads the winner consistently and can only return `REPLAY` for exact identity equality; otherwise it returns `CONFLICT`.
+- Competing `decide` calls may both observe `PREPARED`, but the conditional update permits only one transition to `DECIDED`. The loser reads the winner consistently and returns same-decision `REPLAY` or different-decision `CONFLICT`.
+- There is no read-then-unconditional-write path that can overwrite a winner.
+- Stable effect-ID generation is intentionally not hidden inside the store. The later runtime integration must derive/inject a deterministic effect ID for the first resumed successor before execution starts.
 
 ### Security / tenancy review
 
-- Audit partitions are derived from tenant + user scope and additionally separated by run ID. Reads require the same ownership scope and validate the embedded event identity before returning data.
-- The event contract has no owner-token field and no arbitrary map/payload. Lease owner tokens, browser cookies, auth headers, session storage, provider credentials, raw DOM values, reasoning prompt context, and exception text are excluded by construction.
-- Warning callbacks receive only the fixed string `human resume audit persistence failed`; storage error details are not surfaced through this path.
+- Records are partitioned by a derived tenant/user scope and additionally keyed by run + paused HUMAN node.
+- Durable payload identity is validated on read before the record is returned.
+- The reconciliation schema contains only bounded identity fields, state, timestamps, and one closed decision enum. It has no arbitrary metadata, browser payload, cookies, auth headers, DOM data, provider secrets, raw exception text, or lease owner token.
+- A client-selected record from another tenant/user cannot be addressed through the adapter because the ownership partition is derived server-side from the authorized scope.
 
 ### Timeout, retry, observability, cost, and scaling review
 
-- Audit writes add a small fixed DynamoDB write cost per human-resume lifecycle transition. They do not add browser/model calls.
-- Run history uses a dedicated run-scoped partition and ordered sort keys, avoiding table scans. A very large number of human-resume events for one run can still create a hot logical partition; pagination/retention should be added before histories become unbounded.
-- Audit backend throttling/transport failure does not widen execution retries and therefore cannot multiply target-site effects. A warning is emitted for external operational telemetry to count dropped audit events.
-- Heartbeat-specific events inside `HumanResumeWorker` are still not emitted by this slice; the durable lease state plus orchestration events remain available, but exact periodic-renewal/loss history needs a later worker integration.
+- Reconciliation adds at most one prepare write and one decision write per human-resume pause boundary, plus strongly consistent reads only on contention/recovery. It does not add browser/model calls in this slice.
+- The storage path is run/node scoped and does not require a table scan. Hot-key risk is naturally limited to workers contending on the same human pause, where serialization is required for correctness.
+- Storage failure does not widen browser retry budgets or create another target-site attempt.
+- The audit trail is not yet extended with reconciliation decisions; that remains observability work after the authority is integrated into runtime execution.
+
+### User-visible failure recovery
+
+- `ALREADY_APPLIED`: the eventual recovery path should tell the user the effect was found already present and continue only after state reconstruction/verification.
+- `DEFINITELY_NOT_APPLIED`: the eventual recovery path may retry once ownership is safely reacquired and the stable effect identity is preserved.
+- `AMBIGUOUS`: the run must remain/return to a human-attention state and explain that the platform cannot safely determine whether repeating the action would duplicate an external effect.
+- Storage uncertainty itself must surface as a recoverable platform failure, never as an inferred reconciliation result.
 
 ### Validation status for this slice
 
-- Code, tests, exports, AWS adapter, and this progress update are intended to be published in one atomic multi-file Git commit using Git data primitives.
+- The prior head `59bef6806f21ff8710b17dc334cf40b1c2f48c88` is confirmed green in GitHub Actions CI #115 before this change.
+- Code, tests, exports, architecture, quality gates, and this progress entry are being published together in one Git-data commit to avoid per-file CI churn.
 - No local validation is claimed because the execution container cannot resolve GitHub/package dependencies.
-- GitHub Actions must complete successfully on the exact resulting commit before this slice is considered validated. If CI fails, inspect the failing job logs and root-cause before any corrective commit; do not weaken checks.
+- GitHub Actions on the exact resulting commit is authoritative. If it fails, inspect job logs and root-cause before any corrective commit; do not weaken checks.
 
 ### Known risks / unresolved questions
 
-- The unknown-side-effect window remains for an operation already in flight when lease ownership becomes uncertain. Audit history cannot by itself establish whether the target website applied the operation.
-- Automatic same-resolution crash recovery after lease expiry remains disabled until durable effect reconciliation/idempotency can verify-before-retry.
-- Heartbeat renewal/loss and runtime/profile milestones are not yet connected to the new audit store.
+- Runtime verification is not yet wired to the reconciliation store, so automatic crash recovery remains disabled.
+- The current workflow verification interface returns a boolean; classifying `DEFINITELY_NOT_APPLIED` versus `AMBIGUOUS` after a crash will require a dedicated reconciliation verifier rather than overloading ordinary node verification semantics.
+- `ALREADY_APPLIED` still needs a safe checkpoint/variable reconstruction path so recovery can advance without rerunning the action.
+- Stable effect-ID generation must be integrated with the first resumed successor and remain identical across worker replacement.
+- Heartbeat/runtime/profile/reconciliation audit milestones are still incomplete.
 - Explicit HUMAN branch-selection data is still absent; the exactly-one-successor rule remains.
 - The AWS SDK peer-version warning still needs deliberate package alignment rather than suppression.
 - Live AgentCore/DynamoDB behavior remains unvalidated without cloud credentials; deterministic tests are the current evidence.
 
 ### Next highest-value tasks
 
-1. Add durable first-successor effect identity/reconciliation so replacement ownership can classify an interrupted effect as already-applied, definitely-not-applied, or ambiguous before any retry.
-2. Extend the redacted audit trail into heartbeat ownership loss, runtime reconstruction, profile persistence, and reconciliation decisions without exposing worker tokens or browser data.
-3. Deliberately align AWS SDK peer versions and rerun the full workspace suite.
-4. Continue outward through capture -> compile -> test -> publish -> schedule once recovery can reconcile crash ambiguity safely.
+1. Add a provider-neutral reconciliation verifier that can inspect the first resumed successor's expected effect after worker replacement and return `ALREADY_APPLIED`, `DEFINITELY_NOT_APPLIED`, or `AMBIGUOUS` without executing the action.
+2. Wire `HumanResumeWorker` recovery so expired same-resolution ownership may proceed only after durable effect preparation + reconciliation; retry only on `DEFINITELY_NOT_APPLIED`, advance safely on `ALREADY_APPLIED`, and pause on `AMBIGUOUS`.
+3. Persist redacted audit events for effect preparation/reconciliation, heartbeat ownership loss, runtime reconstruction, and profile persistence.
+4. Deliberately align AWS SDK peer versions and rerun the full workspace suite.
+5. Continue outward through capture -> compile -> test -> publish -> schedule once crash recovery is fully reconciled end to end.
