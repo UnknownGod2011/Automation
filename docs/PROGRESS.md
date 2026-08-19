@@ -24,7 +24,7 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 ## Authoritative incoming validation
 
 - PR #1 is the open draft development PR on `agent/bootstrap-platform`.
-- Incoming head `f732a177f0a68f7e77b91f7f1f0bee6fd4ed01f3` is green via GitHub Actions CI #139.
+- Incoming head `93617e96e83de109a1cb1f3e8e1cced4038cd100` is green via GitHub Actions CI #141.
 
 ## 2026-08-19 — AWS scheduling / dispatch + IaC
 
@@ -106,7 +106,7 @@ Added `AwsDynamoCaptureSessionStore` behind a narrow injected DynamoDB document-
 
 - Browser-session IDs and browser-profile references stay server-side and never enter the Live View response or trusted-handler error response.
 - Durable records and DynamoDB partitions are scoped by tenant/user; completion also requires exact automation and profile identity.
-- Duplicate completed callbacks are non-executing. The remaining crash window between trace persistence and capture-session completion requires exact trace-persistence replay support before automatic callback retry can be considered fully crash-safe; this is explicitly left as the next narrow completion task rather than broad recovery work.
+- Duplicate completed callbacks are non-executing.
 - Capture browser compute is stopped after durable completion. If stop fails, the caller receives `cleanupPending=true`; operational retry/metrics are still required before public scale.
 - No new dependency was added and the reviewed pnpm graph is unchanged.
 
@@ -116,22 +116,44 @@ Added provider-neutral tests for save-profile-before-trace ordering, completed r
 
 ### Validation status
 
-- This run publishes one normal batched commit only. No local pass is claimed because the execution environment cannot resolve github.com; GitHub Actions on the exact new head is authoritative and must complete before this slice is called green.
+- Corrective head `93617e96e83de109a1cb1f3e8e1cced4038cd100` is green via CI #141.
+
+## 2026-08-20 — Exact capture-trace replay boundary
+
+### Product slice
+
+Closed the remaining trusted capture-completion crash seam. `CaptureCompletionService` now receives a read-only capture-trace lookup boundary in addition to the trace persister. If immutable trace persistence reports failure, completion may continue only when a scoped read proves that the already-durable trace is byte-for-byte equivalent at the JSON value level to the callback trace. Same trace ID with different content remains a hard conflict.
+
+This specifically handles a worker losing acknowledgement after trace persistence but before the durable capture-session completion transaction. The retry can save the profile again using the existing idempotent profile client token, observe the exact durable trace, complete the session pointer, and stop ephemeral browser compute without asking the user to repeat capture.
+
+### Correctness / security / tenancy / retry review
+
+- Replay authority is based on exact scoped trace content, not exception-message matching and not trace ID alone.
+- The lookup is tenant/user/automation scoped; a trace from another ownership boundary cannot authorize completion.
+- Storage/read uncertainty still propagates. Absence or content drift never becomes success.
+- No browser action is replayed. This seam concerns capture artifact persistence only, after the human demonstration has already finished.
+- No new dependency, secret field, browser-profile exposure, or additional cloud compute is introduced.
+
+### Tests
+
+Added regression coverage for the precise crash window: trace storage succeeds, acknowledgement is lost, the session remains STARTED, and the exact callback retry completes safely. A negative test proves same-ID/different-content persistence is rejected and leaves the capture session STARTED.
+
+### Validation status
+
+- This commit must be validated by GitHub Actions on its exact head before it is called green.
 
 ## Next product milestones
 
-1. Obtain exact-head green CI for the durable capture-completion slice; root-cause any real failure before using the single allowed corrective commit.
-2. Close the remaining capture-completion retry seam by making exact same-trace persistence idempotent, then surface `latestCompletedForAutomation().traceId` through the sanitized control-plane summary so the Next.js compile step consumes it automatically instead of asking the user to type a trace ID.
-3. Wire concrete AWS SDK Scheduler/Step Functions composition around the already-tested narrow scheduling APIs, keeping missing deployment configuration explicit.
-4. Replace the temporary server bearer integration seam with Cognito authentication/API authorization.
-5. Implement BYOK credential-pool routing through the secure secret boundary; provider keys must remain outside ordinary application tables/logs.
-6. Add SES notifications/CloudWatch observability and one controlled end-to-end human-recovery demonstration.
+1. Surface `latestCompletedForAutomation().traceId` through the sanitized control-plane automation summary and remove the manual Trace ID field from the Next.js compile step.
+2. Wire concrete AWS SDK Scheduler/Step Functions composition around the already-tested narrow scheduling APIs, keeping missing deployment configuration explicit.
+3. Replace the temporary server bearer integration seam with Cognito authentication/API authorization.
+4. Implement BYOK credential-pool routing through the secure secret boundary; provider keys must remain outside ordinary application tables/logs.
+5. Add SES notifications/CloudWatch observability and one controlled end-to-end human-recovery demonstration.
 
 ## Known parked limitations
 
 - Recovery continuation consumption remains parked until the cloud worker requires it; product work takes precedence over narrower recovery micro-edge cases.
 - Sensitive runtime values still require the later secret-resolution contract; never place provider keys, passwords, cookies, or equivalent secrets in workflow/runtime-variable metadata.
-- Capture completion is now durable and trusted, but the existing user-facing summary still does not surface the latest completed trace ID automatically. The compile form therefore remains manual for one more slice.
-- A callback replay after trace persistence but before durable capture completion can still encounter immutable trace persistence; exact same-trace replay must be added before enabling automatic callback retries.
+- Capture completion is durable and trusted, and exact trace-persistence replay is now defined, but the user-facing summary still does not surface the latest completed trace ID automatically. The compile form therefore remains manual for one more slice.
 - Public HTTP command idempotency, Cognito verification, rate limiting, and production capture-worker authentication middleware remain required control-plane work.
 - The AWS scheduler and Step Functions adapters currently depend on narrow injected AWS API interfaces. Concrete SDK composition remains a small follow-up.

@@ -6,6 +6,7 @@ import {
   type CaptureSessionFinalizer,
   type CaptureSessionRecord,
   type CaptureTracePersister,
+  type CaptureTraceReader,
 } from "./capture-completion.js";
 
 const scope = { tenantId: "tenant-1", userId: "user-1" };
@@ -55,12 +56,42 @@ class FakeFinalizer implements CaptureSessionFinalizer {
   }
 }
 
-class FakePersister implements CaptureTracePersister {
-  constructor(private readonly events: string[]) {}
+class FakeTraceStore implements CaptureTracePersister, CaptureTraceReader {
+  readonly records = new Map<string, CaptureTrace>();
+  failAfterPersist = false;
+  readonly events: string[];
+
+  constructor(events: string[]) {
+    this.events = events;
+  }
+
   async persistCapture(request: { scope: typeof scope; trace: CaptureTrace }) {
     this.events.push("persist-trace");
+    if (this.records.has(request.trace.traceId)) throw new Error("immutable trace already exists");
+    this.records.set(request.trace.traceId, structuredClone(request.trace));
+    if (this.failAfterPersist) throw new Error("worker lost acknowledgement after trace persistence");
     return structuredClone(request.trace);
   }
+
+  async get(
+    requestScope: typeof scope,
+    automationId: string,
+    traceId: string,
+  ): Promise<CaptureTrace | null> {
+    if (requestScope.tenantId !== scope.tenantId || requestScope.userId !== scope.userId) return null;
+    const stored = this.records.get(traceId);
+    if (!stored || stored.automationId !== automationId) return null;
+    return structuredClone(stored);
+  }
+}
+
+function makeService(
+  sessions: InMemoryCaptureSessionStore,
+  finalizer: FakeFinalizer,
+  traces: FakeTraceStore,
+  now = () => new Date("2026-08-20T00:10:00.000Z"),
+) {
+  return new CaptureCompletionService(sessions, finalizer, traces, traces, now);
 }
 
 describe("CaptureCompletionService", () => {
@@ -68,13 +99,8 @@ describe("CaptureCompletionService", () => {
     const sessions = new InMemoryCaptureSessionStore();
     await sessions.putStarted(session);
     const finalizer = new FakeFinalizer();
-    const persister = new FakePersister(finalizer.events);
-    const service = new CaptureCompletionService(
-      sessions,
-      finalizer,
-      persister,
-      () => new Date("2026-08-20T00:10:00.000Z"),
-    );
+    const traces = new FakeTraceStore(finalizer.events);
+    const service = makeService(sessions, finalizer, traces);
 
     await expect(service.complete({ scope, automationId: "auto-1", captureSessionId: "capture-1", trace }))
       .resolves.toEqual({ traceId: "trace-1", replayed: false, cleanupPending: false });
@@ -90,26 +116,64 @@ describe("CaptureCompletionService", () => {
     await sessions.putStarted(session);
     await sessions.complete(scope, "capture-1", "trace-1", "2026-08-20T00:09:00.000Z");
     const finalizer = new FakeFinalizer();
-    const service = new CaptureCompletionService(
-      sessions,
-      finalizer,
-      new FakePersister(finalizer.events),
-      () => new Date("2026-08-20T00:10:00.000Z"),
-    );
+    const traces = new FakeTraceStore(finalizer.events);
+    const service = makeService(sessions, finalizer, traces);
 
     await expect(service.complete({ scope, automationId: "auto-1", captureSessionId: "capture-1", trace }))
       .resolves.toEqual({ traceId: "trace-1", replayed: true, cleanupPending: false });
     expect(finalizer.events).toEqual([]);
   });
 
+  it("accepts exact same-trace persistence replay after the previous worker lost acknowledgement", async () => {
+    const sessions = new InMemoryCaptureSessionStore();
+    await sessions.putStarted(session);
+    const finalizer = new FakeFinalizer();
+    const traces = new FakeTraceStore(finalizer.events);
+    traces.failAfterPersist = true;
+    const service = makeService(sessions, finalizer, traces);
+
+    await expect(service.complete({ scope, automationId: "auto-1", captureSessionId: "capture-1", trace }))
+      .rejects.toThrow("lost acknowledgement");
+    expect((await sessions.get(scope, "capture-1"))?.status).toBe("STARTED");
+
+    traces.failAfterPersist = false;
+    await expect(service.complete({ scope, automationId: "auto-1", captureSessionId: "capture-1", trace }))
+      .resolves.toEqual({ traceId: "trace-1", replayed: false, cleanupPending: false });
+    expect(await sessions.latestCompletedForAutomation(scope, "auto-1")).toMatchObject({
+      status: "COMPLETED",
+      traceId: "trace-1",
+    });
+    expect(finalizer.events).toEqual([
+      "save-profile",
+      "persist-trace",
+      "save-profile",
+      "persist-trace",
+      "stop",
+    ]);
+  });
+
+  it("rejects same trace ID with different immutable content", async () => {
+    const sessions = new InMemoryCaptureSessionStore();
+    await sessions.putStarted(session);
+    const finalizer = new FakeFinalizer();
+    const traces = new FakeTraceStore(finalizer.events);
+    traces.records.set(trace.traceId, { ...structuredClone(trace), objective: "Different objective" });
+    const service = makeService(sessions, finalizer, traces);
+
+    await expect(service.complete({ scope, automationId: "auto-1", captureSessionId: "capture-1", trace }))
+      .rejects.toThrow("already exists");
+    expect((await sessions.get(scope, "capture-1"))?.status).toBe("STARTED");
+  });
+
   it("rejects cross-automation and expired completion before browser-profile persistence", async () => {
     const sessions = new InMemoryCaptureSessionStore();
     await sessions.putStarted(session);
     const finalizer = new FakeFinalizer();
-    const service = new CaptureCompletionService(
+    const traces = new FakeTraceStore(finalizer.events);
+    const service = makeService(
       sessions,
       finalizer,
-      new FakePersister(finalizer.events),
+      traces,
       () => new Date("2026-08-20T01:00:00.000Z"),
     );
 
@@ -125,12 +189,8 @@ describe("CaptureCompletionService", () => {
     await sessions.putStarted(session);
     const finalizer = new FakeFinalizer();
     finalizer.stopError = true;
-    const service = new CaptureCompletionService(
-      sessions,
-      finalizer,
-      new FakePersister(finalizer.events),
-      () => new Date("2026-08-20T00:10:00.000Z"),
-    );
+    const traces = new FakeTraceStore(finalizer.events);
+    const service = makeService(sessions, finalizer, traces);
 
     await expect(service.complete({ scope, automationId: "auto-1", captureSessionId: "capture-1", trace }))
       .resolves.toMatchObject({ traceId: "trace-1", cleanupPending: true });

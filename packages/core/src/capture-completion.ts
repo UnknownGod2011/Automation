@@ -41,6 +41,10 @@ export interface CaptureTracePersister {
   persistCapture(request: { scope: OwnershipScope; trace: CaptureTrace }): Promise<CaptureTrace>;
 }
 
+export interface CaptureTraceReader {
+  get(scope: OwnershipScope, automationId: string, traceId: string): Promise<CaptureTrace | null>;
+}
+
 export interface CompleteCaptureRequest {
   scope: OwnershipScope;
   automationId: string;
@@ -75,13 +79,39 @@ function assertTraceMatches(
   }
 }
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Readonly<Record<string, unknown>>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+function sameTrace(left: CaptureTrace, right: CaptureTrace): boolean {
+  return canonicalJson(left) === canonicalJson(right);
+}
+
 export class CaptureCompletionService {
+  private readonly traceReader?: CaptureTraceReader;
+  private readonly now: () => Date;
+
   constructor(
     private readonly sessions: CaptureSessionStore,
     private readonly finalizer: CaptureSessionFinalizer,
     private readonly traces: CaptureTracePersister,
-    private readonly now: () => Date = () => new Date(),
-  ) {}
+    traceReaderOrNow?: CaptureTraceReader | (() => Date),
+    now: () => Date = () => new Date(),
+  ) {
+    if (typeof traceReaderOrNow === "function") {
+      this.now = traceReaderOrNow;
+    } else {
+      this.traceReader = traceReaderOrNow;
+      this.now = now;
+    }
+  }
 
   async complete(request: CompleteCaptureRequest): Promise<CompleteCaptureResult> {
     const record = await this.sessions.get(request.scope, request.captureSessionId);
@@ -107,7 +137,20 @@ export class CaptureCompletionService {
     // Profile persistence is intentionally before trace acceptance: the compiler must never
     // accept a demonstration whose authenticated browser state was not durably saved.
     await this.finalizer.saveProfile(request.scope, record);
-    await this.traces.persistCapture({ scope: request.scope, trace: request.trace });
+    try {
+      await this.traces.persistCapture({ scope: request.scope, trace: request.trace });
+    } catch (error) {
+      // A worker can fail after immutable trace persistence but before the session-completion
+      // transaction. Only an exact same-trace replay may cross that crash boundary. Same-ID
+      // content drift remains a conflict rather than being silently accepted.
+      if (!this.traceReader) throw error;
+      const existing = await this.traceReader.get(
+        request.scope,
+        request.automationId,
+        request.trace.traceId,
+      );
+      if (!existing || !sameTrace(existing, request.trace)) throw error;
+    }
     const outcome = await this.sessions.complete(
       request.scope,
       record.captureSessionId,
