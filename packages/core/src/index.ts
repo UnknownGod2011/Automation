@@ -204,6 +204,7 @@ export * from "./human-resume-audit.js";
 export * from "./human-resume-effect.js";
 export * from "./human-resume-heartbeat.js";
 export * from "./human-resume-lease.js";
+export * from "./human-resume-reconciliation.js";
 export * from "./human-resume.js";
 export * from "./human-resume-worker.js";
 export * from "./memory.js";

@@ -34,6 +34,8 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - The first resumed successor must have one stable durable effect identity for tenant + user + run + paused HUMAN node + successor + resolution before automatic crash replay can be enabled.
 - Production effect-reconciliation stores must atomically prepare exactly one effect identity for a pause boundary. Same identity may replay; a different effect ID, resolution ID, or successor must conflict.
 - A prepared human-resume effect may receive exactly one immutable reconciliation decision: `ALREADY_APPLIED`, `DEFINITELY_NOT_APPLIED`, or `AMBIGUOUS`. Same-decision delivery may replay; a competing decision must conflict.
+- Reconciliation inspection must be read-only. A verifier must never execute the successor action or any other external side effect while deciding whether an earlier effect occurred.
+- A prior durable reconciliation decision is authoritative and must suppress re-inspection. Identity conflicts must be rejected before verifier work starts.
 - Only a durable `DEFINITELY_NOT_APPLIED` reconciliation may authorize automatic retry of the external effect. `ALREADY_APPLIED` and `AMBIGUOUS` must not replay the action.
 
 ### 4. Failure handling
@@ -47,6 +49,8 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - If resume execution fails after claim acceptance, do not reinterpret a later claim replay as permission to rerun side effects.
 - If execution finishes after its durable lease expired or was lost, do not report durable success from the orchestration boundary; surface the ownership-loss failure for reconciliation.
 - Heartbeat loss cannot retroactively cancel an already in-flight external operation. Its result must be rejected and all later effects fenced until effect reconciliation proves a safe recovery path.
+- A reconciliation verifier failure or uncertainty leaves the effect `PREPARED`; it must never be converted into `DEFINITELY_NOT_APPLIED`.
+- `DEFINITELY_NOT_APPLIED` requires positive proof of absence. When absence cannot be established, return `AMBIGUOUS`.
 - `AMBIGUOUS` reconciliation is a human-recovery state, not a transient retry condition.
 
 ### 5. Security and tenant isolation
@@ -58,6 +62,7 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Human-resolution claims, resume execution leases, and effect-reconciliation records must be partitioned/scoped by tenant and user, and durable payload identity must be validated when read.
 - Human-resume lease owner tokens are operational capability material: persist only where needed for compare-and-set ownership and never expose them to clients, user-visible histories, heartbeat errors, or logs.
 - Effect-reconciliation authority must not persist browser content, cookies, auth material, model prompt context, arbitrary exception text, or worker owner tokens.
+- Reconciliation verifier results may return evidence references, but execution-authority records must not embed the referenced browser/DOM content.
 
 ### 6. Browser safety
 - Deterministic Playwright/CDP interaction is preferred when a known validated strategy exists.
@@ -65,12 +70,14 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Recovery must preserve the node objective and allowed side effects.
 - A changed UI must never broaden an action beyond its original intent.
 - CAPTCHA, MFA, bot/security challenges, or explicit site restrictions must be surfaced to the human rather than bypassed.
+- Reconciliation inspection must use observation-only browser capabilities; action-capable executors must not be exposed to the verifier interface.
 
 ### 7. Reasoning-provider safety
 - Model calls must have explicit timeout and retry behavior.
 - Invalid credentials and exhausted quota must not be retried indefinitely.
 - Key rotation/failover must not be implemented as rate-limit or billing circumvention.
 - Reasoning output used for side effects must be validated against workflow constraints before execution.
+- Model-assisted reconciliation may classify state only; it must not broaden or perform the workflow action and must return `AMBIGUOUS` when confidence/evidence cannot prove absence.
 
 ### 8. Persistence and recovery
 - Critical run state must survive process/browser termination.
@@ -84,12 +91,14 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Expired ownership cannot be completed as though it were still valid.
 - Automatic recovery after lease expiry remains disabled until durable effect reconciliation is integrated with runtime verification and successor control flow.
 - Reconciliation storage must use strongly consistent reads when classifying a lost conditional race; stale reads must not manufacture replay permission.
+- Effect identity must be durably prepared before reconciliation inspection starts. If inspection throws or times out, the durable record remains prepared and undecided.
 
 ### 9. Observability
 - Every run needs a stable run ID and correlation context.
 - Record node attempts, failure class, retry count, verification result, timing, and checkpoint state without leaking secrets.
 - User-facing run history must distinguish succeeded, retrying, paused, needs-auth, needs-credential, failed, and canceled states.
 - Human-resolution audit events should distinguish claim accepted/replayed/conflicted, lease acquired/busy/completed/expired, heartbeat ownership loss, executor start/finish, and reconciliation decisions without logging lease owner tokens or sensitive browser data.
+- Reconciliation evidence should be represented by bounded artifact references; raw inspected content belongs in the existing protected evidence system, not the reconciliation authority record.
 
 ### 10. Tests and CI
 - Add or update tests for every behavior changed.
@@ -102,6 +111,7 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Human-resume lease tests must prove single-owner acquisition, same-resolution reacquisition only after expiry, conflict isolation, renewal/completion owner checks, completed tombstones, tenant isolation, stale-expiry rejection, and propagation of non-conditional storage failures.
 - Human-resume heartbeat tests must prove renewal serialization, renewal during a long operation, permanent fencing after rejected/uncertain renewal, suppression of later operations after loss, sanitized ownership-loss errors, and heartbeat interval validation.
 - Human-resume effect-reconciliation tests must prove atomic single-identity preparation, same-identity replay, competing-identity conflict, immutable decision replay/conflict, tenant isolation, strongly consistent contention reads, and propagation of non-conditional storage uncertainty.
+- Reconciliation-verifier tests must prove prepare-before-inspect ordering, conflict suppression, prior-decision replay without reinspection, verifier-failure preservation of `PREPARED`, rejection of non-side-effecting/non-verifiable successors, ambiguity preservation, and first-writer-wins decision authority under concurrent read-only inspection.
 - Retry-authorization tests must prove only `DEFINITELY_NOT_APPLIED` permits an automatic external-effect retry.
 
 ### 11. Dependency discipline
@@ -123,6 +133,8 @@ For material changes, explicitly consider:
 - model/provider outages,
 - partial external side effects,
 - user-visible recovery path.
+
+Read-only reconciliation can duplicate inspection cost under contention because multiple workers may inspect the same prepared effect before the first immutable decision commits. That is acceptable for correctness because inspection cannot cause workflow effects; a future optimization may add a dedicated inspection lease if model/browser cost becomes material.
 
 ## Definition of done
 
