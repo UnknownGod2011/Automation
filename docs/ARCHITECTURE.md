@@ -86,9 +86,13 @@ Human-resolution delivery is at-least-once. A resolution command is scoped to te
 
 The AWS lease adapter uses conditional DynamoDB writes so only one live owner exists. An expired lease may be reacquired only for the same resolution ID; a competing resolution ID is a permanent conflict. Renewal and completion use conditional owner/resolution/state/expiry checks, and non-conditional DynamoDB uncertainty propagates instead of being guessed. Reads used to classify contention are strongly consistent.
 
+Healthy human-resume execution uses a provider-neutral heartbeat in addition to checkpoint-coupled renewal. Timer-driven and boundary-driven renewals are serialized so an older renewal response cannot regress the worker's current lease. Browser session creation, runtime creation, deterministic browser actions, semantic reasoning, semantic browser actions, verification, checkpoint writes, and profile persistence are fenced by the same heartbeat. If any renewal is rejected or uncertain, that worker permanently considers ownership lost and no later ownership-sensitive operation may start. Cleanup may still close that worker's own ephemeral runtime/session because cleanup cannot create external workflow effects.
+
+The heartbeat interval must be positive and strictly smaller than the lease TTL. The default is approximately one third of the TTL, providing multiple renewal opportunities during long browser/model calls while bounding DynamoDB write amplification. A heartbeat cannot cancel an external side effect already in flight at the exact moment ownership becomes uncertain; after the call returns, its result is rejected and all subsequent workflow effects are fenced. Automatic crash replay therefore remains disabled until effect reconciliation can determine whether an in-flight external effect already happened.
+
 This lease does not by itself make crash replay safe. Current orchestration still treats a claim `REPLAY` as non-executing even if a prior lease later expires. If the accepted executor crashes, the active lease is left to expire and the run requires a future recovery policy. Automatic reacquisition/re-execution must remain disabled until the executor can reconcile the unknown-side-effect window using node-level verification/idempotency. Lease ownership prevents concurrency; it does not prove whether an external side effect happened just before a worker died.
 
-Worker owner tokens are operational capability material. They may be persisted inside the lease record for compare-and-set ownership, but must not be exposed to clients, user-visible run history, or logs.
+Worker owner tokens are operational capability material. They may be persisted inside the lease record for compare-and-set ownership, but must not be exposed to clients, user-visible run history, heartbeat errors, or logs.
 
 ## Workflow intermediate representation
 
@@ -165,6 +169,7 @@ Every durable entity is keyed/owned by tenant_id + user_id where appropriate. Br
 - Retryable steps carry attempt IDs and must not duplicate irreversible effects without verification/idempotency support.
 - Human-resolution command delivery may be duplicated or concurrent; exactly one resolution ID may be durably accepted for a given ownership + run + paused-node boundary.
 - Human resume execution is started only for a newly accepted claim that also owns a live execution lease; replay/conflict outcomes do not start browser/model work.
+- Human-resume heartbeat and boundary renewals share one serialized renewal path; once ownership is lost, the worker may not initiate another browser/model/verifier/checkpoint/profile operation.
 - Lease expiry permits same-resolution ownership recovery at the storage-contract level, but orchestration must not convert that into automatic side-effect replay until effect reconciliation is implemented.
 
 ## Observability
@@ -177,7 +182,7 @@ All services propagate correlation identifiers:
 - node_id
 - attempt_id
 
-Do not log cookies, secrets, prompt-private DOM fields, raw API keys, sensitive browser storage, or human-resume lease owner tokens. Run UI receives sanitized reasoning summaries/evidence, not hidden model chain-of-thought.
+Do not log cookies, secrets, prompt-private DOM fields, raw API keys, sensitive browser storage, or human-resume lease owner tokens. Run UI receives sanitized reasoning summaries/evidence, not hidden model chain-of-thought. Heartbeat ownership-loss errors must remain sanitized and must not include the durable lease payload or owner token.
 
 ## Deployment strategy
 

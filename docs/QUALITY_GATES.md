@@ -29,6 +29,7 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Newly accepted human resume execution must acquire a durable execution lease before browser/model work starts. The lease must be scoped to tenant + user + run + paused node + resolution ID and owned by an opaque worker token.
 - Production lease stores must atomically prevent overlapping owners. Expired ownership may be reacquired only by the same resolution ID; a competing resolution ID must remain a conflict.
 - Completion is a durable tombstone. A completed human-resume boundary must not become executable again merely because a TTL elapsed.
+- Human-resume timer and boundary renewals must be serialized through one ownership path. A renewal failure or uncertainty permanently fences that worker from starting later browser, model, verification, checkpoint, or profile-persistence work.
 - Worker crash recovery must not rely on claim replay or lease expiry alone. Node-level idempotency/effect verification must address the unknown-side-effect window before automatic recovery can be considered safe.
 
 ### 4. Failure handling
@@ -41,6 +42,7 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Database/network uncertainty during human-resolution claiming or execution-lease mutation must propagate as a failure; it must never be guessed to mean replay, conflict, acquisition, renewal, or completion.
 - If resume execution fails after claim acceptance, do not reinterpret a later claim replay as permission to rerun side effects.
 - If execution finishes after its durable lease expired or was lost, do not report durable success from the orchestration boundary; surface the ownership-loss failure for reconciliation.
+- Heartbeat loss cannot retroactively cancel an already in-flight external operation. Its result must be rejected and all later effects fenced until effect reconciliation proves a safe recovery path.
 
 ### 5. Security and tenant isolation
 - Never store raw external API keys in application metadata tables or logs.
@@ -49,7 +51,7 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Browser executors must not accept arbitrary profile identifiers without ownership authorization.
 - Human approval boundaries must exist for risky/destructive actions.
 - Human-resolution claims and resume execution leases must be partitioned/scoped by tenant and user, and durable payload identity must be validated when read.
-- Human-resume lease owner tokens are operational capability material: persist only where needed for compare-and-set ownership and never expose them to clients, user-visible histories, or logs.
+- Human-resume lease owner tokens are operational capability material: persist only where needed for compare-and-set ownership and never expose them to clients, user-visible histories, heartbeat errors, or logs.
 
 ### 6. Browser safety
 - Deterministic Playwright/CDP interaction is preferred when a known validated strategy exists.
@@ -71,14 +73,16 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Browser compute may terminate while waiting for a human; persistent browser/session state and checkpoint evidence must be saved first.
 - Human-resolution acceptance must be durable before browser/model resume work starts so duplicate workers can be rejected before side effects.
 - Human-resume execution ownership must be durable and conditionally acquired/renewed/completed; overlapping owners are invalid.
-- Lease renewal must occur before expiry. Expired ownership cannot be completed as though it were still valid.
+- Lease renewal must occur before expiry. Human-resume workers must also heartbeat during long operations; checkpoint-only renewal is insufficient.
+- The heartbeat interval must be positive and strictly less than the lease TTL, with enough margin for expected storage latency and transient scheduling delay.
+- Expired ownership cannot be completed as though it were still valid.
 - Automatic recovery after lease expiry remains disabled until a durable effect-reconciliation strategy proves rerunning the successor is safe.
 
 ### 9. Observability
 - Every run needs a stable run ID and correlation context.
 - Record node attempts, failure class, retry count, verification result, timing, and checkpoint state without leaking secrets.
 - User-facing run history must distinguish succeeded, retrying, paused, needs-auth, needs-credential, failed, and canceled states.
-- Human-resolution audit events should distinguish claim accepted/replayed/conflicted, lease acquired/busy/completed/expired, and executor start/finish without logging lease owner tokens or sensitive browser data.
+- Human-resolution audit events should distinguish claim accepted/replayed/conflicted, lease acquired/busy/completed/expired, heartbeat ownership loss, and executor start/finish without logging lease owner tokens or sensitive browser data.
 
 ### 10. Tests and CI
 - Add or update tests for every behavior changed.
@@ -89,6 +93,7 @@ Every coherent increment must satisfy the applicable gates below before it is tr
 - Durable idempotency adapters require contention tests, same-command replay tests, conflicting-command tests, tenant-isolation tests, and non-conditional failure propagation tests.
 - Human resume orchestration tests must prove replay/conflict outcomes are non-executing, including concurrent duplicate delivery and executor-failure cases.
 - Human-resume lease tests must prove single-owner acquisition, same-resolution reacquisition only after expiry, conflict isolation, renewal/completion owner checks, completed tombstones, tenant isolation, stale-expiry rejection, and propagation of non-conditional storage failures.
+- Human-resume heartbeat tests must prove renewal serialization, renewal during a long operation, permanent fencing after rejected/uncertain renewal, suppression of later operations after loss, sanitized ownership-loss errors, and heartbeat interval validation.
 
 ### 11. Dependency discipline
 - Avoid dependencies when a small well-tested internal abstraction is sufficient.

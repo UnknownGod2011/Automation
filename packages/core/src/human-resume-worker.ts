@@ -1,11 +1,13 @@
 import type { RunCheckpoint } from "@automation/contracts";
 import type {
   AutomationRepository,
+  BrowserExecutor,
   BrowserSessionHandle,
   BrowserSessionManager,
   CheckpointRepository,
   ReasoningProvider,
   RunRepository,
+  VerificationEngine,
   WorkflowVersionRepository,
 } from "./index.js";
 import {
@@ -21,6 +23,7 @@ import type {
   HumanResumeExecutionLease,
   HumanResumeExecutionLeaseStore,
 } from "./human-resume-lease.js";
+import { HumanResumeLeaseHeartbeat } from "./human-resume-heartbeat.js";
 import { FinalizingRunRepository } from "./run-finalization.js";
 import type { BrowserExecutionRuntime, BrowserExecutionRuntimeFactory } from "./worker.js";
 
@@ -35,6 +38,7 @@ export interface HumanResumeWorkerDependencies {
   leases: HumanResumeExecutionLeaseStore;
   browserSessionTimeoutSeconds: number;
   leaseTtlMs: number;
+  leaseHeartbeatIntervalMs?: number;
   now?: () => Date;
   sleep?: ExecutionEngineDependencies["sleep"];
   jitter?: ExecutionEngineDependencies["jitter"];
@@ -46,10 +50,7 @@ export interface HumanResumeWorkerDependencies {
 class LeaseRenewingCheckpointRepository implements CheckpointRepository {
   constructor(
     private readonly delegate: CheckpointRepository,
-    private lease: HumanResumeExecutionLease,
-    private readonly renew: (
-      lease: HumanResumeExecutionLease,
-    ) => Promise<HumanResumeExecutionLease>,
+    private readonly renew: () => Promise<HumanResumeExecutionLease>,
   ) {}
 
   async get(scope: { tenantId: string; userId: string }, runId: string): Promise<RunCheckpoint | null> {
@@ -57,12 +58,8 @@ class LeaseRenewingCheckpointRepository implements CheckpointRepository {
   }
 
   async put(scope: { tenantId: string; userId: string }, checkpoint: RunCheckpoint): Promise<void> {
-    this.lease = await this.renew(this.lease);
+    await this.renew();
     await this.delegate.put(scope, checkpoint);
-  }
-
-  currentLease(): HumanResumeExecutionLease {
-    return this.lease;
   }
 }
 
@@ -82,11 +79,12 @@ function sameLeaseBoundary(
 
 /**
  * Provider-neutral production resume worker. It reconstructs the exact immutable
- * workflow/browser-profile runtime for a validated human resolution and fences every
- * durable checkpoint behind renewal of the human-resume execution lease.
+ * workflow/browser-profile runtime and continuously fences browser/model work behind
+ * durable human-resume execution ownership.
  */
 export class HumanResumeWorker implements HumanResumeExecutor {
   private readonly now: () => Date;
+  private readonly heartbeatIntervalMs: number;
 
   constructor(private readonly dependencies: HumanResumeWorkerDependencies) {
     this.now = dependencies.now ?? (() => new Date());
@@ -98,6 +96,16 @@ export class HumanResumeWorker implements HumanResumeExecutor {
     }
     if (!Number.isSafeInteger(dependencies.leaseTtlMs) || dependencies.leaseTtlMs <= 0) {
       throw new Error("leaseTtlMs must be a positive safe integer");
+    }
+
+    this.heartbeatIntervalMs =
+      dependencies.leaseHeartbeatIntervalMs ?? Math.max(1, Math.floor(dependencies.leaseTtlMs / 3));
+    if (
+      !Number.isSafeInteger(this.heartbeatIntervalMs) ||
+      this.heartbeatIntervalMs <= 0 ||
+      this.heartbeatIntervalMs >= dependencies.leaseTtlMs
+    ) {
+      throw new Error("leaseHeartbeatIntervalMs must be a positive safe integer smaller than leaseTtlMs");
     }
   }
 
@@ -131,7 +139,6 @@ export class HumanResumeWorker implements HumanResumeExecutor {
       throw new Error("human resume requires an authorized browser profile");
     }
 
-    let currentLease = request.lease;
     const renewLease = async (
       lease: HumanResumeExecutionLease,
     ): Promise<HumanResumeExecutionLease> => {
@@ -143,16 +150,21 @@ export class HumanResumeWorker implements HumanResumeExecutor {
       if (!renewed) {
         throw new Error("human resume execution lease expired or ownership was lost before renewal");
       }
-      currentLease = renewed;
       return renewed;
     };
 
-    // Fence browser/model startup itself, not only later checkpoint writes.
-    currentLease = await renewLease(currentLease);
+    const heartbeat = new HumanResumeLeaseHeartbeat(
+      request.lease,
+      renewLease,
+      this.heartbeatIntervalMs,
+    );
+
+    // Fence browser/model startup itself, then keep ownership alive during long calls.
+    await heartbeat.renewNow();
+    heartbeat.start();
     const renewingCheckpoints = new LeaseRenewingCheckpointRepository(
       this.dependencies.checkpoints,
-      currentLease,
-      renewLease,
+      () => heartbeat.renewNow(),
     );
 
     let session: BrowserSessionHandle | null = null;
@@ -163,27 +175,52 @@ export class HumanResumeWorker implements HumanResumeExecutor {
     let profilePersistenceError: unknown;
 
     try {
-      session = await this.dependencies.sessions.start(scope, {
-        automationId: run.automationId,
-        runId: run.runId,
-        profileRef,
-        timeoutSeconds: this.dependencies.browserSessionTimeoutSeconds,
-      });
-      runtime = await this.dependencies.runtimeFactory.create(scope, run, session);
+      session = await heartbeat.runFenced(() =>
+        this.dependencies.sessions.start(scope, {
+          automationId: run.automationId,
+          runId: run.runId,
+          profileRef,
+          timeoutSeconds: this.dependencies.browserSessionTimeoutSeconds,
+        }),
+      );
+      const activeSession = session;
+      const activeRuntime = await heartbeat.runFenced(() =>
+        this.dependencies.runtimeFactory.create(scope, run, activeSession),
+      );
+      runtime = activeRuntime;
+
+      const fencedBrowser: BrowserExecutor = {
+        executeDeterministic: (actionScope, runId, node, inputs) =>
+          heartbeat.runFenced(() =>
+            activeRuntime.browser.executeDeterministic(actionScope, runId, node, inputs),
+          ),
+        executeSemantic: (actionScope, runId, node, decision, inputs) =>
+          heartbeat.runFenced(() =>
+            activeRuntime.browser.executeSemantic(actionScope, runId, node, decision, inputs),
+          ),
+      };
+      const fencedVerifier: VerificationEngine = {
+        verify: (context) => heartbeat.runFenced(() => activeRuntime.verifier.verify(context)),
+      };
+      const fencedReasoner: ReasoningProvider = {
+        decide: (reasoningRequest) =>
+          heartbeat.runFenced(() => this.dependencies.reasoner.decide(reasoningRequest)),
+      };
 
       const finalizingRuns = new FinalizingRunRepository(this.dependencies.runs, {
         beforeSuccess: async () => {
           if (!session) throw new Error("browser session disappeared before human resume finalization");
-          await renewLease(renewingCheckpoints.currentLease());
+          await heartbeat.renewNow();
           await this.dependencies.sessions.saveProfile(scope, session, profileRef);
+          heartbeat.assertOwned();
           successProfilePersisted = true;
         },
       });
 
       const engine = new WorkflowExecutionEngine({
-        browser: runtime.browser,
-        reasoner: this.dependencies.reasoner,
-        verifier: runtime.verifier,
+        browser: fencedBrowser,
+        reasoner: fencedReasoner,
+        verifier: fencedVerifier,
         checkpoints: renewingCheckpoints,
         runs: finalizingRuns,
         now: this.now,
@@ -206,10 +243,13 @@ export class HumanResumeWorker implements HumanResumeExecutor {
     } catch (error) {
       executionError = error;
     } finally {
+      await heartbeat.stop();
+
       if (session && !successProfilePersisted) {
         try {
-          await renewLease(renewingCheckpoints.currentLease());
+          await heartbeat.renewNow();
           await this.dependencies.sessions.saveProfile(scope, session, profileRef);
+          heartbeat.assertOwned();
         } catch (error) {
           profilePersistenceError = error;
         }
