@@ -16,102 +16,74 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - Atomic human-resolution claims, durable execution leases, heartbeat fencing, redacted audit history, and AWS conditional persistence.
 - Durable first-successor effect reconciliation with stable effect identity and immutable `ALREADY_APPLIED` / `DEFINITELY_NOT_APPLIED` / `AMBIGUOUS` authority.
 - Provider-neutral read-only reconciliation coordinator plus AWS observation-only Playwright verifier. Positive expected-state evidence can establish `ALREADY_APPLIED`; current positive-only verification contracts cannot establish `DEFINITELY_NOT_APPLIED`.
-- Pure `planAlreadyAppliedHumanResumeRecovery` reconstruction of the successful first-successor checkpoint without replaying the external action.
-- Lease-owned atomic `ALREADY_APPLIED` run+checkpoint transition with AWS DynamoDB transaction semantics.
-- Provider-neutral crash-recovery admission boundary for replayed human resolutions. A replay may reacquire expired same-resolution ownership only after a matching durable first-successor effect exists, and the resulting ownership is reconciliation-only rather than action-execution permission.
-- Provider-neutral crash-reconciliation worker plus AWS observation-only runtime factory. Replacement ownership can now restore the immutable workflow/browser profile and reconcile the prepared first-successor effect without exposing `BrowserExecutor` or reasoning capabilities.
+- Pure `planAlreadyAppliedHumanResumeRecovery` checkpoint reconstruction without replaying the external action.
+- Lease-owned atomic `ALREADY_APPLIED` recovery transition for run + checkpoint.
+- Crash-recovery admission for replayed same-resolution human commands and a heartbeat-fenced observation-only recovery worker.
 
 ## Recent authoritative validation
 
-- CI #114 passed on `130510e16b16e8b12a77d995fb90e729ef09a368` after heartbeat ownership-loss regression alignment.
-- CI #115 passed on `59bef6806f21ff8710b17dc334cf40b1c2f48c88` with durable redacted human-resume audit history.
-- CI #116 passed on `b09a32fda4bfe0b2cb7957395ff69e4f94310545` with durable effect reconciliation authority.
-- CI #118 passed on `f22d0e1402d5ba3659d6ad3c2362e70c5f3e768f` with the provider-neutral read-only reconciliation boundary.
 - CI #119 passed on `11be1b0804a70174fa0279233b359de9ad21ac9d` with the AWS observation-only reconciliation verifier.
 - CI #120 passed on `47b7d4805d6a10c7f405bab73d386d94bc14b15b` with provider-neutral `ALREADY_APPLIED` checkpoint reconstruction.
-- CI #121 passed on `72e8168dbb42551954c6dd8ea7ccfe30b908d593` with the lease-owned atomic `ALREADY_APPLIED` recovery transition.
-- CI #122 on `64b112031b008e91ad3c6ac6a5a2ae985cfcd6bb` passed install and `pnpm check` but failed one new worker-test assertion. Log inspection showed the production safety invariant held: the conflicting durable effect identity suppressed browser dispatch; `WorkflowExecutionEngine` intentionally converted the boundary failure into a durable `WAITING_FOR_HUMAN` checkpoint instead of propagating the exception. The corrective test asserts that actual fail-closed state; no production behavior or quality gate was weakened.
-- CI #123 passed on `0352ad8c27570a0f2930807c12aaf0fa24c1edeb`, confirming the corrective human-resume conflict regression.
-- CI #124 passed on `2b3ca598355efd61b43832492c727f7125c19f3d`, confirming crash-recovery admission for replayed resolutions.
-- The execution container has no authenticated local checkout path and cannot resolve `github.com`, so no local install/check/test pass is claimed. GitHub Actions on the exact published head remains authoritative.
+- CI #121 passed on `72e8168dbb42551954c6dd8ea7ccfe30b908d593` with the lease-owned atomic recovery transition.
+- CI #122 failed one new test assertion; log inspection showed production behavior correctly failed closed. The test-only correction passed CI #123 on `0352ad8c27570a0f2930807c12aaf0fa24c1edeb`.
+- CI #124 passed on `2b3ca598355efd61b43832492c727f7125c19f3d` with replay crash-recovery admission.
+- CI #125 passed on `6b0df3506d84bb1c5623c2c45cd0d3f084405b1e` with heartbeat-fenced observation-only crash reconciliation.
+- No local install/check/test pass is claimed; GitHub Actions on the exact published head remains authoritative.
 
-## 2026-08-19 — Add heartbeat-fenced observation-only crash reconciliation worker
+## 2026-08-19 — Make reconstructed advancement crash-safe with an atomic continuation record
 
 ### Completed in this slice
 
-- Added provider-neutral `HumanResumeRecoveryWorker` as the consumer of `RECONCILIATION_OWNERSHIP_ACQUIRED` admission. It accepts only replayed same-resolution recovery ownership; it is not compatible with the normal newly-accepted `HumanResumeWorker` execution request.
-- Added a separate `HumanResumeReconciliationRuntimeFactory` / `HumanResumeReconciliationRuntime` type whose capability surface is only `HumanResumeEffectVerifier` + cleanup. `BrowserExecutor`, semantic action execution, and reasoning-provider methods are absent by construction.
-- Recovery revalidates the durable replayed claim, run, checkpoint, effect identity, active lease, tenant/user boundary, immutable workflow version, explicit HUMAN node, and exact first successor before browser startup.
-- Disabled automations are rejected before browser startup. The authorized browser profile is restored into a new ephemeral session, but observation-only recovery deliberately never saves profile changes back.
-- Replacement execution ownership is renewed before browser startup and heartbeats throughout recovery. Session creation, observation-runtime creation, effect preparation replay, read-only inspection, and reconciliation decision persistence are fenced by the same heartbeat.
-- Existing durable reconciliation decisions remain authoritative and suppress reinspection. `ALREADY_APPLIED` and `AMBIGUOUS` are returned as reconciliation results only; this slice does not advance the run or authorize action replay.
-- Added AWS `AgentCorePlaywrightHumanResumeReconciliationRuntimeFactory`. It establishes CDP using the existing Playwright dependency, exposes only the existing observation verifier, classifies connection uncertainty with fixed sanitized failures, and closes a partially-created browser on setup failure.
-- Added regression coverage for positive `ALREADY_APPLIED` reconciliation, `AMBIGUOUS` preservation, prior-decision replay without inspection, disabled-automation suppression, immutable-successor drift rejection, lease-renewal failure before browser startup, observation-only AWS runtime shape, connection settings, setup cleanup, uncertainty classification, and invalid timeout configuration.
-- No dependency or third-party source was added. Existing `playwright-core` is reused; provider-neutral core remains free of AWS/GCP types.
+- Tightened `HumanResumeAlreadyAppliedTransitionStore`: a successful `ALREADY_APPLIED` recovery commit now requires one durable `HumanResumeRecoveryContinuation` to be persisted atomically with the reconstructed `RUNNING` run and checkpoint.
+- The continuation is provider-neutral and contains only bounded ownership/control-flow identity: tenant, user, run, automation, immutable workflow version, paused HUMAN node, resolution/effect IDs, reconstructed next node, `PENDING` state, and creation time.
+- Added `buildAlreadyAppliedRecoveryContinuation(...)` so every adapter derives the handoff from the same validated recovery boundary rather than inventing provider-specific continuation payloads.
+- Added timestamp validation preventing the transition commit from preceding the reconstructed checkpoint timestamp.
+- AWS DynamoDB recovery transition now writes four transactional components under the same live-lease condition: lease condition check, run replacement, checkpoint replacement, and a create-only continuation/outbox record.
+- Duplicate classification now performs strongly consistent reads of run, checkpoint, and continuation and returns `REPLAY` only if all three carry the same transition identity and exact expected state. Missing, corrupted, or competing continuation state returns `CONFLICT`.
+- Added regression coverage for atomic continuation persistence, exact three-record replay, competing continuation conflict, tenant isolation, lease loss, timestamp ordering, and propagation of DynamoDB transport/non-conditional uncertainty.
+- No dependency, third-party source, AWS/GCP type in core, secret, browser content, raw exception, or lease owner token was added to the continuation payload.
 
 ### Invariants / failure semantics
 
-- Recovery ownership is observation/reconciliation authority only. No code path in `HumanResumeRecoveryWorker` can dispatch deterministic or semantic browser actions because its runtime interface does not contain those methods.
-- A recovery worker must still own a live same-resolution lease before every ownership-sensitive operation. Any rejected or uncertain renewal permanently fences that worker through `HumanResumeLeaseHeartbeat`.
-- Durable effect identity must match the immutable HUMAN successor. Workflow drift or corrupted effect identity fails before browser startup.
-- Storage uncertainty while replaying effect preparation or persisting a reconciliation decision propagates. It is never translated into `ALREADY_APPLIED`, `DEFINITELY_NOT_APPLIED`, or `AMBIGUOUS`.
-- A prior durable decision is authoritative and suppresses runtime inspection even though the browser session may already have been reconstructed. This preserves first-writer-wins reconciliation authority.
-- Observation-only recovery does not persist browser-profile changes. Reads, page settling, or accidental browser-local mutations during inspection therefore cannot overwrite the authoritative saved profile.
-- This worker deliberately does not complete the replacement lease. It returns the latest owned lease so the next synchronous recovery stage can consume it; if no continuation stage runs, ownership naturally expires. Completing it here would prevent the existing atomic `ALREADY_APPLIED` transition from using the same ownership proof.
+- Reconstructed advancement must never durably leave a run `RUNNING` without also leaving a durable fact that continuation work is pending.
+- The continuation is a handoff record, not external-action authority. It cannot authorize replay of the reconciled successor and does not weaken the rule that `DEFINITELY_NOT_APPLIED` requires a future explicit proof-of-absence/idempotency contract.
+- The continuation is created only while the exact same-resolution recovery lease is live and only in the same transaction that advances run/checkpoint.
+- A second continuation for the same run/HUMAN boundary cannot overwrite the first. Contention is classified only after strongly consistent reads.
+- DynamoDB throttling, transport uncertainty, permissions failures, or non-conditional transaction cancellation propagate. They are never guessed to mean APPLIED/REPLAY/CONFLICT.
 
 ### Concurrency / idempotency / scaling review
 
-- Admission plus the existing conditional lease store remains the single-owner serialization boundary. Concurrent replay deliveries cannot create overlapping recovery workers.
-- Reconciliation persistence remains first-writer-wins. Concurrent observation is still safe because the runtime has no action capability, though duplicate browser/S3 inspection cost remains possible.
-- Each admitted recovery can add one browser session, one CDP connection, heartbeat DynamoDB writes, and at most one metadata evidence write/decision persistence sequence. No model call, action execution, new queue, or new cloud service is introduced.
-- The heartbeat interval remains constrained to a positive safe integer strictly below the lease TTL; current defaults preserve the roughly one-third TTL policy.
+- The existing execution lease remains the single-owner gate. The new record adds no competing ownership primitive.
+- The transaction adds one DynamoDB write item to this rare crash-recovery path. Normal healthy execution cost is unchanged.
+- Replay classification adds one strongly consistent read only after a conditional transaction loses; normal successful recovery performs no follow-up read.
+- The continuation key is scoped by tenant/user partition plus run/HUMAN boundary, so concurrent tenants and unrelated runs remain isolated.
 
-### Security / tenant isolation / secret handling
+### Security / tenant isolation / observability
 
-- Tenant/user scope is revalidated against claim, run, effect, and lease before any browser session is created.
-- Browser profile selection remains server-owned through the authorized automation record; the recovery request cannot supply an arbitrary profile reference.
-- Session connection material remains inside the trusted AWS runtime factory and is not persisted by the recovery worker.
-- Worker owner tokens remain internal lease capability material. Cleanup warnings are fixed strings and do not contain provider errors or connection material.
-- AWS connection errors expose fixed classified messages; provider error text remains only in the internal exception cause.
+- Continuation records contain no cookies, profile data, DOM/text evidence, API keys, raw provider errors, model prompts, or worker owner tokens.
+- Tenant/user ownership is derived from the already-validated recovery boundary and persisted with immutable run/workflow identity.
+- This slice does not yet emit a new user-visible event; the record is execution-plane persistence authority for the next dispatcher/consumer slice.
 
 ### User-visible recovery impact
 
-- A replacement worker can now safely answer the first production recovery question after a crash: did the prepared first-successor effect already happen, or is the state ambiguous? It can do so without risking a second website action.
-- `ALREADY_APPLIED` still does not automatically continue the workflow in this slice. `AMBIGUOUS` still does not yet have a dedicated durable transition/UI command, so automatic crash recovery remains incomplete and fail-closed.
-- `DEFINITELY_NOT_APPLIED` remains non-production action authority because there is still no explicit positive proof-of-absence/idempotency contract.
+- The platform now has a durable crash-safe handoff after an `ALREADY_APPLIED` reconstruction. If a worker dies immediately after the atomic transition, durable state still records that continuation is pending instead of relying on the dead process to remember to continue.
+- Automatic end-to-end continuation is still deliberately disabled until a consumer can idempotently claim this pending record and resume from the reconstructed checkpoint.
+- `AMBIGUOUS` remains human attention only. `DEFINITELY_NOT_APPLIED` remains non-executable in production.
 
 ### Validation status for this slice
 
-- Incoming head `2b3ca598355efd61b43832492c727f7125c19f3d` is confirmed green via GitHub Actions CI #124.
-- The implementation, tests, AWS export, and this progress update are being published together in one Git-data commit. GitHub Actions on the exact resulting SHA is authoritative; no pass is claimed until that run completes successfully.
-- No local install/check/test pass is claimed because the execution container cannot resolve `github.com`.
+- Incoming head `6b0df3506d84bb1c5623c2c45cd0d3f084405b1e` is confirmed green via CI #125.
+- This implementation, tests, and progress update are published as one Git-data commit. GitHub Actions on the exact resulting SHA is authoritative; no green result is claimed until that run completes successfully.
 
 ### Known risks / next highest-value tasks
 
-1. Consume `ALREADY_APPLIED` immediately under the returned live recovery lease using the existing atomic run+checkpoint transition, then define crash-safe continuation after that reconstructed advancement so a `RUNNING` run cannot become stranded.
-2. Add a durable `AMBIGUOUS` -> human-attention transition and explicit owner reconciliation command semantics that do not conflict with the immutable original resolution claim.
-3. Define an explicit proof-of-absence/idempotency contract before any production path may turn `DEFINITELY_NOT_APPLIED` into action execution permission.
-4. Add redacted audit milestones for recovery admission, observation-runtime start, inspection, reconciliation decision, reconstructed advancement, and ambiguity fallback.
-5. Deliberately align the existing AWS SDK peer-version warning rather than suppressing it.
-6. After crash recovery is reconciled end-to-end, continue outward through capture -> compile -> test -> publish -> schedule production hardening.
-
-## 2026-08-19 — Crash-recovery admission for replayed human resolutions
-
-- Added `HumanResumeRecoveryAdmission` as the only bridge from claim `REPLAY` toward crash recovery.
-- Fresh `ACCEPTED` claims remain on the normal healthy resume path; conflicts remain non-executing.
-- Recovery ownership is allowed only when a durable first-successor effect exists for the exact tenant/user/run/HUMAN-node/resolution boundary.
-- A live worker remains `BUSY`; only expired same-resolution ownership can be reacquired. Missing, corrupt, or cross-resolution effect state fails closed.
-- The successful capability is explicitly `RECONCILIATION_OWNERSHIP_ACQUIRED`, not execution permission.
-- Regression coverage proves expired same-resolution reacquisition, live-owner exclusion, no-effect suppression, cross-resolution rejection, and fresh/conflicting claim exclusion.
-- Validated by CI #124 on `2b3ca598355efd61b43832492c727f7125c19f3d`.
-
-## 2026-08-19 — Prepare reconciliation identity before resumed side effects
-
-- `HumanResumeWorker` now durably prepares one exact first-successor effect identity immediately before the first side-effecting resumed action can dispatch.
-- The identity is scoped to tenant/user/run/HUMAN-node/successor/resolution/effect and reused across deterministic -> semantic fallback.
-- Preparation conflict, an already-decided effect, or storage uncertainty suppresses action dispatch and fails closed.
-- Non-side-effecting HUMAN successors avoid unnecessary effect records.
-- CI #122 exposed one stale test expectation; log inspection proved zero action dispatch and durable `WAITING_FOR_HUMAN`. The corrective assertion passed CI #123 on `0352ad8c27570a0f2930807c12aaf0fa24c1edeb`.
+1. Add a provider-neutral continuation repository/claim contract and AWS conditional consumer semantics (`PENDING` -> owned/consumed tombstone) so duplicate dispatch cannot resume the reconstructed checkpoint twice.
+2. Wire the recovery worker so `ALREADY_APPLIED` plans reconstruction and performs this atomic run+checkpoint+continuation commit under the still-live heartbeat-fenced replacement lease.
+3. Add a durable `AMBIGUOUS` -> explicit human-attention transition with owner command semantics that do not conflict with the immutable original resolution claim.
+4. Define positive proof-of-absence/idempotency before any production path may execute from `DEFINITELY_NOT_APPLIED`.
+5. Add redacted audit milestones for recovery admission, observation runtime, reconciliation decision, reconstructed advancement, continuation claim/finish, and ambiguity fallback.
+6. Deliberately align the existing AWS SDK peer-version warning rather than suppressing it.
+7. After crash recovery is closed end-to-end, continue outward through capture -> compile -> test -> publish -> schedule hardening.
 
 ## Earlier recovery milestones retained as architectural guarantees
 
@@ -126,5 +98,4 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - Read-only reconciliation coordinator and AWS observation-only Playwright verifier.
 - Pure `ALREADY_APPLIED` checkpoint reconstruction planning.
 - Lease-owned atomic DynamoDB run+checkpoint recovery transition.
-
-Exact historical implementations and CI evidence remain available in git history; this log intentionally keeps the active production invariants and nearest recovery work prominent for subsequent runs.
+- Crash-recovery admission and observation-only recovery runtime.

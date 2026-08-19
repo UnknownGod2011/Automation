@@ -5,6 +5,7 @@ import type {
   HumanResumeAlreadyAppliedTransitionRequest,
   HumanResumeEffectRecord,
   HumanResumeExecutionLease,
+  HumanResumeRecoveryContinuation,
 } from "@automation/core";
 import {
   AwsDynamoHumanResumeAlreadyAppliedTransitionStore,
@@ -24,6 +25,7 @@ function transactionConditionalError(): Error {
     CancellationReasons: [
       { Code: "None" },
       { Code: "ConditionalCheckFailed" },
+      { Code: "None" },
       { Code: "None" },
     ],
   });
@@ -141,7 +143,10 @@ class FakeDynamo implements DynamoDocumentClientLike {
     const condition = entries[0]?.ConditionCheck;
     const runPut = entries[1]?.Put;
     const checkpointPut = entries[2]?.Put;
-    if (!condition || !runPut || !checkpointPut) throw new Error("unexpected transaction shape");
+    const continuationPut = entries[3]?.Put;
+    if (!condition || !runPut || !checkpointPut || !continuationPut) {
+      throw new Error("unexpected transaction shape");
+    }
 
     const leaseItem = this.items.get(this.key(condition.Key as Record<string, unknown>));
     const leaseValues = condition.ExpressionAttributeValues ?? {};
@@ -185,30 +190,38 @@ class FakeDynamo implements DynamoDocumentClientLike {
       throw transactionConditionalError();
     }
 
-    this.items.set(
-      this.key(runPut.Item as Record<string, unknown>),
-      structuredClone(runPut.Item as Record<string, unknown>),
-    );
-    this.items.set(
-      this.key(checkpointPut.Item as Record<string, unknown>),
-      structuredClone(checkpointPut.Item as Record<string, unknown>),
-    );
+    if (this.items.has(this.key(continuationPut.Item as Record<string, unknown>))) {
+      throw transactionConditionalError();
+    }
+
+    for (const put of [runPut, checkpointPut, continuationPut]) {
+      this.items.set(
+        this.key(put.Item as Record<string, unknown>),
+        structuredClone(put.Item as Record<string, unknown>),
+      );
+    }
     return {};
   }
 }
 
-function seed(client: FakeDynamo, req = request()): void {
-  let capturedPk = "";
-  let capturedRunSk = "";
-  let capturedCheckpointSk = "";
-  let capturedLeaseSk = "";
+interface SeedKeys {
+  pk: string;
+  runSk: string;
+  checkpointSk: string;
+  leaseSk: string;
+  continuationSk: string;
+}
+
+function seed(client: FakeDynamo, req = request()): SeedKeys {
+  const captured: Partial<SeedKeys> = {};
   const probe: DynamoDocumentClientLike = {
     async send(command) {
       if (!(command instanceof TransactWriteCommand)) throw new Error("expected transaction");
-      capturedLeaseSk = String(command.input.TransactItems?.[0]?.ConditionCheck?.Key?.sk);
-      capturedRunSk = String(command.input.TransactItems?.[1]?.Put?.Item?.sk);
-      capturedCheckpointSk = String(command.input.TransactItems?.[2]?.Put?.Item?.sk);
-      capturedPk = String(command.input.TransactItems?.[1]?.Put?.Item?.pk);
+      captured.leaseSk = String(command.input.TransactItems?.[0]?.ConditionCheck?.Key?.sk);
+      captured.runSk = String(command.input.TransactItems?.[1]?.Put?.Item?.sk);
+      captured.checkpointSk = String(command.input.TransactItems?.[2]?.Put?.Item?.sk);
+      captured.continuationSk = String(command.input.TransactItems?.[3]?.Put?.Item?.sk);
+      captured.pk = String(command.input.TransactItems?.[1]?.Put?.Item?.pk);
       throw new Error("probe");
     },
   };
@@ -216,20 +229,21 @@ function seed(client: FakeDynamo, req = request()): void {
     .commit(req)
     .catch(() => undefined);
 
-  client.seed(capturedPk, capturedRunSk, {
+  const keys = captured as SeedKeys;
+  client.seed(keys.pk, keys.runSk, {
     entity: "RUN",
     automationId: req.expectedRun.automationId,
     workflowVersion: req.expectedRun.workflowVersion,
     occurrenceKey: req.expectedRun.occurrenceKey,
     record: req.expectedRun,
   });
-  client.seed(capturedPk, capturedCheckpointSk, {
+  client.seed(keys.pk, keys.checkpointSk, {
     entity: "CHECKPOINT",
     automationId: req.expectedCheckpoint.automationId,
     workflowVersion: req.expectedCheckpoint.workflowVersion,
     record: req.expectedCheckpoint,
   });
-  client.seed(capturedPk, capturedLeaseSk, {
+  client.seed(keys.pk, keys.leaseSk, {
     entity: "HUMAN_RESUME_EXECUTION_LEASE",
     resolutionId: req.lease.resolutionId,
     ownerToken: req.lease.ownerToken,
@@ -237,13 +251,14 @@ function seed(client: FakeDynamo, req = request()): void {
     expiresAtEpochMs: new Date(req.lease.expiresAt).getTime(),
     lease: req.lease,
   });
+  return keys;
 }
 
 describe("AwsDynamoHumanResumeAlreadyAppliedTransitionStore", () => {
-  it("advances run and checkpoint atomically while the exact lease is live", async () => {
+  it("advances run/checkpoint and creates a continuation atomically while the exact lease is live", async () => {
     const client = new FakeDynamo();
     const req = request();
-    seed(client, req);
+    const keys = seed(client, req);
     const store = new AwsDynamoHumanResumeAlreadyAppliedTransitionStore(client, config);
 
     const result = await store.commit(req);
@@ -251,30 +266,59 @@ describe("AwsDynamoHumanResumeAlreadyAppliedTransitionStore", () => {
     if (result.status !== "APPLIED") throw new Error("expected APPLIED");
     expect(result.run).toMatchObject({ status: "RUNNING", currentNodeId: "end" });
     expect(result.checkpoint).toEqual(req.nextCheckpoint);
+    expect(result.continuation).toMatchObject({
+      state: "PENDING",
+      runId: "run-1",
+      humanNodeId: "human",
+      resolutionId: "resolution-1",
+      effectId: "effect-1",
+      nextNodeId: "end",
+    });
+    const persisted = client.items.get(`${keys.pk}|${keys.continuationSk}`);
+    expect(persisted?.entity).toBe("HUMAN_RESUME_RECOVERY_CONTINUATION");
+    expect(persisted?.record).toEqual(result.continuation);
   });
 
-  it("classifies an exact duplicate as REPLAY using strongly consistent reads", async () => {
+  it("classifies an exact duplicate as REPLAY only when run, checkpoint, and continuation agree", async () => {
     const client = new FakeDynamo();
     const req = request();
-    seed(client, req);
+    const keys = seed(client, req);
     const store = new AwsDynamoHumanResumeAlreadyAppliedTransitionStore(client, config);
 
     expect((await store.commit(req)).status).toBe("APPLIED");
     expect((await store.commit(req)).status).toBe("REPLAY");
-    expect(client.lastGets).toHaveLength(2);
+    expect(client.lastGets).toHaveLength(3);
     expect(client.lastGets.every((get) => get.input.ConsistentRead === true)).toBe(true);
+
+    const continuation = client.items.get(`${keys.pk}|${keys.continuationSk}`);
+    const record = continuation?.record as HumanResumeRecoveryContinuation;
+    continuation!.record = { ...record, effectId: "different-effect" };
+    expect((await store.commit(req)).status).toBe("CONFLICT");
   });
 
-  it("returns CONFLICT for stale paused state or lost lease ownership", async () => {
+  it("returns CONFLICT for stale paused state, lost lease ownership, or a competing continuation", async () => {
     const client = new FakeDynamo();
     const req = request();
-    seed(client, req);
+    const keys = seed(client, req);
     const store = new AwsDynamoHumanResumeAlreadyAppliedTransitionStore(client, config);
-    await store.commit(req);
 
-    const stale = request();
-    stale.nextCheckpoint = { ...stale.nextCheckpoint, updatedAt: "2026-08-19T00:04:00.000Z" };
-    expect((await store.commit(stale)).status).toBe("CONFLICT");
+    client.seed(keys.pk, keys.continuationSk, {
+      entity: "HUMAN_RESUME_RECOVERY_CONTINUATION",
+      recoveryTransitionId: "other-transition",
+      record: {
+        ...scope,
+        runId: "run-1",
+        automationId: "automation-1",
+        workflowVersion: 7,
+        humanNodeId: "human",
+        resolutionId: "other-resolution",
+        effectId: "other-effect",
+        nextNodeId: "end",
+        state: "PENDING",
+        createdAt: req.committedAt,
+      },
+    });
+    expect((await store.commit(req)).status).toBe("CONFLICT");
 
     const otherClient = new FakeDynamo();
     seed(otherClient, req);

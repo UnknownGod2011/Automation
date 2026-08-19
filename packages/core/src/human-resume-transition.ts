@@ -3,6 +3,20 @@ import type { HumanResumeEffectRecord } from "./human-resume-effect.js";
 import type { HumanResumeExecutionLease } from "./human-resume-lease.js";
 import type { OwnershipScope } from "./index.js";
 
+export interface HumanResumeRecoveryContinuation {
+  tenantId: string;
+  userId: string;
+  runId: string;
+  automationId: string;
+  workflowVersion: number;
+  humanNodeId: string;
+  resolutionId: string;
+  effectId: string;
+  nextNodeId: string;
+  state: "PENDING";
+  createdAt: string;
+}
+
 export interface HumanResumeAlreadyAppliedTransitionRequest {
   scope: OwnershipScope;
   effect: HumanResumeEffectRecord;
@@ -14,15 +28,27 @@ export interface HumanResumeAlreadyAppliedTransitionRequest {
 }
 
 export type HumanResumeAlreadyAppliedTransitionResult =
-  | { status: "APPLIED"; run: RunRecord; checkpoint: RunCheckpoint }
-  | { status: "REPLAY"; run: RunRecord; checkpoint: RunCheckpoint }
+  | {
+      status: "APPLIED";
+      run: RunRecord;
+      checkpoint: RunCheckpoint;
+      continuation: HumanResumeRecoveryContinuation;
+    }
+  | {
+      status: "REPLAY";
+      run: RunRecord;
+      checkpoint: RunCheckpoint;
+      continuation: HumanResumeRecoveryContinuation;
+    }
   | { status: "CONFLICT" };
 
 /**
  * Atomic persistence boundary for ALREADY_APPLIED recovery. Implementations must
  * conditionally verify the expected paused run/checkpoint plus live lease ownership,
- * then advance run and checkpoint together or not at all. Storage uncertainty must
- * propagate instead of being guessed as replay/conflict.
+ * then advance run, checkpoint, and one durable continuation record together or not
+ * at all. The continuation is the crash-safe handoff for execution after reconstructed
+ * advancement. Storage uncertainty must propagate instead of being guessed as
+ * replay/conflict.
  */
 export interface HumanResumeAlreadyAppliedTransitionStore {
   commit(
@@ -59,6 +85,25 @@ export function buildAlreadyAppliedRecoveryRun(
     ...base,
     status: "RUNNING",
     currentNodeId: request.nextCheckpoint.currentNodeId,
+  };
+}
+
+export function buildAlreadyAppliedRecoveryContinuation(
+  request: HumanResumeAlreadyAppliedTransitionRequest,
+): HumanResumeRecoveryContinuation {
+  assertAlreadyAppliedRecoveryTransition(request);
+  return {
+    tenantId: request.scope.tenantId,
+    userId: request.scope.userId,
+    runId: request.expectedRun.runId,
+    automationId: request.expectedRun.automationId,
+    workflowVersion: request.expectedRun.workflowVersion,
+    humanNodeId: request.effect.humanNodeId,
+    resolutionId: request.effect.resolutionId,
+    effectId: request.effect.effectId,
+    nextNodeId: request.nextCheckpoint.currentNodeId,
+    state: "PENDING",
+    createdAt: instant(request.committedAt, "committedAt").toISOString(),
   };
 }
 
@@ -118,6 +163,9 @@ export function assertAlreadyAppliedRecoveryTransition(
   }
   if (nextUpdatedAt.getTime() < expectedUpdatedAt.getTime()) {
     throw new Error("already-applied transition cannot move checkpoint time backwards");
+  }
+  if (committedAt.getTime() < nextUpdatedAt.getTime()) {
+    throw new Error("already-applied transition cannot commit before the reconstructed checkpoint");
   }
   if (
     nextCheckpoint.attempt !== 0 ||

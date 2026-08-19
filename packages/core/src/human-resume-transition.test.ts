@@ -4,6 +4,7 @@ import type { HumanResumeEffectRecord } from "./human-resume-effect.js";
 import type { HumanResumeExecutionLease } from "./human-resume-lease.js";
 import {
   assertAlreadyAppliedRecoveryTransition,
+  buildAlreadyAppliedRecoveryContinuation,
   buildAlreadyAppliedRecoveryRun,
   type HumanResumeAlreadyAppliedTransitionRequest,
 } from "./human-resume-transition.js";
@@ -113,11 +114,9 @@ function request(
 }
 
 describe("already-applied recovery transition contract", () => {
-  it("builds the RUNNING run state paired with the reconstructed checkpoint", () => {
+  it("builds the RUNNING state and durable pending continuation from one boundary", () => {
     const recovery = request();
-    const result = buildAlreadyAppliedRecoveryRun(recovery);
-
-    expect(result).toEqual({
+    expect(buildAlreadyAppliedRecoveryRun(recovery)).toEqual({
       ...scope,
       runId: "run-1",
       automationId: "automation-1",
@@ -127,6 +126,18 @@ describe("already-applied recovery transition contract", () => {
       scheduledAt: "2026-08-19T00:00:00.000Z",
       startedAt: "2026-08-19T00:00:01.000Z",
       currentNodeId: "end",
+    });
+    expect(buildAlreadyAppliedRecoveryContinuation(recovery)).toEqual({
+      ...scope,
+      runId: "run-1",
+      automationId: "automation-1",
+      workflowVersion: 7,
+      humanNodeId: "human",
+      resolutionId: "resolution-1",
+      effectId: "effect-1",
+      nextNodeId: "end",
+      state: "PENDING",
+      createdAt: "2026-08-19T00:03:01.000Z",
     });
     expect(recovery.expectedRun.status).toBe("WAITING_FOR_HUMAN");
   });
@@ -173,7 +184,7 @@ describe("already-applied recovery transition contract", () => {
     ).toThrow(/clear retry\/failure state/);
   });
 
-  it("rejects ownership drift and backwards checkpoint timestamps", () => {
+  it("rejects ownership drift and backwards checkpoint or commit timestamps", () => {
     expect(() =>
       assertAlreadyAppliedRecoveryTransition(
         request({ scope: { tenantId: "tenant-2", userId: "user-1" } }),
@@ -185,5 +196,11 @@ describe("already-applied recovery transition contract", () => {
         request({ nextCheckpoint: { ...next(), updatedAt: "2026-08-18T23:59:00.000Z" } }),
       ),
     ).toThrow(/backwards/);
+
+    expect(() =>
+      assertAlreadyAppliedRecoveryTransition(
+        request({ committedAt: "2026-08-19T00:02:59.000Z" }),
+      ),
+    ).toThrow(/commit before/);
   });
 });

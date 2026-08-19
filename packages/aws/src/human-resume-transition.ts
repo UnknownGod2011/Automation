@@ -3,10 +3,12 @@ import type {
   HumanResumeAlreadyAppliedTransitionRequest,
   HumanResumeAlreadyAppliedTransitionResult,
   HumanResumeAlreadyAppliedTransitionStore,
+  HumanResumeRecoveryContinuation,
   OwnershipScope,
 } from "@automation/core";
 import {
   assertAlreadyAppliedRecoveryTransition,
+  buildAlreadyAppliedRecoveryContinuation,
   buildAlreadyAppliedRecoveryRun,
 } from "@automation/core";
 import type { RunCheckpoint, RunRecord } from "@automation/contracts";
@@ -16,6 +18,7 @@ import type { AwsDynamoDbConfig, DynamoDocumentClientLike } from "./dynamodb-sta
 const RUN_PREFIX = "RUN#";
 const CHECKPOINT_PREFIX = "CHECKPOINT#";
 const HUMAN_RESUME_LEASE_PREFIX = "HUMAN_RESUME_LEASE#";
+const HUMAN_RESUME_CONTINUATION_PREFIX = "HUMAN_RESUME_CONTINUATION#";
 
 function required(value: string, label: string): string {
   const normalized = value.trim();
@@ -45,6 +48,10 @@ function checkpointSk(runId: string): string {
 
 function leaseSk(runId: string, nodeId: string): string {
   return `${HUMAN_RESUME_LEASE_PREFIX}${encodedId(runId, "runId")}#NODE#${encodedId(nodeId, "nodeId")}`;
+}
+
+function continuationSk(runId: string, humanNodeId: string): string {
+  return `${HUMAN_RESUME_CONTINUATION_PREFIX}${encodedId(runId, "runId")}#NODE#${encodedId(humanNodeId, "humanNodeId")}`;
 }
 
 function transactionId(request: HumanResumeAlreadyAppliedTransitionRequest): string {
@@ -104,8 +111,10 @@ function recordFromItem<T>(
 function sameRecoveredState(
   run: RunRecord,
   checkpoint: RunCheckpoint,
+  continuation: HumanResumeRecoveryContinuation,
   expectedRun: RunRecord,
   nextCheckpoint: RunCheckpoint,
+  expectedContinuation: HumanResumeRecoveryContinuation,
 ): boolean {
   return (
     run.tenantId === expectedRun.tenantId &&
@@ -120,7 +129,18 @@ function sameRecoveredState(
     checkpoint.automationId === nextCheckpoint.automationId &&
     checkpoint.workflowVersion === nextCheckpoint.workflowVersion &&
     checkpoint.currentNodeId === nextCheckpoint.currentNodeId &&
-    checkpoint.updatedAt === nextCheckpoint.updatedAt
+    checkpoint.updatedAt === nextCheckpoint.updatedAt &&
+    continuation.tenantId === expectedContinuation.tenantId &&
+    continuation.userId === expectedContinuation.userId &&
+    continuation.runId === expectedContinuation.runId &&
+    continuation.automationId === expectedContinuation.automationId &&
+    continuation.workflowVersion === expectedContinuation.workflowVersion &&
+    continuation.humanNodeId === expectedContinuation.humanNodeId &&
+    continuation.resolutionId === expectedContinuation.resolutionId &&
+    continuation.effectId === expectedContinuation.effectId &&
+    continuation.nextNodeId === expectedContinuation.nextNodeId &&
+    continuation.state === "PENDING" &&
+    continuation.createdAt === expectedContinuation.createdAt
   );
 }
 
@@ -137,6 +157,7 @@ export class AwsDynamoHumanResumeAlreadyAppliedTransitionStore
   ): Promise<HumanResumeAlreadyAppliedTransitionResult> {
     assertAlreadyAppliedRecoveryTransition(request);
     const nextRun = buildAlreadyAppliedRecoveryRun(request);
+    const continuation = buildAlreadyAppliedRecoveryContinuation(request);
     const pk = scopePartition(request.scope);
     const transitionId = transactionId(request);
     const committedAtMs = new Date(request.committedAt).getTime();
@@ -235,6 +256,20 @@ export class AwsDynamoHumanResumeAlreadyAppliedTransitionStore
                 },
               },
             },
+            {
+              Put: {
+                TableName: this.config.tableName,
+                Item: {
+                  pk,
+                  sk: continuationSk(request.expectedRun.runId, request.effect.humanNodeId),
+                  entity: "HUMAN_RESUME_RECOVERY_CONTINUATION",
+                  recoveryTransitionId: transitionId,
+                  record: structuredClone(continuation),
+                },
+                ConditionExpression: "attribute_not_exists(#pk) AND attribute_not_exists(#sk)",
+                ExpressionAttributeNames: { "#pk": "pk", "#sk": "sk" },
+              },
+            },
           ],
         }),
       );
@@ -242,12 +277,13 @@ export class AwsDynamoHumanResumeAlreadyAppliedTransitionStore
         status: "APPLIED",
         run: structuredClone(nextRun),
         checkpoint: structuredClone(request.nextCheckpoint),
+        continuation: structuredClone(continuation),
       };
     } catch (error) {
       if (!conditionalTransactionFailure(error)) throw error;
     }
 
-    const [runResponse, checkpointResponse] = await Promise.all([
+    const [runResponse, checkpointResponse, continuationResponse] = await Promise.all([
       this.client.send(
         new GetCommand({
           TableName: this.config.tableName,
@@ -262,6 +298,13 @@ export class AwsDynamoHumanResumeAlreadyAppliedTransitionStore
           ConsistentRead: true,
         }),
       ),
+      this.client.send(
+        new GetCommand({
+          TableName: this.config.tableName,
+          Key: { pk, sk: continuationSk(request.expectedRun.runId, request.effect.humanNodeId) },
+          ConsistentRead: true,
+        }),
+      ),
     ]);
     const durableRun = recordFromItem<RunRecord>(
       runResponse.Item as Record<string, unknown> | undefined,
@@ -271,20 +314,28 @@ export class AwsDynamoHumanResumeAlreadyAppliedTransitionStore
       checkpointResponse.Item as Record<string, unknown> | undefined,
       "CHECKPOINT",
     );
+    const durableContinuation = recordFromItem<HumanResumeRecoveryContinuation>(
+      continuationResponse.Item as Record<string, unknown> | undefined,
+      "HUMAN_RESUME_RECOVERY_CONTINUATION",
+    );
     if (
       durableRun?.transitionId === transitionId &&
       durableCheckpoint?.transitionId === transitionId &&
+      durableContinuation?.transitionId === transitionId &&
       sameRecoveredState(
         durableRun.record,
         durableCheckpoint.record,
+        durableContinuation.record,
         request.expectedRun,
         request.nextCheckpoint,
+        continuation,
       )
     ) {
       return {
         status: "REPLAY",
         run: durableRun.record,
         checkpoint: durableCheckpoint.record,
+        continuation: durableContinuation.record,
       };
     }
     return { status: "CONFLICT" };
