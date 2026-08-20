@@ -13,8 +13,10 @@ pnpm --filter @automation/core build
 pnpm --filter @automation/aws build
 pnpm --filter @automation/aws --prod deploy --legacy "${DEPLOY_DIR}"
 cp packages/aws/control-plane-lambda.mjs "${DEPLOY_DIR}/control-plane-lambda.mjs"
+cp packages/aws/capture-completion-lambda.mjs "${DEPLOY_DIR}/capture-completion-lambda.mjs"
 
 test -f "${DEPLOY_DIR}/control-plane-lambda.mjs"
+test -f "${DEPLOY_DIR}/capture-completion-lambda.mjs"
 test -f "${DEPLOY_DIR}/dist/index.js"
 test -f "${DEPLOY_DIR}/package.json"
 test -d "${DEPLOY_DIR}/node_modules"

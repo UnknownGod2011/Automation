@@ -116,7 +116,7 @@ PY
 }
 
 validate_zip "$runtime_zip" runtime-http.mjs dist/index.js package.json
-validate_zip "$control_plane_zip" control-plane-lambda.mjs dist/index.js package.json
+validate_zip "$control_plane_zip" control-plane-lambda.mjs capture-completion-lambda.mjs dist/index.js package.json
 
 sha256_file() {
   python3 - "$1" <<'PY'
