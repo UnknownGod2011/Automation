@@ -70,7 +70,9 @@ Regression coverage added for:
 - capture-order listing,
 - cross-tenant isolation.
 
-Validation status for this slice: implementation, tests, AWS package export, and this progress update are being published as one normal CI-triggering Git-data commit. Exact-head GitHub Actions is authoritative; no pass is claimed here until it exists.
+Normal implementation head `b1e2fb618387e851cd7b13d2a17e28a4baff3d6c` reached GitHub Actions CI #168. Deterministic lock verification, frozen installation, strict `pnpm check`, AgentCore Runtime packaging, the Next.js production build, all 7 contracts tests, all 146 core tests, all 17 web tests, and 184/185 AWS tests passed. The sole failure was the newly-added capture-order test fixture: it moved `startedAt` to 11:00 while leaving `finishedAt` fixed at 10:01, so the existing `assertCaptureTrace` contract correctly rejected the invalid trace before repository logic ran. The production adapter and its other six new tests were not implicated.
+
+The single permitted corrective commit changes only the fixture time construction so `finishedAt` and the event timestamp are derived from the supplied `startedAt`, and records this root cause. No runtime behavior, contract, compiler setting, dependency, or CI gate is weakened. Exact-head GitHub Actions after the correction remains authoritative.
 
 ## Next product milestones
 

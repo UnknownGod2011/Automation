@@ -89,6 +89,9 @@ const artifactConfig: AwsArtifactStoreConfig = {
 };
 
 function trace(traceId = "trace-1", startedAt = "2026-08-20T10:00:00.000Z"): CaptureTrace {
+  const startedAtMs = new Date(startedAt).getTime();
+  const finishedAt = new Date(startedAtMs + 60_000).toISOString();
+  const eventAt = new Date(startedAtMs + 10_000).toISOString();
   return {
     schemaVersion: 1,
     traceId,
@@ -99,14 +102,14 @@ function trace(traceId = "trace-1", startedAt = "2026-08-20T10:00:00.000Z"): Cap
     objective: "Open the account and save a note",
     browserProfileRef: "profile-1",
     startedAt,
-    finishedAt: "2026-08-20T10:01:00.000Z",
+    finishedAt,
     events: [
       {
         eventId: "navigate",
         sequence: 1,
         kind: "NAVIGATION",
         purpose: "WORKFLOW",
-        occurredAt: "2026-08-20T10:00:10.000Z",
+        occurredAt: eventAt,
         page: { url: "https://app.example.com/account" },
         navigationUrl: "https://app.example.com/account",
         artifactRefs: [],
