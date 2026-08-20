@@ -44,7 +44,7 @@ describe("createAwsScheduledRunBootstrap", () => {
     expect(result.handler).toBeDefined();
     expect(result.notifications).toEqual({
       kind: "NOT_CONFIGURED",
-      missing: ["AUTOMATION_SES_FROM_EMAIL", "trusted SesRecipientResolver"],
+      missing: ["AUTOMATION_SES_FROM_EMAIL", "AUTOMATION_COGNITO_USER_POOL_ID"],
     });
   });
 
@@ -61,8 +61,23 @@ describe("createAwsScheduledRunBootstrap", () => {
     }
     expect(result.notifications).toEqual({
       kind: "NOT_CONFIGURED",
-      missing: ["trusted SesRecipientResolver"],
+      missing: ["AUTOMATION_COGNITO_USER_POOL_ID"],
     });
+  });
+
+  it("configures notification resolution when the Cognito user pool is wired", () => {
+    const result = createAwsScheduledRunBootstrap({
+      env: {
+        ...configuredEnv,
+        AUTOMATION_SES_FROM_EMAIL: "runs@example.com",
+        AUTOMATION_COGNITO_USER_POOL_ID: "us-east-1_example",
+      },
+    });
+    expect(result.kind).toBe("CONFIGURED");
+    if (result.kind !== "CONFIGURED") {
+      throw new Error("test bootstrap is not configured");
+    }
+    expect(result.notifications).toEqual({ kind: "CONFIGURED" });
   });
 
   it("rejects malformed adapter configuration instead of silently normalizing it", () => {

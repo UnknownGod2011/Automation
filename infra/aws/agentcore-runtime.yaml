@@ -43,6 +43,10 @@ Parameters:
     Type: String
     Default: ''
     Description: Optional customer-managed KMS key used by the S3 artifact adapter.
+  CognitoUserPoolId:
+    Type: String
+    Default: ''
+    Description: Optional trusted Cognito user pool used to resolve verified owner email addresses for SES notifications.
   AgentCoreBrowserIdentifier:
     Type: String
     Default: aws.browser.v1
@@ -74,6 +78,7 @@ Parameters:
 Conditions:
   HasRuntimeCodeVersion: !Not [!Equals [!Ref RuntimeCodeVersionId, '']]
   HasArtifactKmsKey: !Not [!Equals [!Ref ArtifactKmsKeyArn, '']]
+  HasCognitoUserPool: !Not [!Equals [!Ref CognitoUserPoolId, '']]
 
 Resources:
   ScheduledRuntimeExecutionRole:
@@ -162,6 +167,16 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:token-vault/*/apikeycredentialprovider/automation_*'
                   - !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default'
                   - !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default/workload-identity/*'
+        - !If
+          - HasCognitoUserPool
+          - PolicyName: CognitoNotificationDirectoryRead
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action: cognito-idp:ListUsers
+                  Resource: !Sub 'arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}'
+          - !Ref AWS::NoValue
         - PolicyName: AgentCoreRuntimeLogs
           PolicyDocument:
             Version: '2012-10-17'
@@ -205,6 +220,7 @@ Resources:
         AWS_ARTIFACT_BUCKET: !Ref ArtifactBucketName
         AWS_ARTIFACT_PREFIX: !Ref ArtifactPrefix
         AWS_ARTIFACT_KMS_KEY_ID: !If [HasArtifactKmsKey, !Ref ArtifactKmsKeyArn, '']
+        AUTOMATION_COGNITO_USER_POOL_ID: !If [HasCognitoUserPool, !Ref CognitoUserPoolId, '']
         AWS_AGENTCORE_BROWSER_IDENTIFIER: !Ref AgentCoreBrowserIdentifier
         AWS_AGENTCORE_BROWSER_SESSION_TIMEOUT_SECONDS: !Sub '${BrowserSessionTimeoutSeconds}'
         OPENAI_BYOK_MODEL: !Ref OpenAiByokModel

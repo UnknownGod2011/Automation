@@ -5,6 +5,7 @@ export * from "./browser-session.js";
 export * from "./capture-session.js";
 export * from "./capture-session-store.js";
 export * from "./cognito-auth.js";
+export * from "./cognito-user-email.js";
 export * from "./cloudwatch-telemetry.js";
 export * from "./config.js";
 export * from "./credential-metadata.js";

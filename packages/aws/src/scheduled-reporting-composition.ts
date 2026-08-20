@@ -1,6 +1,10 @@
 import { ScheduledRunOutcomeReporter, type OwnershipScope } from "@automation/core";
 import { AwsCloudWatchEmfTelemetryPort, type CloudWatchEmfLogSink } from "./cloudwatch-telemetry.js";
 import {
+  createAwsCognitoUserEmailResolver,
+  type CognitoListUsersSender,
+} from "./cognito-user-email.js";
+import {
   AwsSesNotificationPort,
   type SesRecipientResolver,
 } from "./ses-notification.js";
@@ -24,7 +28,10 @@ export interface AwsScheduledRunReportingComposition {
 
 export interface AwsScheduledRunReportingCompositionOptions {
   env: Readonly<Record<string, string | undefined>>;
+  /** Explicit resolver override for tests or non-Cognito deployments. */
   recipients?: SesRecipientResolver;
+  /** Optional Cognito sender override; production defaults to the AWS SDK client. */
+  cognitoUsers?: CognitoListUsersSender;
   sesSender?: SesV2CommandSender;
   telemetrySink?: CloudWatchEmfLogSink;
   warn?: (message: string) => void;
@@ -43,10 +50,10 @@ function awsRegion(env: Readonly<Record<string, string | undefined>>): string | 
 /**
  * Composes best-effort scheduled-run reporting from deployment configuration.
  *
- * Telemetry is always available through EMF logging. Email remains explicitly
- * NOT_CONFIGURED until a sender identity, AWS region and trusted user-email
- * resolver all exist. Missing email configuration never disables telemetry or
- * execution.
+ * Telemetry is always available through EMF logging. Email becomes configured
+ * only when a sender identity, AWS region, and trusted recipient resolver exist.
+ * Production may derive that resolver from the configured Cognito user pool;
+ * the scheduled payload still never supplies an email address.
  */
 export function createAwsScheduledRunReporting(
   options: AwsScheduledRunReportingCompositionOptions,
@@ -60,12 +67,17 @@ export function createAwsScheduledRunReporting(
 
   const fromEmail = nonEmpty(options.env[SES_FROM_EMAIL_ENV]);
   const region = awsRegion(options.env);
+  const cognito = createAwsCognitoUserEmailResolver(options.env, options.cognitoUsers);
+  const recipients = options.recipients ?? (cognito.configured ? cognito.resolver : undefined);
   const missing: string[] = [];
   if (!fromEmail) missing.push(SES_FROM_EMAIL_ENV);
   if (!region) missing.push("AWS_REGION (or AWS_DEFAULT_REGION)");
-  if (!options.recipients) missing.push("trusted SesRecipientResolver");
+  if (!recipients) {
+    if (!cognito.configured) missing.push(...cognito.missing);
+    else missing.push("trusted SesRecipientResolver");
+  }
 
-  if (missing.length > 0 || !fromEmail || !region || !options.recipients) {
+  if (missing.length > 0 || !fromEmail || !region || !recipients) {
     return {
       reporter: new ScheduledRunOutcomeReporter({
         telemetry,
@@ -79,7 +91,7 @@ export function createAwsScheduledRunReporting(
   const notifications = new AwsSesNotificationPort(
     { fromEmail },
     new AwsSesV2SendEmailTransport(region, options.sesSender),
-    options.recipients,
+    recipients,
   );
 
   return {

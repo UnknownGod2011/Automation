@@ -139,6 +139,9 @@ Outputs:
     Value: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${AutomationUserPool}'
   CognitoAppClientId:
     Value: !Ref AutomationWebClient
+  CognitoUserPoolId:
+    Value: !Ref AutomationUserPool
+    Description: Trusted user-directory source for scheduled notification recipient resolution.
   CognitoDomain:
     Value: !Sub 'https://${UserPoolDomainPrefix}.auth.${AWS::Region}.amazoncognito.com'
   RequiredWebEnvironment:
