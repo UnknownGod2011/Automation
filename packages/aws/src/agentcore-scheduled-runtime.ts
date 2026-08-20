@@ -58,7 +58,7 @@ export class AwsAgentCoreScheduledRuntimeEntrypoint {
     private readonly handler: Pick<AwsScheduledRunHandler, "handle">,
   ) {}
 
-  handle(
+  async handle(
     invocation: AwsAgentCoreScheduledRuntimeInvocation,
   ): Promise<ScheduledRunWorkerResult> {
     const trustedScope = {
