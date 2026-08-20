@@ -27,12 +27,51 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - Step Functions invokes AgentCore Runtime rather than a browser Lambda. The Runtime is packageable as a Node 22 direct-code artifact and provisioned by `infra/aws/agentcore-runtime.yaml` with bounded compute lifetime and least-privilege execution access.
 - Cognito-backed scheduled notification recipient resolution uses the trusted user `sub`, verified email, and deployment-owned user-pool configuration; scheduled payloads cannot select destinations.
 - API Gateway HTTP API payload-format 2.0 transport maps already-verified Cognito claims to the provider-neutral control-plane handler without parsing raw bearer tokens or trusting request-supplied ownership.
+- Completed capture traces now have durable AWS persistence using tenant-scoped DynamoDB metadata plus immutable S3 documents.
 
 ## Authoritative incoming validation
 
 - PR #1 is the open draft development PR on `agent/bootstrap-platform`.
-- Incoming head `59d73fac079e4ecaa412ea356bf16d205be747a2` is green on GitHub Actions CI #167.
+- Incoming head `6481a184a1526345efc512cec304ed50dfe65f2d` is green on GitHub Actions CI #169.
 - GitHub Actions on the exact new head created by this run is authoritative. Do not claim this slice green until deterministic lock verification, frozen install, `pnpm check`, AgentCore package smoke testing, Next.js build/type validation, and the complete test suite have succeeded.
+
+## 2026-08-20 — production fresh-test execution boundary
+
+### Product slice
+
+The cloud-control-plane composition review found a correctness problem that had to be closed before wiring the real AWS service graph: `AutomationProductLifecycleService.runFreshTest()` owns an in-process `BrowserExecutor`, verifier, and reasoner. That is appropriate for local/mock mode, but production BYOK reasoning requires an AgentCore workload identity and production browser execution must happen in the execution plane, not inside the API Lambda.
+
+Added the provider-neutral `FreshTestExecutionPort` as the explicit trusted production boundary. `AutomationControlPlaneService.runFreshTest()` now behaves differently by declared capability state:
+
+- `cloudExecution = CONFIGURED` requires a configured `FreshTestExecutionPort` and never falls through to the local lifecycle executor.
+- `cloudExecution = LOCAL_MOCK` continues using the existing in-process lifecycle implementation so deterministic local tests remain unchanged.
+- a production deployment claiming configured cloud execution without the trusted port fails closed with `NOT_CONFIGURED` before any local browser/model work or run mutation can occur.
+
+The port receives only the already-authenticated ownership scope, automation ID, run ID, and bounded runtime variables. Its contract explicitly requires production implementations to obtain workload identity/secret capability from trusted cloud invocation context rather than request JSON.
+
+This slice intentionally does not invent an AgentCore invocation protocol yet. The next AWS adapter can now implement fresh testing out-of-process without changing the existing HTTP route or weakening the local vertical slice.
+
+### Correctness / security / tenancy / idempotency / retry / cost / observability review
+
+- The control-plane API process can no longer silently perform production fresh-test browser/model execution when `cloudExecution` advertises `CONFIGURED`.
+- Tenant/user ownership remains sourced from authenticated control-plane context and is passed unchanged through the fresh-test boundary.
+- Browser-profile references, BYOK secret references, workload tokens, and provider keys are not added to the fresh-test request contract.
+- No new retry layer is introduced. The future cloud executor must reuse the execution-plane idempotency/run semantics rather than retrying an uncertain whole browser test from the API Lambda.
+- No new dependency, table, bucket, queue, browser session, model call, CI artifact, or metric dimension is added by this boundary.
+- Local/mock behavior is preserved explicitly instead of being inferred from missing cloud dependencies.
+- Production configuration lies are fail-closed: `CONFIGURED` without a trusted executor becomes a stable product `NOT_CONFIGURED` error rather than hidden local execution.
+
+### Tests / validation
+
+Regression coverage added for:
+
+- production `CONFIGURED` mode rejecting fresh test when the trusted executor is missing,
+- proof that this rejection occurs without invoking the local lifecycle fresh-test path,
+- configured production mode routing the authenticated request only through `FreshTestExecutionPort`,
+- preservation of the local lifecycle execution path in `LOCAL_MOCK` mode,
+- runtime-variable forwarding across the trusted boundary without adding server-owned secret/profile identifiers.
+
+This implementation, tests, and progress update are being published as one normal CI-triggering Git-data commit. Exact-head GitHub Actions remains authoritative; no pass is claimed until that run completes successfully.
 
 ## 2026-08-20 — immutable AWS capture-trace persistence
 
@@ -72,12 +111,12 @@ Regression coverage added for:
 
 Normal implementation head `b1e2fb618387e851cd7b13d2a17e28a4baff3d6c` reached GitHub Actions CI #168. Deterministic lock verification, frozen installation, strict `pnpm check`, AgentCore Runtime packaging, the Next.js production build, all 7 contracts tests, all 146 core tests, all 17 web tests, and 184/185 AWS tests passed. The sole failure was the newly-added capture-order test fixture: it moved `startedAt` to 11:00 while leaving `finishedAt` fixed at 10:01, so the existing `assertCaptureTrace` contract correctly rejected the invalid trace before repository logic ran. The production adapter and its other six new tests were not implicated.
 
-The single permitted corrective commit changes only the fixture time construction so `finishedAt` and the event timestamp are derived from the supplied `startedAt`, and records this root cause. No runtime behavior, contract, compiler setting, dependency, or CI gate is weakened. Exact-head GitHub Actions after the correction remains authoritative.
+The single permitted corrective commit changes only the fixture time construction so `finishedAt` and the event timestamp are derived from the supplied `startedAt`, and records this root cause. No runtime behavior, contract, compiler setting, dependency, or CI gate is weakened. CI #169 passed on corrective head `6481a184a1526345efc512cec304ed50dfe65f2d`.
 
 ## Next product milestones
 
-1. Compose the concrete production `AutomationControlPlaneService` graph behind the existing Lambda transport using DynamoDB automation/run state, this S3/Dynamo capture repository, S3 workflow versions, AgentCore Browser/Profile capture startup, capture completion state, AgentCore Identity credential management, and the real Scheduler port, with aggregated `NOT_CONFIGURED` deployment state.
-2. Resolve the production fresh-test execution seam correctly: the local lifecycle assumes an in-process browser/reasoner, while production BYOK reasoning requires AgentCore workload identity. Fresh tests should execute through an explicit trusted cloud execution boundary rather than allocating AgentCore Browser/model work inside the API Lambda or mutating a run before discovering credentials are unavailable.
+1. Implement the AWS `FreshTestExecutionPort` using an explicit trusted AgentCore Runtime execution path and workload identity, with duplicate test-run protection and no API-Lambda browser/model execution.
+2. Compose the concrete production `AutomationControlPlaneService` graph behind the existing Lambda transport using DynamoDB automation/run state, S3/Dynamo capture persistence, S3 workflow versions, AgentCore Browser/Profile capture startup, capture completion state, AgentCore Identity credential management, the cloud fresh-test executor, and the real Scheduler port, with aggregated `NOT_CONFIGURED` deployment state.
 3. Wire publish/update/disable lifecycle operations to deployed EventBridge Scheduler resources automatically, using stack outputs for dispatch queue/role/group rather than manual environment assembly.
 4. Add the Runtime artifact upload/deploy release command around the tested ZIP, requiring a versioned S3 object in production.
 5. Perform one controlled real AWS demonstration: sign in -> BYOK -> capture -> compile/test -> publish -> schedule -> AgentCore cloud browser/OpenAI execution -> verification/history/email, plus one bounded human takeover/resume path.
@@ -88,7 +127,7 @@ The single permitted corrective commit changes only the fixture time constructio
 - Recovery continuation consumption remains parked until a production cloud worker integration specifically requires it.
 - Sensitive target-site runtime values still need a separate secret-resolution contract; never place passwords, cookies, provider keys, or equivalent secrets in workflow/runtime-variable metadata.
 - The API Gateway Lambda transport is defined, but the complete cloud-backed `AutomationControlPlaneService` composition and deployable control-plane Lambda resource remain in progress.
-- Production fresh tests must not reuse the local in-process browser/reasoner assumption; they need a trusted AgentCore Runtime/workload-identity execution boundary before publish can be fully cloud-native.
+- `FreshTestExecutionPort` now prevents accidental API-Lambda execution, but the production AWS AgentCore implementation of that port is still required before the control plane can advertise cloud fresh tests as configured.
 - Trusted capture-completion worker authentication remains a separate deployment boundary; it must not be exposed through the ordinary end-user JWT route.
 - The Runtime resource/package is represented in code/IaC, but live creation and invocation still require a controlled AWS deployment and uploaded Runtime ZIP; CI intentionally uses no cloud credentials.
 - `PUBLIC` Runtime networking is suitable for the arbitrary-web MVP but should be revisited for production environments that can provide VPC egress without breaking permitted target-site access.

@@ -12,6 +12,7 @@ import type { ProviderCredentialSummary } from "./credential-pool.js";
 import type { AutomationRepository, OwnershipScope, RunRepository } from "./index.js";
 import type {
   AutomationProductLifecycleService,
+  FreshTestRunRequest,
   FreshTestRunResult,
   PublishAutomationRequest,
 } from "./product-lifecycle.js";
@@ -127,6 +128,16 @@ export interface CaptureCompletionReader {
   ): Promise<CaptureSessionRecord | null>;
 }
 
+/**
+ * Trusted execution-plane boundary for production fresh tests. Implementations
+ * must execute outside the control-plane request process and must derive any
+ * workload identity/secret capability from trusted cloud invocation context,
+ * not from request JSON.
+ */
+export interface FreshTestExecutionPort {
+  execute(request: FreshTestRunRequest): Promise<FreshTestRunResult>;
+}
+
 export interface AutomationLifecyclePort {
   createDraft(request: Parameters<AutomationProductLifecycleService["createDraft"]>[0]): ReturnType<AutomationProductLifecycleService["createDraft"]>;
   persistCapture(request: Parameters<AutomationProductLifecycleService["persistCapture"]>[0]): ReturnType<AutomationProductLifecycleService["persistCapture"]>;
@@ -144,6 +155,7 @@ export interface AutomationControlPlaneDependencies {
   captureState: CaptureCompletionReader;
   capabilities: ControlPlaneCapabilities;
   credentials?: ProviderCredentialManagementPort;
+  freshTests?: FreshTestExecutionPort;
 }
 
 export class ControlPlaneError extends Error {
@@ -374,13 +386,30 @@ export class AutomationControlPlaneService {
     automationId: string,
     command: TestAutomationCommand,
   ): Promise<FreshTestRunResult> {
+    const request: FreshTestRunRequest = {
+      scope,
+      automationId: requireToken(automationId, "automationId"),
+      runId: requireToken(command.runId, "runId"),
+      ...(command.runtimeVariables ? { runtimeVariables: structuredClone(command.runtimeVariables) } : {}),
+    };
+
+    if (this.dependencies.capabilities.cloudExecution === "CONFIGURED") {
+      if (!this.dependencies.freshTests) {
+        throw new ControlPlaneError(
+          "NOT_CONFIGURED",
+          "cloud fresh-test execution is not configured",
+        );
+      }
+      try {
+        return await this.dependencies.freshTests.execute(request);
+      } catch (error) {
+        if (error instanceof ControlPlaneError) throw error;
+        throw new ControlPlaneError("CONFLICT", "cloud fresh test could not be completed");
+      }
+    }
+
     try {
-      return await this.dependencies.lifecycle.runFreshTest({
-        scope,
-        automationId: requireToken(automationId, "automationId"),
-        runId: requireToken(command.runId, "runId"),
-        ...(command.runtimeVariables ? { runtimeVariables: structuredClone(command.runtimeVariables) } : {}),
-      });
+      return await this.dependencies.lifecycle.runFreshTest(request);
     } catch {
       throw new ControlPlaneError("CONFLICT", "automation is not ready for a fresh test");
     }
