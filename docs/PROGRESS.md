@@ -68,14 +68,14 @@ Trusted capture completion remains a separate returned handler rather than being
 - Capture completion remains profile-save-before-trace and is not exposed through the JWT user route.
 - BYOK raw keys continue to cross only the AgentCore Identity vault boundary; credential responses expose no secret reference or plaintext key.
 - Notification capability is advertised only when both a configured SES sender and trusted Cognito user directory are present. Missing notification configuration does not prevent the rest of the control plane from being constructed.
-- No package dependency, pnpm graph, table, bucket, queue, browser session, model call, CI artifact, or custom metric dimension was added by this composition slice. SDK clients are constructed lazily with the standard AWS credential provider chain and make no cloud calls during bootstrap.
+- No package manifest, table, bucket, queue, browser session, model call, CI artifact, or custom metric dimension was added by this composition slice. SDK clients are constructed lazily with the standard AWS credential provider chain and make no cloud calls during bootstrap.
 - The deployable API Lambda resource/IAM role is deliberately still separate work: composition now knows the Runtime ARN and Scheduler resources, but deployment must grant only the required DynamoDB/S3/AgentCore/Identity/Scheduler/Runtime permissions rather than broadening this code boundary.
 
 ### Tests / validation
 
 Regression coverage was added for aggregated production `NOT_CONFIGURED` state, construction of the full cloud-backed control-plane graph without AWS credentials or network calls, notification capability gating, and malformed AgentCore Runtime configuration rejection. The production composition is exported through `@automation/aws`.
 
-This implementation, tests, and progress update are being published as one normal CI-triggering Git-data commit. Exact-head GitHub Actions remains authoritative; no pass is claimed until that run completes successfully.
+Normal implementation head `b21b046432075dfca4f3cb1947d18f8089d5e648` reached CI #173. CI stopped exclusively at the deterministic pnpm supply-chain gate before installation/type-checking because pnpm 10.15.0 re-resolved a new transitive graph even though no package manifest changed. The authoritative generated SHA-256 changed from `598c2eb9685f296525d3c8e105dbf766f38d9cb04b35a51fb466654e3b410609` to `0910edb930a47e87bb13dfff67783942afc85667b966b7d2647fbdb525960250`; the existing DynamoDB peer-alignment checks remain in place. The single corrective commit pins that exact CI-generated snapshot rather than weakening or bypassing the gate. Exact-head GitHub Actions remains authoritative; no final pass is claimed here until the corrective run completes.
 
 ## 2026-08-20 — AgentCore cloud fresh-test execution
 
