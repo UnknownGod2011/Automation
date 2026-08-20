@@ -49,6 +49,7 @@ export * from "./capture-completion-http.js";
 export * from "./control-plane.js";
 export * from "./control-plane-http.js";
 export * from "./coordinator.js";
+export * from "./credential-pool.js";
 export * from "./dispatch.js";
 export * from "./errors.js";
 export * from "./execution.js";

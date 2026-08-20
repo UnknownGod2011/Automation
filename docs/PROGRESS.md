@@ -18,78 +18,74 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - Provider-neutral control-plane HTTP contracts plus `apps/web` provide dashboard/create/capture/compile/test/publish/history UX with same-origin mutation checks.
 - AWS transport/IaC define EventBridge Scheduler -> SQS -> dispatcher -> Step Functions Standard with occurrence-based duplicate suppression, bounded delivery retries, DLQ/backpressure, tenant-scoped schedule identities, and least-privilege roles.
 - AgentCore Live View capture startup restores a server-owned Browser Profile. Durable capture completion saves authenticated profile state before accepting the trace and exposes only safe latest-capture readiness metadata to the UI.
-- Cognito/API Gateway trusted-claims bridge derives tenant/user ownership from deployment tenant + verified Cognito identity.
+- Cognito managed login now protects the Next.js/control-plane perimeter with authorization-code + PKCE sessions and API Gateway-verified Cognito access-token claims.
+- `AgentCoreIdentityCredentialVault` already stores BYOK API keys as AgentCore Identity managed API-key credential providers and resolves them at runtime only with a workload identity token. Raw provider keys stay out of normal application metadata.
 
 ## Authoritative incoming validation
 
 - PR #1 is the open draft development PR on `agent/bootstrap-platform`.
-- Incoming head `2332b92b054267ef596d206f4bc8616e475330b0` is green on GitHub Actions CI #148.
+- Incoming head `c433b0320e550374fdbb4f86a3b92fb123487f69` is green on GitHub Actions CI #150.
 
-## 2026-08-20 — End-to-end Cognito web session + protected API perimeter
+## 2026-08-20 — Provider-neutral BYOK credential pool + reasoning routing
 
 ### Product slice
 
-Finished the browser-facing authentication boundary without adding a JWT verification dependency to the application. The Next.js app now uses Cognito managed login with the OAuth 2.0 authorization-code grant and PKCE. Sign-in state, PKCE verifier/state, access token, and refresh token are held only in `HttpOnly`, `Secure`, `SameSite=Lax`, host-only cookies. Browser JavaScript never receives the control-plane bearer token.
+Added the provider-neutral layer that was missing above the existing AgentCore Identity vault.
 
-Added `apps/web/lib/cognito-session.ts` for fail-closed Cognito configuration, PKCE generation, bounded OAuth state, local-only return paths, authorization/logout URL construction, code exchange, token-response validation, and refresh. `apps/web/lib/server-auth.ts` resolves the current server-side session and creates a request-scoped `WebControlPlaneClient` from a Cognito access token. The legacy `AUTOMATION_CONTROL_PLANE_BEARER_TOKEN` environment seam is no longer loaded by the web client.
+`ProviderCredentialService` now registers a BYOK credential through `CredentialVault`, stores only provider/priority/health plus the opaque vault reference in `CredentialMetadataRepository`, and returns a sanitized summary that never contains the raw API key or `secretRef`. API-key bytes are treated as opaque input and are not normalized before secure storage.
 
-Added Next.js auth routes:
+`selectProviderCredential` implements deterministic provider preference and health-aware selection. Provider order is explicit and case-insensitive; within a provider, lower priority wins, then lower failure count, then credential ID. `HEALTHY`/`UNKNOWN` credentials are usable, and expired `COOLDOWN` credentials become eligible again. `DISABLED`, `EXHAUSTED`, malformed cooldown state, and active cooldowns are unavailable.
 
-- `GET /api/auth/sign-in` creates PKCE state and redirects to Cognito.
-- `GET /api/auth/callback` validates bounded state, exchanges the code server-side, stores tokens in secure cookies, and returns only to a sanitized same-site path.
-- `POST /api/auth/sign-out` enforces same-origin mutation checks, clears local session cookies, and redirects through Cognito logout.
+Same-provider key rotation is **off by default**. If the highest-priority key for a provider is unavailable, the pool moves to the next configured provider rather than silently trying another key for the same provider. Same-provider fallback exists only behind the explicit `allowSameProviderCredentialFailover` policy flag; deployments must not use it to evade provider quotas or rate limits.
 
-Dashboard/detail/mutation routes now require the request-scoped Cognito session. Signed-out users receive an explicit sign-in state; expired access tokens can be refreshed from the server-only refresh cookie. No tenant/user field is accepted from the browser as identity authority.
+`CredentialPoolReasoningProvider` resolves the selected secret only for the reasoning invocation, optionally supplies the workload identity context required by AgentCore Identity, creates a provider-specific reasoner behind a factory interface, and never persists the secret or workload token. Successful calls mark the credential healthy. Authentication failures disable it, quota exhaustion marks it exhausted, and rate-limit/transient failures place it into a bounded cooldown. The failing call is never automatically replayed against another credential.
 
-### API authorization correction
+`CredentialPoolPreflightCheck` can be inserted into the existing scheduled-run coordinator so a run with no usable BYOK credential pauses before browser/model compute rather than opening a cloud browser and failing later.
 
-Changed the AWS trusted-claims adapter from Cognito ID-token authorization to **access-token** authorization. It now requires `token_use=access`, the expected Cognito `client_id`, verified issuer, and non-empty `sub`. This matches the production HTTP API boundary, where OAuth scope enforcement distinguishes access tokens from ID tokens before Lambda receives claims.
+### Security / tenancy / idempotency / concurrency / retry / cost review
 
-Added `infra/aws/control-plane-auth.yaml` to provision:
-
-- email-based Cognito user pool,
-- authorization-code-only public web client,
-- managed-login domain,
-- JWT-authorized API Gateway HTTP API,
-- OAuth `openid` scope requirement on the protected default route,
-- Lambda proxy integration/permission,
-- bounded API throttling and detailed route metrics,
-- outputs for the exact server environment contract.
-
-Google federation is intentionally not fabricated without an external IdP client configuration; the current stack provides Cognito email sign-in and leaves Google federation as a deployment follow-up.
-
-### Security / tenancy / idempotency / retry / cost review
-
-- OAuth code exchange uses PKCE S256 and keeps authorization codes/tokens out of URL fragments and browser JavaScript.
-- OAuth transaction state expires after 10 minutes; external/open return redirects are rejected.
-- Access/refresh cookies are host-only, secure, HTTP-only, and same-site. No raw token is written to application tables or logs.
-- API Gateway is the cryptographic signature/expiry/issuer/audience/scope boundary. The Lambda adapter consumes only already-verified claims and still validates Cognito token type/client/subject defensively.
-- Tenant ownership remains deployment-derived; user ownership remains Cognito `sub`-derived. Request JSON cannot select another tenant/user.
-- Auth failures occur before automation/browser/model side effects, so they add no workflow idempotency surface.
-- Access-token refresh is bounded to one Cognito call when the access cookie is absent. No polling or background refresh was added. A future BFF/session store can reduce repeated refresh calls after expiry if traffic warrants it.
-- API Gateway throttling is finite; provider failures surface as sanitized sign-in/session failures rather than credential detail.
+- All credential metadata reads/writes remain scoped by the existing tenant/user repository contracts. The AWS AgentCore vault separately validates that opaque secret references belong to the same ownership scope.
+- Raw API keys exist only in the registration request and ephemeral `CredentialSecret` passed to the provider factory. Returned summaries, normal metadata, warnings, and run failures contain no key material.
+- Workload identity tokens are runtime access capability material and are passed only to `CredentialVault.get`; they are never written into credential metadata.
+- Credential selection is deterministic for a fixed metadata snapshot and timestamp. This adds no external browser side effect and no run-idempotency surface.
+- Health metadata writes are advisory rather than execution authority. If a health update fails after a model call, the reasoning decision/failure remains authoritative; only a fixed sanitized warning hook is emitted. This avoids repeating model calls solely because health bookkeeping failed.
+- The router does not perform same-call failover. This avoids duplicate model cost and prevents automatic key rotation from becoming rate-limit circumvention.
+- Preflight rejection happens before browser startup, reducing wasted AgentCore Browser and model spend when credentials are unavailable.
 
 ### Tests
 
-Added regression coverage for missing/insecure Cognito configuration, PKCE generation, OAuth transaction expiry, open-redirect rejection, authorization-code exchange, refresh-token exchange, malformed token responses, static-bearer-env removal, access-token-only claim resolution, wrong client/issuer/token type, spoofed ownership claims, and unconfigured identity behavior.
+Added regression coverage for:
+
+- default suppression of same-provider key rotation,
+- explicit same-provider fallback policy,
+- sanitized credential registration with tenant isolation,
+- runtime-only secret resolution and success health updates,
+- workload identity context reaching only the vault boundary,
+- invalid-auth disablement without same-call alternate-key replay,
+- preflight blocking when the primary provider has no usable credential,
+- bounded cooldown after provider rate limiting.
 
 ### Validation status
 
-- This is the single normal CI-triggering multi-file commit for the run.
+- This is the single normal CI-triggering multi-file commit for this run.
+- No dependency was added; the existing AgentCore Identity SDK adapters are reused.
 - GitHub Actions on the exact resulting head is authoritative. Do not claim this slice green until deterministic lock verification, frozen install, `pnpm check`, Next.js build/type validation, and the full test suite complete successfully.
 
 ## Next product milestones
 
-1. Implement BYOK credential-pool routing through AgentCore Identity/secrets with provider-neutral selection policy; raw provider keys must remain outside ordinary application tables and logs.
-2. Add SES notifications plus CloudWatch/AgentCore observability for success/failure/attention states.
-3. Compose/deploy the concrete control-plane Lambda + Cognito/API Gateway stack and scheduler/Step Functions stack behind explicit environment outputs.
-4. Perform one controlled real AWS demonstration covering sign-in -> capture -> compile/test -> publish -> scheduled cloud browser execution -> verification/history and one bounded human takeover/resume path.
-5. Add Google federation to Cognito once a deployment-owned Google OAuth client is available; do not hard-code or store those credentials in normal metadata.
+1. Expose sanitized BYOK credential create/list/rotate/remove operations through the authenticated control-plane API and minimal Next.js settings UX, then compose `CredentialPoolPreflightCheck` and `CredentialPoolReasoningProvider` into the AWS scheduled-run worker with a workload identity token source.
+2. Add concrete provider-bound reasoners for the supported BYOK providers behind `CredentialBoundReasoningProviderFactory`; preserve the provider-neutral workflow/runtime contract and bounded provider timeouts.
+3. Add SES notifications plus CloudWatch/AgentCore observability for success/failure/attention states.
+4. Compose/deploy the concrete control-plane Lambda + Cognito/API Gateway stack and scheduler/Step Functions stack behind explicit environment outputs.
+5. Perform one controlled real AWS demonstration covering sign-in -> capture -> compile/test -> publish -> scheduled cloud browser execution -> verification/history and one bounded human takeover/resume path.
+6. Add Google federation to Cognito once a deployment-owned Google OAuth client is available; do not hard-code or store those credentials in normal metadata.
 
 ## Known parked limitations
 
 - Recovery continuation consumption remains parked until a production cloud worker integration specifically requires it.
-- Sensitive runtime values still need the planned secret-resolution contract; never place passwords, cookies, provider keys, or equivalent secrets in workflow/runtime-variable metadata.
+- Sensitive runtime values for target-site workflows still need a separate secret-resolution contract; never place passwords, cookies, provider keys, or equivalent secrets in workflow/runtime-variable metadata.
+- The BYOK core service is not yet exposed through the public authenticated control-plane/Next.js UX, and production AWS worker composition does not yet source the AgentCore workload identity token for the router.
+- Credential health metadata currently has no compare-and-set generation; concurrent reasoning calls may race health bookkeeping. Health is advisory, not execution authority, so this cannot duplicate browser effects, but a later credential-management slice should add versioned/conditional health updates if concurrent provider selection becomes material.
 - Public HTTP command idempotency, production rate limiting beyond API Gateway throttles, and deployment-level capture-worker authentication middleware remain required control-plane work.
 - Cognito refresh currently refreshes server-side on demand when the short-lived access cookie is absent; Server Components cannot rotate the cookie during render, so repeated page renders after access expiry can repeat refresh calls until a Route Handler writes a new access cookie. This is safe but not cost-optimal.
 - Real AWS credentials are not available in CI, so AWS SDK composition/auth boundaries are validated with deterministic tests; live deployment validation remains a later environment gate.
