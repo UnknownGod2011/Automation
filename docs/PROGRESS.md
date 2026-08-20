@@ -22,60 +22,57 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - `AgentCoreIdentityCredentialVault` stores BYOK API keys as AgentCore Identity managed API-key credential providers. Raw provider keys stay out of normal application metadata.
 - Provider-neutral credential-pool routing selects usable BYOK credentials deterministically, resolves secrets only at model invocation, applies bounded health/cooldown state, suppresses same-provider rotation by default, and supports preflight rejection before browser/model cost.
 - Authenticated credential-management APIs and `/settings/credentials` support sanitized create/list/rotate/remove operations while keeping raw keys and vault references server-side.
+- AWS scheduled execution now composes BYOK preflight and runtime-only AgentCore workload-token secret access before browser/model work.
 
 ## Authoritative incoming validation
 
 - PR #1 is the open draft development PR on `agent/bootstrap-platform`.
-- Incoming head `335cf0970bac3f3ea52b930991c598ca8f17c276` is green on GitHub Actions CI #153.
+- Incoming head `da7d29f9f1442900ce3eb354a0c4dd3ecee6380c` is green on GitHub Actions CI #154.
 - GitHub Actions on the exact new head created by this run is authoritative; do not claim the new slice green until deterministic lock verification, frozen install, `pnpm check`, Next.js build/type validation, and the complete test suite have succeeded.
 
-## 2026-08-20 — BYOK scheduled-execution composition
+## 2026-08-20 — OpenAI BYOK reasoning adapter
 
 ### Product slice
 
-Connected the existing BYOK credential pool to the production scheduled-run composition boundary instead of leaving credential management and execution as separate product capabilities.
+Added the first concrete provider-bound BYOK reasoner behind the existing provider-neutral `CredentialBoundReasoningProviderFactory`. The implementation lives in the AWS deployment adapter package because that is the current production execution composition, while all workflow/credential-pool contracts remain provider-neutral.
 
-Added `createAwsByokScheduledExecution`, an AWS-only composition helper that constructs the existing provider-neutral `ScheduledRunCoordinator` and `ScheduledRunWorker` with:
+`OpenAiCredentialBoundReasoningProviderFactory` accepts only metadata provider `openai` and binds the runtime-only secret resolved by `CredentialVault` into `OpenAiByokReasoningProvider`. No OpenAI SDK dependency was added; the adapter uses the Node 22 standards-based `fetch` surface and the official Responses API endpoint.
 
-1. an invocation-scope preflight guard,
-2. `CredentialPoolPreflightCheck`, so missing/disabled/exhausted credentials stop the run before AgentCore Browser allocation,
-3. `CredentialPoolReasoningProvider`, so the selected secret is retrieved only when semantic reasoning is actually invoked, and
-4. the existing caller-supplied `CredentialBoundReasoningProviderFactory`, preserving provider-neutral core contracts and leaving concrete provider SDK bindings as the next outward milestone.
-
-Added `AgentCoreRuntimeHeaderWorkloadAccessTokenSource` for the trusted AgentCore Runtime payload header `WorkloadAccessToken`. Header matching is case-insensitive, conflicting duplicate values fail closed, and token size is bounded. The composition is intentionally invocation-scoped: the token is captured only by the in-memory reasoning access-context closure and is never copied into workflow graphs, run records, checkpoints, credential metadata, browser profiles, or user-visible output.
-
-The composition is also bound to the trusted invocation tenant/user. A request accidentally routed through a worker constructed for another ownership scope fails in preflight before browser compute. The same scope check is repeated at reasoning access so the workload token cannot be used to resolve a credential for another tenant even if a caller bypasses the normal worker path.
+The request uses JSON-schema Structured Outputs and converts a bounded list of `{name,value}` argument pairs into the existing provider-neutral decision argument map. This avoids relying on arbitrary object properties in strict structured-output schemas while preserving the core `ReasoningDecision` contract.
 
 ### Security / tenancy / idempotency / concurrency / retry / verification / cost review
 
-- Raw provider keys still flow only through `CredentialVault`; this slice adds no secret persistence and no new dependency.
-- The AgentCore workload access token is operational capability material. It is read from the trusted invocation boundary, retained only in memory, and excluded from errors, logs, metadata, checkpoints, and run history by construction.
-- Tenant/user identity is bound when the AWS scheduled execution composition is created and checked again before secret resolution. Cross-scope reuse fails before AgentCore Browser/model cost.
-- BYOK preflight executes before the existing automation lock/browser startup path. A user with no usable credential gets the existing durable `WAITING_FOR_HUMAN / NOT_CONFIGURED` state rather than a paid browser session that can never reason.
-- Scheduled occurrence idempotency and automation locking remain unchanged and authoritative. Credential health remains advisory and cannot authorize or duplicate browser side effects.
-- Provider fallback behavior remains unchanged: same-provider key rotation is disabled unless explicitly opted in, and a failed reasoning call is not automatically replayed against another key.
-- Model/browser side effects remain governed by the existing workflow action constraints and verification engine. This composition does not broaden any allowed action.
-- Existing bounded workflow retries/timeouts remain in force. Concrete provider-bound reasoners still need their own bounded network timeout implementations before live BYOK model traffic is considered complete.
-- No new per-run DynamoDB write is introduced beyond the existing credential preflight list/read and health bookkeeping. The preflight intentionally trades a small metadata read for avoiding unnecessary AgentCore Browser/model allocation.
+- The provider endpoint is fixed to `https://api.openai.com/v1/responses`; deployment configuration cannot redirect a user's stored API key to an arbitrary host.
+- The API key exists only in the in-memory Authorization header created immediately before the provider call. It is not written to workflow graphs, DynamoDB, run/checkpoint state, browser profiles, evidence, logs, or returned errors.
+- Ownership identifiers (`tenantId`, `userId`, `automationId`, `runId`) are deliberately excluded from the provider prompt. Only the node objective, node kind, allowed action boundary, and bounded untrusted browser context are sent.
+- Requests set `store: false`, use a bounded model timeout, cap serialized browser context and response bytes, and cap output tokens.
+- Browser/page context remains explicitly marked untrusted. Provider output is locally revalidated against the exact `allowedActions` list, primitive argument schema, duplicate-argument guard, confidence bounds, and summary bounds before the browser executor can consume it.
+- Provider HTTP failures are sanitized and classified without persisting or surfacing raw provider response messages. 401/403 disable invalid credentials, `insufficient_quota` maps to exhausted quota, ordinary 429 maps to bounded cooldown/retry, and network/5xx/timeout failures are retryable transient failures under the existing workflow retry budget.
+- The adapter never falls back to another credential after a failed call; existing credential-pool policy remains authoritative and therefore cannot be used to evade provider rate or billing limits.
+- This slice adds one network call only when deterministic browser execution has already escalated to semantic reasoning; it does not increase ordinary deterministic browser cost.
 
 ### Tests added
 
-Regression coverage now proves:
+Regression coverage proves:
 
-- missing BYOK credentials block scheduled execution before browser session creation,
-- the runtime `WorkloadAccessToken` is accepted case-insensitively but missing/conflicting/oversized capability material fails closed,
-- the workload token is passed only to vault access when reasoning is invoked and does not appear in credential metadata,
-- cross-tenant reuse of an invocation-scoped worker is rejected before browser compute or secret retrieval.
+- the fixed OpenAI Responses endpoint and structured-output request shape,
+- tenant/user/automation/run identifiers are not included in the provider request,
+- oversized browser context is rejected before any network call,
+- out-of-policy actions and duplicate structured arguments fail closed,
+- raw provider error text/API keys are not surfaced through classified errors,
+- quota exhaustion is distinct from ordinary rate limiting,
+- 5xx failures remain bounded retryable transient failures,
+- the factory accepts OpenAI credentials and rejects unsupported providers.
 
 ### Validation status
 
-- This run publishes one normal CI-triggering multi-file Git-data commit containing implementation, tests, AWS exports, and this progress update.
-- No package manifest or lock snapshot change is required.
-- Exact-head GitHub Actions is pending at commit time and remains the only authority for declaring the slice green. One corrective commit is permitted only after a concrete CI failure is root-caused from the Actions logs.
+- No package manifest or lock snapshot changed; no new third-party dependency was introduced.
+- The implementation, tests, AWS export, and this progress update are intended to be published as one normal CI-triggering Git-data commit.
+- Exact-head GitHub Actions remains the only authority for declaring the new slice green. One corrective commit is allowed only after a concrete CI failure is root-caused from Actions logs.
 
 ## Next product milestones
 
-1. Add concrete provider-bound BYOK reasoners behind `CredentialBoundReasoningProviderFactory` with explicit provider timeouts and sanitized failure classification. Start with one production provider needed for the demo rather than building a broad provider catalog.
+1. Wire the concrete OpenAI factory into the actual AgentCore/Lambda scheduled-run handler composition through explicit deployment environment (`OPENAI_BYOK_MODEL`) and add one handler-level fake integration proving schedule envelope -> BYOK reasoner -> browser worker composition without live credentials.
 2. Add SES notifications plus CloudWatch/AgentCore observability for success/failure/attention states and stable run correlation identifiers.
 3. Compose/deploy the concrete control-plane Lambda + Cognito/API Gateway stack and scheduler/Step Functions execution stack behind explicit environment/IaC outputs.
 4. Perform one controlled real AWS demonstration covering sign-in -> credential setup -> capture -> compile/test -> publish -> scheduled cloud browser execution -> reasoning -> verification/history and one bounded human takeover/resume path.
@@ -85,8 +82,9 @@ Regression coverage now proves:
 
 - Recovery continuation consumption remains parked until a production cloud worker integration specifically requires it.
 - Sensitive target-site runtime values still need a separate secret-resolution contract; never place passwords, cookies, provider keys, or equivalent secrets in workflow/runtime-variable metadata.
-- The new scheduled BYOK composition expects the trusted deployment/runtime adapter to construct it once per AgentCore invocation with the runtime-provided workload token. The actual Lambda/AgentCore handler composition is still a deployment milestone.
-- Concrete provider-bound reasoners are not yet implemented behind `CredentialBoundReasoningProviderFactory`; therefore BYOK routing is now connected to scheduled execution but live third-party model invocation still depends on the next adapter slice.
+- The scheduled BYOK composition still expects the trusted deployment/runtime adapter to construct it once per AgentCore invocation with the runtime-provided workload token; the actual Lambda/AgentCore handler composition remains a deployment milestone.
+- The OpenAI BYOK adapter is implemented and testable without credentials, but live provider validation is still pending the controlled AWS environment/demo.
+- Gemini/other concrete provider adapters are intentionally deferred until the first real OpenAI-backed vertical slice is deployed; core contracts do not require redesign for them.
 - Credential health metadata has no compare-and-set generation; concurrent reasoning calls may race advisory health bookkeeping. It is not execution authority and cannot duplicate browser effects.
 - Public HTTP command idempotency, deployment-level capture-worker authentication middleware, and broader production API rate limiting remain control-plane work.
 - Real AWS credentials are not available in CI, so AWS service boundaries are validated with deterministic tests; live deployment remains an explicit later gate.
