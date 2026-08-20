@@ -113,10 +113,12 @@ describe("OpenAiByokReasoningProvider", () => {
     expect(call?.url).toBe("https://api.openai.com/v1/responses");
     expect(call?.headers.authorization).toBe("Bearer sk-user-secret");
     const body = call?.body ?? "";
-    expect(body).toContain('"store":false');
+    const parsedBody = JSON.parse(body) as { store?: unknown; input?: unknown };
+    expect(parsedBody.store).toBe(false);
+    expect(typeof parsedBody.input).toBe("string");
+    expect(parsedBody.input).toContain('"visibleText":"Monthly report"');
     expect(body).toContain('"type":"json_schema"');
     expect(body).toContain('"enum":["CLICK"]');
-    expect(body).toContain('"visibleText":"Monthly report"');
     expect(body).not.toContain(request.scope.tenantId);
     expect(body).not.toContain(request.scope.userId);
     expect(body).not.toContain(request.automationId);
