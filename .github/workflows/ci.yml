@@ -34,4 +34,7 @@ jobs:
       - name: Package AgentCore Runtime
         shell: bash
         run: bash scripts/package-agentcore-runtime.sh "$RUNNER_TEMP/automation-agentcore-runtime.zip"
+      - name: Package control-plane Lambda
+        shell: bash
+        run: bash scripts/package-control-plane-lambda.sh "$RUNNER_TEMP/automation-control-plane.zip"
       - run: pnpm test

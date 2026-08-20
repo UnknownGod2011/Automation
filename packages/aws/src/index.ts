@@ -11,6 +11,7 @@ export * from "./cloudwatch-telemetry.js";
 export * from "./config.js";
 export * from "./control-plane-bootstrap.js";
 export * from "./control-plane-lambda.js";
+export * from "./control-plane-runtime.js";
 export * from "./credential-metadata.js";
 export * from "./dynamodb-state.js";
 export * from "./fresh-test-runtime.js";
