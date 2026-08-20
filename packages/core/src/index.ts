@@ -68,6 +68,7 @@ export * from "./human-resume-worker.js";
 export * from "./memory.js";
 export * from "./product-lifecycle.js";
 export * from "./run-finalization.js";
+export * from "./run-reporting.js";
 export * from "./run-state.js";
 export * from "./worker.js";
 export * from "./workflow-compiler.js";

@@ -2,6 +2,7 @@ import {
   parseScheduledDispatchEnvelope,
   type OwnershipScope,
   type ReasoningCredentialPoolPolicy,
+  type ScheduledRunOutcomeReporter,
   type ScheduledRunRequest,
   type ScheduledRunWorkerResult,
 } from "@automation/core";
@@ -47,6 +48,8 @@ export interface AwsScheduledRunHandlerDependencies {
   };
   openAiFetch?: OpenAiFetch;
   runner?: AwsScheduledRunExecutionRunner;
+  /** Best-effort reporting; never execution authority. */
+  reporter?: Pick<ScheduledRunOutcomeReporter, "report">;
 }
 
 export type AwsScheduledRunExecutionRunner = (
@@ -123,7 +126,14 @@ export class AwsScheduledRunHandler {
       ),
     };
 
-    return this.runner(
+    const reportingAutomation = this.dependencies.reporter
+      ? await this.dependencies.coordinator.automations.get(
+          invocation.trustedScope,
+          envelope.automationId,
+        )
+      : null;
+
+    const result = await this.runner(
       {
         scope: { ...invocation.trustedScope },
         workloadAccessToken: new AgentCoreRuntimeHeaderWorkloadAccessTokenSource(
@@ -139,5 +149,23 @@ export class AwsScheduledRunHandler {
       },
       request,
     );
+
+    if (this.dependencies.reporter && reportingAutomation) {
+      const checkpoint =
+        result.kind === "NOT_RUN" && result.preparation.kind === "BLOCKED"
+          ? await this.dependencies.worker.checkpoints.get(
+              invocation.trustedScope,
+              result.preparation.run.runId,
+            )
+          : null;
+      await this.dependencies.reporter.report({
+        scope: invocation.trustedScope,
+        automation: reportingAutomation,
+        result,
+        ...(checkpoint ? { checkpoint } : {}),
+      });
+    }
+
+    return result;
   }
 }
