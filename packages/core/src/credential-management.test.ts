@@ -104,7 +104,7 @@ describe("ProviderCredentialManagementService", () => {
     const memoryVault = new InMemoryCredentialVault();
     const vault: CredentialVault = {
       put: async (...args) => memoryVault.put(...args),
-      get: async (...args) => memoryVault.get(...args),
+      get: async (requestScope, secretRef) => memoryVault.get(requestScope, secretRef),
       delete: async (...args) => {
         events.push("secret");
         await memoryVault.delete(...args);
