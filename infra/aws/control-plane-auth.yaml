@@ -4,7 +4,8 @@ Description: Cognito managed login and JWT-protected HTTP API perimeter for Auto
 Parameters:
   ControlPlaneLambdaArn:
     Type: String
-    Description: ARN of the Lambda integration implementing the control-plane HTTP handler.
+    Default: ''
+    Description: Optional Lambda integration ARN. Leave empty only during the identity-bootstrap deployment phase.
   WebCallbackUrl:
     Type: String
     Description: Exact HTTPS callback URL, for example https://app.example.com/api/auth/callback.
@@ -15,6 +16,9 @@ Parameters:
     Type: String
     AllowedPattern: '^[a-z0-9-]{1,63}$'
     Description: Globally unique Cognito managed-login domain prefix in this region.
+
+Conditions:
+  HasControlPlaneLambda: !Not [!Equals [!Ref ControlPlaneLambdaArn, '']]
 
 Resources:
   AutomationUserPool:
@@ -82,6 +86,7 @@ Resources:
 
   ControlPlaneIntegration:
     Type: AWS::ApiGatewayV2::Integration
+    Condition: HasControlPlaneLambda
     Properties:
       ApiId: !Ref ControlPlaneApi
       IntegrationType: AWS_PROXY
@@ -104,6 +109,7 @@ Resources:
 
   ControlPlaneDefaultRoute:
     Type: AWS::ApiGatewayV2::Route
+    Condition: HasControlPlaneLambda
     Properties:
       ApiId: !Ref ControlPlaneApi
       RouteKey: '$default'
@@ -126,6 +132,7 @@ Resources:
 
   AllowApiGatewayInvokeControlPlane:
     Type: AWS::Lambda::Permission
+    Condition: HasControlPlaneLambda
     Properties:
       Action: lambda:InvokeFunction
       FunctionName: !Ref ControlPlaneLambdaArn

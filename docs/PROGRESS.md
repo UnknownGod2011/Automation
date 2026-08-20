@@ -24,23 +24,60 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - Scheduled execution composes DynamoDB run/checkpoint/lock state, immutable S3 workflows/evidence, AgentCore Browser/Profile, AgentCore Identity BYOK, Playwright execution/verification, OpenAI reasoning, SES notifications, CloudWatch EMF telemetry, and trusted Cognito email lookup.
 - AgentCore Runtime and the control-plane Lambda are deterministic Node 22 ZIP packages with deployment templates and bounded IAM roles.
 - `createAwsControlPlaneBootstrap` composes the production control-plane graph from DynamoDB/S3 persistence, AgentCore Browser/Profile capture, AgentCore Identity credential management, AgentCore Runtime fresh testing, EventBridge Scheduler, Cognito-authenticated HTTP transport, and a separate trusted capture-completion handler.
-- The control-plane artifact now also packages a separate capture-completion Lambda entrypoint behind a dedicated IAM-authenticated HTTP API route; the ordinary Cognito API never exposes that privileged completion path.
+- The control-plane artifact also packages a separate capture-completion Lambda entrypoint behind a dedicated IAM-authenticated HTTP API route; the ordinary Cognito API never exposes that privileged completion path.
+- Immutable runtime/control-plane release ZIPs are uploaded create-only to a versioned S3 bucket and recorded in a non-secret release manifest with exact S3 VersionIds.
 
 ## Authoritative incoming validation
 
 - PR #1 is the open draft development PR on `agent/bootstrap-platform`.
-- Incoming head `0e59fad16e1706f5eac04c65a223ba135436c736` is green on GitHub Actions CI #181.
-- GitHub Actions on the exact head created by each run remains authoritative. Never claim a new slice green until deterministic lock verification, frozen install, `pnpm check`, deployment-package smoke tests, Next.js build/type validation, and the complete test suite succeed.
+- Incoming head `f8993cbae563478ba9fa5fc7315153978783ed9e` is green on GitHub Actions CI #183.
+- GitHub Actions on the exact head created by each run remains authoritative. Never claim a new slice green until deterministic lock verification, frozen install, `pnpm check`, deployment-package smoke tests, release/deployment contract tests, Next.js build/type validation, and the complete test suite succeed.
+
+## 2026-08-21 — ordered immutable AWS deployment wrapper
+
+### Product slice
+
+The immutable release artifact boundary is now paired with `scripts/deploy-aws-release.sh`. The command consumes the release manifest plus a separate environment JSON file, validates both before the first AWS call, and deploys the current AWS stacks in dependency order using the AWS CLI credential provider chain. It does not accept access keys/session tokens and does not copy environment configuration into the release manifest.
+
+The deployment audit found and removes a real CloudFormation cycle: `control-plane-auth.yaml` previously required `ControlPlaneLambdaArn`, while the control-plane service requires Cognito issuer/client outputs. `ControlPlaneLambdaArn` is now optional only for an identity-bootstrap phase. During that phase the Cognito pool/client/domain and HTTP API are created, but the Lambda integration, JWT route, and API Gateway invoke permission are conditionally absent. After Runtime, scheduling, and control-plane service deployment, the auth stack is updated with the actual Lambda ARN and only then exposes the JWT-protected route. No placeholder Lambda ARN or unauthenticated temporary route is used.
+
+Deployment order is:
+
+1. Cognito/auth identity bootstrap with no application route.
+2. AgentCore Runtime using the immutable runtime S3 object/version plus the real Cognito user-pool output.
+3. Scheduler/SQS/Step Functions transport bound to the deployed Runtime ARN.
+4. Control-plane/capture-completion Lambda stack using immutable control-plane code plus trusted Cognito/Runtime/scheduling outputs.
+5. Auth finalization with the exact control-plane Lambda ARN.
+6. Optional SES/CloudWatch observability when environment-owned SES parameters are supplied.
+
+Artifact coordinates and cross-stack outputs are reserved parameters. The environment file cannot override runtime/control-plane object VersionIds, Cognito identity, Runtime ARN, Scheduler queue/role/group/state-machine outputs, or derived observability role/DLQ identity. A release-region/environment-region mismatch fails before any AWS call. The output is a local non-secret deployment result containing stack names plus user-facing/control-plane endpoints; it does not contain tenant values, provider keys, target-site credentials, cookies, or workload tokens.
+
+### Security / tenancy / idempotency / concurrency / retry / timeout / cost / observability review
+
+- AWS credentials remain external to both manifest and environment schema and should be short-lived/OIDC in CI. The wrapper does not add another credential store.
+- Tenant ID remains an environment-specific CloudFormation value (`NoEcho` where already declared), not release artifact metadata. Cross-stack tenant/user runtime enforcement is unchanged.
+- Immutable S3 VersionIds from the reviewed release manifest remain authoritative; environment configuration cannot redirect a deployment to a different code version.
+- `aws cloudformation deploy --no-fail-on-empty-changeset` makes exact reruns operationally idempotent at the stack layer. The wrapper itself creates no browser/model work and adds no execution retry loop.
+- The two-phase auth deployment is fail-closed: before the Lambda exists, the end-user route does not exist. A failure after service deployment but before auth finalization leaves the API unavailable rather than exposing a broken/unauthenticated integration.
+- CloudFormation owns resource-level concurrency/update serialization. The wrapper deploys stacks sequentially because later parameters are authoritative outputs of earlier stacks.
+- Cost impact is CloudFormation/API control-plane calls only; no retained GitHub Actions artifact is introduced. Optional observability deployment remains explicit because SES sender identity is environment-owned.
+- A deployment result is written only after all requested stack phases succeed; partial stack deployment remains visible in CloudFormation and is safe to rerun because the same release/version coordinates are reused.
+
+### Tests / validation
+
+`scripts/test-deploy-aws-release.sh` uses a fake AWS CLI and no cloud credentials. It proves exact stack ordering, auth bootstrap-before-route/finalization, immutable Runtime/control-plane VersionId propagation, cross-stack output propagation, optional observability derivation, named-IAM capability use, release tagging, derived-parameter override rejection before any AWS call, and region mismatch rejection before any AWS call. CI now runs this contract after immutable release-artifact validation.
+
+No package manifest or pnpm dependency changed. This section does not claim the new head green until GitHub Actions completes on the exact published SHA.
 
 ## 2026-08-21 — trusted capture-completion deployment boundary
 
 ### Product slice
 
-The already-separated `TrustedCaptureCompletionHandler` now has a concrete production transport and deployment boundary. `createAwsCaptureCompletionLambdaHandler` accepts only API Gateway HTTP API payload-format 2.0 `POST /capture/complete` requests, bounds the JSON body, pins tenant identity to deployment-owned `AUTOMATION_TENANT_ID`, derives user scope from the captured trace, and invokes the existing trusted completion handler. Unexpected transport failures are converted to fixed sanitized errors.
+The already-separated `TrustedCaptureCompletionHandler` has a concrete production transport and deployment boundary. `createAwsCaptureCompletionLambdaHandler` accepts only API Gateway HTTP API payload-format 2.0 `POST /capture/complete` requests, bounds the JSON body, pins tenant identity to deployment-owned `AUTOMATION_TENANT_ID`, derives user scope from the captured trace, and invokes the existing trusted completion handler. Unexpected transport failures are converted to fixed sanitized errors.
 
-`createAwsCaptureCompletionRuntimeEntrypoint` lazily reuses the production control-plane bootstrap only to obtain its already-separated capture-completion handler. The Lambda package now includes `capture-completion-lambda.mjs` alongside the ordinary control-plane entrypoint. The release command treats both entrypoints as required members of the same immutable/versioned control-plane artifact, so a supplied prebuilt ZIP cannot silently omit the privileged completion runtime.
+`createAwsCaptureCompletionRuntimeEntrypoint` lazily reuses the production control-plane bootstrap only to obtain its already-separated capture-completion handler. The Lambda package includes `capture-completion-lambda.mjs` alongside the ordinary control-plane entrypoint. The release command treats both entrypoints as required members of the same immutable/versioned control-plane artifact, so a supplied prebuilt ZIP cannot silently omit the privileged completion runtime.
 
-`infra/aws/control-plane-service.yaml` now provisions a second Lambda function with a capture-only execution role and a separate API Gateway HTTP API containing exactly one route: `POST /capture/complete` with `AuthorizationType: AWS_IAM`. API Gateway therefore requires SigV4 plus `execute-api:Invoke` before invoking the Lambda. The template outputs the exact route ARN that a deployment must grant only to its trusted capture worker. This route is not added to the Cognito/JWT end-user API.
+`infra/aws/control-plane-service.yaml` provisions a second Lambda function with a capture-only execution role and a separate API Gateway HTTP API containing exactly one route: `POST /capture/complete` with `AuthorizationType: AWS_IAM`. API Gateway therefore requires SigV4 plus `execute-api:Invoke` before invoking the Lambda. The template outputs the exact route ARN that a deployment must grant only to its trusted capture worker. This route is not added to the Cognito/JWT end-user API.
 
 ### Security / tenancy / idempotency / concurrency / retry / timeout / cost / observability review
 
@@ -55,19 +92,18 @@ The already-separated `TrustedCaptureCompletionHandler` now has a concrete produ
 
 ### Tests / validation
 
-AWS unit tests cover trusted scope derivation, cross-tenant suppression before completion work, malformed route/body rejection, missing tenant configuration, runtime bootstrap memoization, and sanitized failures. Packaging now requires both Lambda entrypoints, and immutable release validation rejects a control-plane ZIP that lacks the capture-completion entrypoint.
+AWS unit tests cover trusted scope derivation, cross-tenant suppression before completion work, malformed route/body rejection, missing tenant configuration, runtime bootstrap memoization, and sanitized failures. Packaging requires both Lambda entrypoints, and immutable release validation rejects a control-plane ZIP that lacks the capture-completion entrypoint.
 
-CI #182 passed deterministic lock verification, frozen installation, strict `pnpm check`, and both real production package builds. It then failed only in `scripts/test-release-aws-artifacts.sh`: the synthetic control-plane ZIP still contained the old single-entrypoint package shape, while the strengthened release validator correctly required `capture-completion-lambda.mjs`. The corrective change updates only that test fixture to model both packaged entrypoints; no production check, dependency gate, or validator is weakened.
-
-This implementation, tests, packaging, IaC, and progress checkpoint are published as one coherent multi-file Git-data commit plus one root-caused corrective fixture commit. No package manifest or pnpm dependency graph changed. Exact-head GitHub Actions remains authoritative; this section does not claim the corrective head green until CI completes successfully.
+CI #182 passed deterministic lock verification, frozen installation, strict `pnpm check`, and both real production package builds. It then failed only in `scripts/test-release-aws-artifacts.sh`: the synthetic control-plane ZIP still contained the old single-entrypoint package shape, while the strengthened release validator correctly required `capture-completion-lambda.mjs`. The corrective change updated only that test fixture; CI #183 is the authoritative green incoming run.
 
 ## Next product milestones
 
-1. Add a deployment wrapper that consumes the immutable release manifest plus environment-specific CloudFormation parameters and performs ordered stack deployment using short-lived AWS credentials; do not move environment secrets into the release manifest.
+1. Package/provision the scheduled-dispatch Lambda instead of requiring `DispatcherFunctionArn` and `DispatcherFunctionRoleName` as pre-existing environment inputs; include it in the immutable release/deployment path so the scheduling stack is self-contained.
 2. Wire a concrete capture worker/collector to the emitted `CaptureCompletionInvokeArn` so finishing Live View automatically sends the trusted trace callback; keep that worker permission scoped to the single IAM-authenticated route.
-3. If real fresh tests commonly exceed the API Gateway request window, make fresh-test initiation asynchronous with a durable run ID and UI polling/history rather than increasing retries/timeouts.
-4. Perform one controlled real AWS demonstration: sign in -> BYOK -> capture -> compile/test -> publish -> schedule -> AgentCore browser/OpenAI execution -> verification/history/email, plus one bounded human takeover/resume path.
-5. Add Google federation/adapters only after the AWS vertical slice is demonstrably complete.
+3. Add an environment deployment workflow/example that uses short-lived GitHub OIDC credentials and invokes release + deploy without retaining ZIP artifacts in GitHub Actions storage.
+4. If real fresh tests commonly exceed the API Gateway request window, make fresh-test initiation asynchronous with a durable run ID and UI polling/history rather than increasing retries/timeouts.
+5. Perform one controlled real AWS demonstration: sign in -> BYOK -> capture -> compile/test -> publish -> schedule -> AgentCore browser/OpenAI execution -> verification/history/email, plus one bounded human takeover/resume path.
+6. Add Google federation/adapters only after the AWS vertical slice is demonstrably complete.
 
 ## Known parked limitations
 
@@ -76,6 +112,7 @@ This implementation, tests, packaging, IaC, and progress checkpoint are publishe
 - Public HTTP command idempotency is incomplete outside operations that already have durable domain idempotency; add explicit command keys where live UX can produce duplicate mutations.
 - Automation status and EventBridge Scheduler state cannot be atomically committed across DynamoDB/Scheduler; lifecycle ordering fails closed, but a future reconciliation/status-repair path should make partial drift visible and repairable.
 - The IAM-authenticated capture-completion route is provisioned, but the concrete capture event collector/worker that receives browser events and invokes it is still a deployment seam.
+- The scheduling template still expects a pre-existing dispatcher Lambda ARN/role name; this is now the largest remaining self-contained deployment gap.
 - Release upload is deliberately not transactional across both S3 objects. Partial upload produces no manifest/deployment authority but may leave an orphan object version until cleanup.
 - Live OpenAI/SES/Cognito/AgentCore validation still requires the controlled AWS environment; deterministic CI is not represented as live-cloud proof.
 - AgentCore Runtime/browser networking is PUBLIC for the arbitrary-web MVP and should be revisited where VPC egress can preserve target-site access.

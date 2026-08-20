@@ -40,4 +40,7 @@ jobs:
       - name: Verify AWS release artifact contract
         shell: bash
         run: bash scripts/test-release-aws-artifacts.sh
+      - name: Verify AWS deployment ordering contract
+        shell: bash
+        run: bash scripts/test-deploy-aws-release.sh
       - run: pnpm test
