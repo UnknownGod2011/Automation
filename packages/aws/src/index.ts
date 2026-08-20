@@ -17,6 +17,7 @@ export * from "./human-resume-transition.js";
 export * from "./identity-vault.js";
 export * from "./playwright-runtime.js";
 export * from "./reasoning.js";
+export * from "./scheduled-execution-composition.js";
 export * from "./scheduling-composition.js";
 export * from "./scheduling-dispatch.js";
 export * from "./workflow-version.js";
