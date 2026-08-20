@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Automation scheduled-dispatch transport (EventBridge Scheduler -> SQS -> dispatcher -> Step Functions)
+Description: Automation scheduled-dispatch transport (EventBridge Scheduler -> SQS -> dispatcher -> Step Functions -> AgentCore Runtime)
 
 Parameters:
   EnvironmentName:
@@ -12,9 +12,15 @@ Parameters:
   DispatcherFunctionRoleName:
     Type: String
     Description: IAM role name used by the dispatcher Lambda.
-  WorkerFunctionArn:
+  AgentRuntimeArn:
     Type: String
-    Description: ARN of the scheduled-run worker invoked by Step Functions.
+    Description: ARN of the AgentCore Runtime hosting the scheduled-run entrypoint.
+  ScheduledRunTimeoutSeconds:
+    Type: Number
+    Default: 1800
+    MinValue: 60
+    MaxValue: 3600
+    Description: Hard Step Functions timeout for one AgentCore scheduled-run invocation.
 
 Resources:
   DispatchDeadLetterQueue:
@@ -72,13 +78,15 @@ Resources:
               Service: states.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: InvokeScheduledRunWorker
+        - PolicyName: InvokeScheduledAgentRuntime
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
-                Action: lambda:InvokeFunction
-                Resource: !Ref WorkerFunctionArn
+                Action:
+                  - bedrock-agentcore:InvokeAgentRuntime
+                  - bedrock-agentcore:InvokeAgentRuntimeForUser
+                Resource: !Ref AgentRuntimeArn
 
   ScheduledRunStateMachine:
     Type: AWS::StepFunctions::StateMachine
@@ -92,18 +100,16 @@ Resources:
           "States": {
             "ExecuteScheduledRun": {
               "Type": "Task",
-              "Resource": "arn:${AWS::Partition}:states:::lambda:invoke",
+              "Resource": "arn:${AWS::Partition}:states:::aws-sdk:bedrockagentcore:invokeAgentRuntime",
               "Parameters": {
-                "FunctionName": "${WorkerFunctionArn}",
-                "Payload.$": "$"
+                "AgentRuntimeArn": "${AgentRuntimeArn}",
+                "RuntimeUserId.$": "$.scope.userId",
+                "ContentType": "application/json",
+                "Accept": "application/json",
+                "Payload.$": "States.Base64Encode(States.JsonToString($))"
               },
-              "Retry": [{
-                "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
-                "IntervalSeconds": 2,
-                "BackoffRate": 2,
-                "MaxAttempts": 3
-              }],
-              "OutputPath": "$.Payload",
+              "TimeoutSeconds": ${ScheduledRunTimeoutSeconds},
+              "ResultPath": null,
               "End": true
             }
           }
@@ -154,3 +160,5 @@ Outputs:
     Value: !GetAtt SchedulerTargetRole.Arn
   ScheduledRunStateMachineArn:
     Value: !Ref ScheduledRunStateMachine
+  ScheduledRunAgentRuntimeArn:
+    Value: !Ref AgentRuntimeArn
