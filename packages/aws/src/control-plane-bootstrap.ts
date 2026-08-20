@@ -7,6 +7,7 @@ import {
   AutomationControlPlaneHttpHandler,
   AutomationControlPlaneService,
   AutomationProductLifecycleService,
+  AutomationScheduleLifecycleService,
   CaptureCompletionService,
   ProviderCredentialManagementService,
   TrustedCaptureCompletionHandler,
@@ -235,6 +236,10 @@ export function createAwsControlPlaneBootstrap(
     verifier: CONTROL_PLANE_VERIFIER,
     reasoner: CONTROL_PLANE_REASONER,
   });
+  const scheduleLifecycle = new AutomationScheduleLifecycleService({
+    automations,
+    scheduler: schedulingResult.composition.scheduler,
+  });
   const freshTests = new AwsAgentCoreFreshTestExecutionPort(
     freshTest,
     options.overrides?.freshTestInvoke,
@@ -255,6 +260,7 @@ export function createAwsControlPlaneBootstrap(
     capabilities,
     credentials,
     freshTests,
+    scheduleLifecycle,
   });
   const http = new AutomationControlPlaneHttpHandler(service);
   const lambda = createAwsControlPlaneLambdaHandler(options.env, http);

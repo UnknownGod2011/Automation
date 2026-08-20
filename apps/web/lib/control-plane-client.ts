@@ -47,6 +47,15 @@ export function readWebControlPlaneConfig(
   return baseUrl === undefined ? {} : { baseUrl };
 }
 
+export type AutomationCommand =
+  | "compile"
+  | "test"
+  | "publish"
+  | "schedule"
+  | "pause"
+  | "resume"
+  | "disable";
+
 export class WebControlPlaneClient {
   constructor(
     private readonly config: WebControlPlaneConfig = readWebControlPlaneConfig(),
@@ -126,7 +135,7 @@ export class WebControlPlaneClient {
     });
   }
 
-  async command<T>(automationId: string, command: "compile" | "test" | "publish", body: unknown): Promise<T> {
+  async command<T>(automationId: string, command: AutomationCommand, body: unknown): Promise<T> {
     return this.request<T>(`/v1/automations/${encodeURIComponent(automationId)}/${command}`, {
       method: "POST",
       body: JSON.stringify(body),

@@ -84,6 +84,29 @@ describe("WebControlPlaneClient", () => {
     expect(rotateInit?.body).toBe(JSON.stringify({ apiKey: "replacement-secret" }));
   });
 
+  it("routes schedule lifecycle commands through the authenticated control plane", async () => {
+    const fetchImpl = vi.fn<FetchLike>(async () => new Response(JSON.stringify({ status: "PAUSED" }), { status: 200 }));
+    const client = new WebControlPlaneClient(
+      { baseUrl: "https://control.example.test", bearerToken: "request-token" },
+      fetchImpl,
+    );
+
+    await client.command("customer/demo", "schedule", {
+      schedule: { kind: "DAILY", expression: "08:30", timezone: "Asia/Kolkata" },
+    });
+    await client.command("customer/demo", "pause", {});
+
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(
+      "https://control.example.test/v1/automations/customer%2Fdemo/schedule",
+    );
+    expect(fetchImpl.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({
+      schedule: { kind: "DAILY", expression: "08:30", timezone: "Asia/Kolkata" },
+    }));
+    expect(String(fetchImpl.mock.calls[1]?.[0])).toBe(
+      "https://control.example.test/v1/automations/customer%2Fdemo/pause",
+    );
+  });
+
   it("does not surface remote error bodies", async () => {
     const fetchImpl = vi.fn<FetchLike>(async () =>
       new Response(JSON.stringify({ error: { message: "upstream-private-detail" } }), { status: 500 }),

@@ -5,6 +5,7 @@ import { InMemoryAutomationRepository, InMemoryRunRepository } from "./memory.js
 import {
   AutomationControlPlaneService,
   ControlPlaneError,
+  type AutomationControlPlaneDependencies,
   type AutomationLifecyclePort,
   type CaptureSessionStarter,
 } from "./control-plane.js";
@@ -13,6 +14,7 @@ import type { OwnershipScope } from "./index.js";
 
 const owner: OwnershipScope = { tenantId: "tenant-1", userId: "user-1" };
 const attacker: OwnershipScope = { tenantId: "tenant-2", userId: "user-2" };
+const dailySchedule = { kind: "DAILY" as const, expression: "0 9 * * *", timezone: "Asia/Kolkata" };
 
 function automation(overrides: Partial<AutomationRecord> = {}): AutomationRecord {
   return {
@@ -95,7 +97,7 @@ function makeLifecycle(record: AutomationRecord): AutomationLifecyclePort {
       ...record,
       status: "ACTIVE" as const,
       publishedWorkflowVersion: 1,
-      schedule: { kind: "DAILY" as const, expression: "0 9 * * *", timezone: "Asia/Kolkata" },
+      schedule: dailySchedule,
     })),
     history: vi.fn(async () => []),
   };
@@ -114,12 +116,39 @@ async function setup() {
       reason: "AgentCore capture is not configured",
     })),
   };
+  const scheduleLifecycle: NonNullable<AutomationControlPlaneDependencies["scheduleLifecycle"]> = {
+    updateSchedule: vi.fn(async (request) => ({
+      ...record,
+      status: "ACTIVE" as const,
+      publishedWorkflowVersion: 1,
+      schedule: request.schedule,
+    })),
+    pause: vi.fn(async () => ({
+      ...record,
+      status: "PAUSED" as const,
+      publishedWorkflowVersion: 1,
+      schedule: dailySchedule,
+    })),
+    resume: vi.fn(async () => ({
+      ...record,
+      status: "ACTIVE" as const,
+      publishedWorkflowVersion: 1,
+      schedule: dailySchedule,
+    })),
+    disable: vi.fn(async () => ({
+      ...record,
+      status: "DISABLED" as const,
+      publishedWorkflowVersion: 1,
+      schedule: dailySchedule,
+    })),
+  };
   const service = new AutomationControlPlaneService({
     automations,
     runs,
     lifecycle,
     captureSessions,
     captureState,
+    scheduleLifecycle,
     capabilities: {
       auth: "LOCAL_MOCK",
       capture: "NOT_CONFIGURED",
@@ -128,7 +157,7 @@ async function setup() {
       notifications: "NOT_CONFIGURED",
     },
   });
-  return { automations, runs, lifecycle, captureSessions, captureState, service, record };
+  return { automations, runs, lifecycle, captureSessions, captureState, scheduleLifecycle, service, record };
 }
 
 describe("AutomationControlPlaneService", () => {
@@ -215,11 +244,30 @@ describe("AutomationControlPlaneService", () => {
     ).rejects.toBeInstanceOf(ControlPlaneError);
     expect(lifecycle.createDraft).not.toHaveBeenCalled();
   });
+
+  it("routes schedule lifecycle mutations through trusted ownership scope and returns sanitized summaries", async () => {
+    const { service, scheduleLifecycle } = await setup();
+
+    const paused = await service.pauseAutomation(owner, "auto-1");
+    const updated = await service.updateAutomationSchedule(owner, "auto-1", {
+      schedule: { kind: "WEEKLY", expression: "0 9 * * 1", timezone: "Asia/Kolkata" },
+    });
+
+    expect(scheduleLifecycle.pause).toHaveBeenCalledWith({ scope: owner, automationId: "auto-1" });
+    expect(scheduleLifecycle.updateSchedule).toHaveBeenCalledWith({
+      scope: owner,
+      automationId: "auto-1",
+      schedule: { kind: "WEEKLY", expression: "0 9 * * 1", timezone: "Asia/Kolkata" },
+    });
+    expect(paused.status).toBe("PAUSED");
+    expect(updated.schedule?.kind).toBe("WEEKLY");
+    expect(JSON.stringify([paused, updated])).not.toContain("profile-secret-server-ref");
+  });
 });
 
 describe("AutomationControlPlaneHttpHandler", () => {
   it("uses authenticated context rather than spoofable ownership fields in request JSON", async () => {
-    const { automations, runs, lifecycle, captureSessions, captureState } = await setup();
+    const { automations, runs, lifecycle, captureSessions, captureState, scheduleLifecycle } = await setup();
     const emptyAutomations = new InMemoryAutomationRepository();
     const service = new AutomationControlPlaneService({
       automations: emptyAutomations,
@@ -227,6 +275,7 @@ describe("AutomationControlPlaneHttpHandler", () => {
       lifecycle,
       captureSessions,
       captureState,
+      scheduleLifecycle,
       capabilities: {
         auth: "LOCAL_MOCK",
         capture: "NOT_CONFIGURED",
@@ -309,5 +358,40 @@ describe("AutomationControlPlaneHttpHandler", () => {
 
     expect(response.status).toBe(400);
     expect(lifecycle.publish).not.toHaveBeenCalled();
+  });
+
+  it("exposes pause/resume/disable and schedule update without accepting spoofed ownership", async () => {
+    const { service, scheduleLifecycle } = await setup();
+    const handler = new AutomationControlPlaneHttpHandler(service);
+
+    const pause = await handler.handle(
+      {
+        method: "POST",
+        path: "/v1/automations/auto-1/pause",
+        body: { tenantId: attacker.tenantId, userId: attacker.userId },
+      },
+      { scope: owner },
+    );
+    const schedule = await handler.handle(
+      {
+        method: "POST",
+        path: "/v1/automations/auto-1/schedule",
+        body: {
+          tenantId: attacker.tenantId,
+          userId: attacker.userId,
+          schedule: { kind: "DAILY", expression: "08:30", timezone: "Asia/Kolkata" },
+        },
+      },
+      { scope: owner },
+    );
+
+    expect(pause.status).toBe(200);
+    expect(schedule.status).toBe(200);
+    expect(scheduleLifecycle.pause).toHaveBeenCalledWith({ scope: owner, automationId: "auto-1" });
+    expect(scheduleLifecycle.updateSchedule).toHaveBeenCalledWith({
+      scope: owner,
+      automationId: "auto-1",
+      schedule: { kind: "DAILY", expression: "08:30", timezone: "Asia/Kolkata" },
+    });
   });
 });

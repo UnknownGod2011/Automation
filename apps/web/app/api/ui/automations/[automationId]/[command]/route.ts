@@ -12,10 +12,20 @@ function positiveInteger(value: FormDataEntryValue | null): number | null {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+function scheduleFromForm(form: FormData): { kind: "HOURLY" | "DAILY" | "WEEKLY" | "CRON"; expression: string; timezone: string } | null {
+  const kind = String(form.get("kind") ?? "");
+  const expression = String(form.get("expression") ?? "").trim();
+  const timezone = String(form.get("timezone") ?? "").trim();
+  if (!["HOURLY", "DAILY", "WEEKLY", "CRON"].includes(kind) || !expression || !timezone) return null;
+  return { kind: kind as "HOURLY" | "DAILY" | "WEEKLY" | "CRON", expression, timezone };
+}
+
+const COMMANDS = ["capture", "compile", "test", "publish", "schedule", "pause", "resume", "disable"] as const;
+
 export async function POST(request: Request, context: { params: Promise<{ automationId: string; command: string }> }): Promise<NextResponse> {
   if (!isSameOriginMutation(request.url, request.headers)) return new NextResponse("Forbidden", { status: 403 });
   const { automationId, command } = await context.params;
-  if (!automationId || !["capture", "compile", "test", "publish"].includes(command)) return new NextResponse("Not found", { status: 404 });
+  if (!automationId || !COMMANDS.includes(command as (typeof COMMANDS)[number])) return new NextResponse("Not found", { status: 404 });
   const form = await request.formData();
 
   try {
@@ -50,12 +60,22 @@ export async function POST(request: Request, context: { params: Promise<{ automa
       return redirectBack(request, automationId, "tested");
     }
 
+    if (command === "pause" || command === "resume" || command === "disable") {
+      await client.command(automationId, command, {});
+      return redirectBack(request, automationId, command === "pause" ? "paused" : command === "resume" ? "resumed" : "disabled");
+    }
+
+    const schedule = scheduleFromForm(form);
+    if (!schedule) return redirectBack(request, automationId, "invalid-input");
+
+    if (command === "schedule") {
+      await client.command(automationId, "schedule", { schedule });
+      return redirectBack(request, automationId, "schedule-updated");
+    }
+
     const workflowVersion = positiveInteger(form.get("workflowVersion"));
-    const kind = String(form.get("kind") ?? "");
-    const expression = String(form.get("expression") ?? "").trim();
-    const timezone = String(form.get("timezone") ?? "").trim();
-    if (!workflowVersion || !["HOURLY", "DAILY", "WEEKLY", "CRON"].includes(kind) || !expression || !timezone) return redirectBack(request, automationId, "invalid-input");
-    await client.command(automationId, "publish", { workflowVersion, schedule: { kind, expression, timezone } });
+    if (!workflowVersion) return redirectBack(request, automationId, "invalid-input");
+    await client.command(automationId, "publish", { workflowVersion, schedule });
     return redirectBack(request, automationId, "published");
   } catch (error) {
     if (error instanceof WebAuthError) return NextResponse.redirect(new URL(`/api/auth/sign-in?returnTo=${encodeURIComponent(`/automations/${automationId}`)}`, request.url), 303);

@@ -10,6 +10,10 @@ const notices: Record<string, string> = {
   compiled: "Capture compiled into a workflow version.",
   tested: "Fresh test request completed.",
   published: "Workflow published with the requested schedule.",
+  "schedule-updated": "Schedule updated without changing the published workflow version.",
+  paused: "Automation paused. Future scheduled deliveries cannot start browser execution while it remains paused.",
+  resumed: "Automation resumed and its schedule is enabled.",
+  disabled: "Automation disabled. Workflow versions, browser profile state, and run history were preserved.",
   "not-configured": "This deployment is not configured for that operation.",
   "request-failed": "The operation failed safely. Provider/internal details were not exposed.",
   "invalid-input": "The submitted values were invalid.",
@@ -61,6 +65,26 @@ export default async function AutomationDetailPage({
           <p className="muted">The server validates the IANA timezone and tested workflow version; this form cannot override tenant/user ownership.</p>
         </div>
       </section>
+
+      {automation.schedule && automation.publishedWorkflowVersion !== undefined ? (
+        <section className="card stack" style={{ marginTop: 18 }}>
+          <div><div className="eyebrow">Published automation</div><h2>Manage schedule</h2><p className="muted">Change recurrence without republishing the workflow, or stop future cloud runs while preserving workflow versions, Browser Profile state, and history.</p></div>
+          {automation.status === "ACTIVE" || automation.status === "PAUSED" ? (
+            <form action={`/api/ui/automations/${encodeURIComponent(automationId)}/schedule`} method="post">
+              <label>Recurrence<select name="kind" defaultValue={automation.schedule.kind}><option value="HOURLY">Hourly</option><option value="DAILY">Daily</option><option value="WEEKLY">Weekly</option><option value="CRON">Custom cron</option></select></label>
+              <label>Schedule expression<input name="expression" defaultValue={automation.schedule.expression} required /></label>
+              <label>Timezone<input name="timezone" defaultValue={automation.schedule.timezone} required /></label>
+              <button className="button secondary" type="submit">Update schedule</button>
+            </form>
+          ) : null}
+          <div className="row">
+            {automation.status === "ACTIVE" ? <form action={`/api/ui/automations/${encodeURIComponent(automationId)}/pause`} method="post"><button className="button secondary" type="submit">Pause automation</button></form> : null}
+            {automation.status === "PAUSED" ? <form action={`/api/ui/automations/${encodeURIComponent(automationId)}/resume`} method="post"><button className="button" type="submit">Resume automation</button></form> : null}
+            {automation.status === "ACTIVE" || automation.status === "PAUSED" ? <form action={`/api/ui/automations/${encodeURIComponent(automationId)}/disable`} method="post"><button className="button secondary" type="submit">Disable automation</button></form> : null}
+          </div>
+          {automation.status === "DISABLED" ? <p className="muted">This automation is disabled. Its published workflow and history remain available for inspection.</p> : <p className="muted">Pause is reversible. Disable stops future scheduling while retaining the durable automation record.</p>}
+        </section>
+      ) : null}
 
       <section className="card stack" style={{ marginTop: 18 }}>
         <div className="row"><div><h2>Run history</h2><p className="muted">Execution state only; no cookies, browser profiles, provider keys, or hidden model chain-of-thought.</p></div></div>

@@ -1,4 +1,4 @@
-import type { CaptureTrace } from "@automation/contracts";
+import type { AutomationSchedule, CaptureTrace } from "@automation/contracts";
 import type { OwnershipScope } from "./index.js";
 import {
   AutomationControlPlaneService,
@@ -9,6 +9,7 @@ import {
   type PublishAutomationCommand,
   type RotateCredentialCommand,
   type TestAutomationCommand,
+  type UpdateAutomationScheduleCommand,
 } from "./control-plane.js";
 
 export interface ControlPlaneHttpRequest {
@@ -61,6 +62,19 @@ function priorityField(body: Record<string, unknown>): number {
     throw new ControlPlaneError("BAD_REQUEST", "priority must be an integer between 0 and 10000");
   }
   return value as number;
+}
+
+function scheduleField(value: unknown): AutomationSchedule {
+  const schedule = jsonObject(value);
+  const kind = stringField(schedule, "kind");
+  if (kind !== "HOURLY" && kind !== "DAILY" && kind !== "WEEKLY" && kind !== "CRON") {
+    throw new ControlPlaneError("BAD_REQUEST", "schedule kind is invalid");
+  }
+  return {
+    kind,
+    expression: stringField(schedule, "expression"),
+    timezone: stringField(schedule, "timezone"),
+  };
 }
 
 function routeParts(path: string): readonly string[] {
@@ -221,20 +235,32 @@ export class AutomationControlPlaneHttpHandler {
 
       if (request.method === "POST" && parts[3] === "publish" && parts.length === 4) {
         const body = jsonObject(request.body);
-        const schedule = jsonObject(body.schedule);
-        const kind = stringField(schedule, "kind");
-        if (kind !== "HOURLY" && kind !== "DAILY" && kind !== "WEEKLY" && kind !== "CRON") {
-          throw new ControlPlaneError("BAD_REQUEST", "schedule kind is invalid");
-        }
         const command: PublishAutomationCommand = {
           workflowVersion: integerField(body, "workflowVersion"),
-          schedule: {
-            kind,
-            expression: stringField(schedule, "expression"),
-            timezone: stringField(schedule, "timezone"),
-          },
+          schedule: scheduleField(body.schedule),
         };
         return { status: 200, body: await this.service.publishAutomation(context.scope, automationId, command) };
+      }
+
+      if (request.method === "POST" && parts[3] === "schedule" && parts.length === 4) {
+        const body = jsonObject(request.body);
+        const command: UpdateAutomationScheduleCommand = { schedule: scheduleField(body.schedule) };
+        return {
+          status: 200,
+          body: await this.service.updateAutomationSchedule(context.scope, automationId, command),
+        };
+      }
+
+      if (request.method === "POST" && parts.length === 4) {
+        if (parts[3] === "pause") {
+          return { status: 200, body: await this.service.pauseAutomation(context.scope, automationId) };
+        }
+        if (parts[3] === "resume") {
+          return { status: 200, body: await this.service.resumeAutomation(context.scope, automationId) };
+        }
+        if (parts[3] === "disable") {
+          return { status: 200, body: await this.service.disableAutomation(context.scope, automationId) };
+        }
       }
 
       if (request.method === "GET" && parts[3] === "runs" && parts.length === 4) {

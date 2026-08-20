@@ -29,52 +29,53 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 ## Authoritative incoming validation
 
 - PR #1 is the open draft development PR on `agent/bootstrap-platform`.
-- Incoming head `f24fdbf00af0eee92220dc6a81183e7761dfb33f` is green on GitHub Actions CI #177.
+- Incoming head `1e28013839515d684b3e5a5aa9bf8017ef26f83d` is green on GitHub Actions CI #179.
 - GitHub Actions on the exact head created by each run remains authoritative. Never claim a new slice green until deterministic lock verification, frozen install, `pnpm check`, deployment-package smoke tests, Next.js build/type validation, and the complete test suite succeed.
 
-## 2026-08-21 — provider-neutral automation schedule lifecycle
+## 2026-08-21 — schedule lifecycle product/API/UX wiring
 
 ### Product slice
 
-Added the domain boundary needed for users to manage a published automation after first publish without deleting workflow versions, Browser Profile state, or run history. `AutomationScheduleLifecycleService` supports recurrence/timezone updates plus explicit pause, resume, and disable commands against the existing provider-neutral `SchedulerPort`.
+The already-validated provider-neutral `AutomationScheduleLifecycleService` is now surfaced through the actual product boundary instead of remaining domain-only. `AutomationControlPlaneService` exposes recurrence/timezone update plus pause/resume/disable commands, `AutomationControlPlaneHttpHandler` exposes authenticated `/schedule`, `/pause`, `/resume`, and `/disable` routes, and the Next.js automation detail page exposes matching controls for published automations.
 
-The transition ordering is intentionally fail-closed across the durable automation record and the external scheduler, which cannot be atomically transacted together:
+The production AWS control-plane bootstrap now composes `AutomationScheduleLifecycleService` with the same concrete `AwsEventBridgeSchedulerAdapter` used by initial publish. Schedule edits and pause/resume/disable therefore mutate the real EventBridge Scheduler resource through the existing fail-closed domain ordering; no duplicate scheduling implementation was introduced.
 
-- **Pause/disable:** persist `PAUSED`/`DISABLED` first, then disable the schedule. If Scheduler mutation is unavailable or uncertain, a stale schedule delivery still reaches execution preflight against a non-`ACTIVE` durable automation and cannot start Browser/model work.
-- **Resume:** enable the schedule first, then advertise the automation as `ACTIVE`. A delivery racing that boundary can be skipped while the durable record is still `PAUSED`, but cannot execute prematurely.
-- **Recurrence update:** update Scheduler first, then persist the new schedule metadata. Scheduler failure therefore leaves the durable automation advertising its previous schedule instead of a schedule that was never installed. Updating a paused automation preserves `enabled: false`.
-- **Disable:** retains the Scheduler resource in disabled state and preserves the immutable published workflow version, stored recurrence, Browser Profile reference, and history. Repeated disable is idempotent at the domain boundary.
+The UX keeps lifecycle semantics explicit:
+
+- ACTIVE automations may edit recurrence/timezone, pause, or disable.
+- PAUSED automations may edit recurrence/timezone without re-enabling the schedule, resume, or disable.
+- DISABLED automations remain inspectable with workflow/run history preserved; this slice does not silently treat disable as pause.
+- UI request bodies never carry tenant/user authority. The Next.js server forwards the request-scoped Cognito access token and the control plane derives ownership from its authenticated context.
 
 ### Security / tenancy / idempotency / concurrency / retry / timeout / cost / observability review
 
-- All mutations resolve the automation through the existing tenant + user scoped repository; cross-tenant identifiers are rejected before Scheduler mutation.
-- Pause/disable are safe under stale at-least-once delivery because durable automation status remains execution authority in scheduled-run preflight.
-- Resume can lose one occurrence in a narrow race, but the chosen ordering prefers omission over an unauthorized/early browser side effect. The user can retry resume safely if Scheduler enablement fails before the durable state changes.
-- No retry loop is added around Scheduler mutations. Transport uncertainty is surfaced to the caller; it is never guessed as success.
-- No new dependency, cloud resource, browser/model invocation, evidence artifact, or metric dimension is introduced. Scheduler update cost is one control-plane mutation per lifecycle command.
-- The external Scheduler and durable automation record remain separate authorities, so partial failures may require a future reconciliation/status repair command. The current ordering is designed so such drift fails closed for execution rather than enabling duplicate side effects.
+- Ownership remains tenant + user scoped in the control plane and the schedule lifecycle service. Spoofed tenant/user fields in HTTP request bodies are ignored because authorization comes only from trusted authenticated context.
+- Pause/disable still persist the non-ACTIVE durable automation state before disabling Scheduler, so stale at-least-once deliveries cannot begin browser/model execution. Resume still enables Scheduler before persisting ACTIVE, preferring a potentially missed occurrence over premature execution.
+- Recurrence update still mutates Scheduler before advertising new durable schedule metadata and preserves `enabled: false` for paused automations.
+- The web/control-plane layers add no retry loop around Scheduler. AWS transport uncertainty remains visible as a failed command rather than guessed success.
+- No new dependency, IAM permission, cloud resource, browser/model invocation, evidence artifact, metric dimension, or secret-bearing field is introduced. Cost remains one Scheduler control-plane mutation per lifecycle action plus normal API/Lambda request cost.
+- The existing DynamoDB <-> Scheduler cross-system partial-failure limitation remains. The domain ordering fails closed for execution, but a future reconciliation/status-repair operation should make drift inspectable and repairable.
 
 ### Tests / validation
 
-Regression coverage proves ACTIVE and PAUSED recurrence edits, pause/resume failure ordering, disable without destructive cleanup, repeated-disable behavior, tenant isolation, invalid state transitions, and invalid IANA timezone rejection.
+Regression coverage now proves that schedule lifecycle commands route through trusted ownership scope, returned automation summaries remain sanitized, HTTP request-body ownership spoofing cannot override authenticated scope, and the authenticated web client targets the intended lifecycle endpoints. Existing schedule-domain tests continue to cover pause/resume failure ordering, paused recurrence edits, disable idempotency, tenant isolation, and timezone validation.
 
-Normal implementation commit `516d4d5b67973becc87a544528fb2abc0fa9e5a1` triggered CI #178. CI stopped exclusively at the deterministic pnpm supply-chain gate before install/type-check/tests: no package manifest changed, but pnpm 10.15.0 re-resolved the transitive graph from reviewed SHA-256 `18eb9a0d0d9e0adb4ef8e6ba8ace35f11989fe5a84a8f227fb4a2d97290d4626` to authoritative CI-produced SHA-256 `e6ffd328cb3c39ba33360ccd00fc509cb37a4b63eb31c2349c276eaf3f525d07`. Existing AWS SDK alignment checks remain in place; the corrective commit changes only the reviewed lock fingerprint plus this validation record. Exact-head CI after that corrective commit remains authoritative.
+This implementation, tests, AWS composition, UX, and progress checkpoint are published as one coherent multi-file Git-data commit. No dependency manifest changed. Exact-head GitHub Actions remains authoritative; this section does not claim the new head green until CI completes successfully.
 
 ## Next product milestones
 
-1. Expose schedule update/pause/resume/disable through `AutomationControlPlaneService` + HTTP contracts + authenticated Next.js automation detail UX, and compose `AutomationScheduleLifecycleService` into the AWS control-plane bootstrap so these commands operate the concrete EventBridge Scheduler adapter.
-2. Add a deployment/release command that uploads both tested ZIPs to versioned S3 objects and wires the resulting object versions/stack outputs without embedding cloud credentials in CI.
-3. Close the trusted capture-completion deployment route: a deployment-authenticated worker/API boundary must invoke the already-separated completion handler without exposing it through the ordinary Cognito end-user route.
-4. If real fresh tests commonly exceed the API Gateway request window, make fresh-test initiation asynchronous with a durable run ID and UI polling/history rather than increasing retries/timeouts.
-5. Perform one controlled real AWS demonstration: sign in -> BYOK -> capture -> compile/test -> publish -> schedule -> AgentCore browser/OpenAI execution -> verification/history/email, plus one bounded human takeover/resume path.
-6. Add Google federation/adapters only after the AWS vertical slice is demonstrably complete.
+1. Add a deployment/release command that uploads both tested ZIPs to versioned S3 objects and wires the resulting object versions/stack outputs without embedding cloud credentials in CI.
+2. Close the trusted capture-completion deployment route: a deployment-authenticated worker/API boundary must invoke the already-separated completion handler without exposing it through the ordinary Cognito end-user route.
+3. If real fresh tests commonly exceed the API Gateway request window, make fresh-test initiation asynchronous with a durable run ID and UI polling/history rather than increasing retries/timeouts.
+4. Perform one controlled real AWS demonstration: sign in -> BYOK -> capture -> compile/test -> publish -> schedule -> AgentCore browser/OpenAI execution -> verification/history/email, plus one bounded human takeover/resume path.
+5. Add Google federation/adapters only after the AWS vertical slice is demonstrably complete.
 
 ## Known parked limitations
 
 - Recovery continuation consumption remains parked until a production cloud worker integration specifically requires it.
 - Sensitive target-site runtime values still need a dedicated secret-resolution contract; passwords, cookies, provider keys, and equivalent secrets must never enter workflow/runtime-variable metadata.
 - Public HTTP command idempotency is incomplete outside operations that already have durable domain idempotency; add explicit command keys where live UX can produce duplicate mutations.
-- Automation status and EventBridge Scheduler state cannot be atomically committed across DynamoDB/Scheduler; the new lifecycle ordering fails closed, but a future reconciliation/status-repair path should make any partial drift visible and repairable.
+- Automation status and EventBridge Scheduler state cannot be atomically committed across DynamoDB/Scheduler; lifecycle ordering fails closed, but a future reconciliation/status-repair path should make partial drift visible and repairable.
 - Trusted capture-completion worker authentication is not yet provisioned as a deployment resource.
 - Live OpenAI/SES/Cognito/AgentCore validation still requires the controlled AWS environment; deterministic CI is not represented as live-cloud proof.
 - AgentCore Runtime/browser networking is PUBLIC for the arbitrary-web MVP and should be revisited where VPC egress can preserve target-site access.
