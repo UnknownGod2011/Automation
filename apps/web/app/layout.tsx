@@ -19,6 +19,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
             <Link href="/">Dashboard</Link>
             {auth.kind === "AUTHENTICATED" ? (
               <>
+                <Link href="/settings/credentials">Credentials</Link>
                 <Link className="button small" href="/automations/new">New automation</Link>
                 <form action="/api/auth/sign-out" method="post"><button className="button small secondary" type="submit">Sign out</button></form>
               </>

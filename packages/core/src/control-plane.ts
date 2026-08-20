@@ -7,6 +7,8 @@ import type {
   WorkflowGraph,
 } from "@automation/contracts";
 import type { CaptureSessionRecord } from "./capture-completion.js";
+import type { ProviderCredentialManagementPort } from "./credential-management.js";
+import type { ProviderCredentialSummary } from "./credential-pool.js";
 import type { AutomationRepository, OwnershipScope, RunRepository } from "./index.js";
 import type {
   AutomationProductLifecycleService,
@@ -93,6 +95,18 @@ export interface PublishAutomationCommand {
   schedule: AutomationSchedule;
 }
 
+export interface CreateCredentialCommand {
+  credentialId: string;
+  provider: string;
+  apiKey: string;
+  maskedLabel: string;
+  priority: number;
+}
+
+export interface RotateCredentialCommand {
+  apiKey: string;
+}
+
 export type CaptureStartResult =
   | {
       kind: "READY";
@@ -129,6 +143,7 @@ export interface AutomationControlPlaneDependencies {
   captureSessions: CaptureSessionStarter;
   captureState: CaptureCompletionReader;
   capabilities: ControlPlaneCapabilities;
+  credentials?: ProviderCredentialManagementPort;
 }
 
 export class ControlPlaneError extends Error {
@@ -206,6 +221,67 @@ function toAutomationSummary(
 
 export class AutomationControlPlaneService {
   constructor(private readonly dependencies: AutomationControlPlaneDependencies) {}
+
+  private credentialManagement(): ProviderCredentialManagementPort {
+    if (!this.dependencies.credentials) {
+      throw new ControlPlaneError("NOT_CONFIGURED", "BYOK credential management is not configured");
+    }
+    return this.dependencies.credentials;
+  }
+
+  async listCredentials(scope: OwnershipScope): Promise<readonly ProviderCredentialSummary[]> {
+    return this.credentialManagement().list(scope);
+  }
+
+  async createCredential(
+    scope: OwnershipScope,
+    command: CreateCredentialCommand,
+  ): Promise<ProviderCredentialSummary> {
+    try {
+      return await this.credentialManagement().create({
+        scope,
+        credentialId: requireToken(command.credentialId, "credentialId"),
+        provider: requireToken(command.provider, "provider"),
+        apiKey: command.apiKey,
+        maskedLabel: requireToken(command.maskedLabel, "maskedLabel"),
+        priority: command.priority,
+      });
+    } catch (error) {
+      if (error instanceof ControlPlaneError) throw error;
+      throw new ControlPlaneError("CONFLICT", "credential could not be created");
+    }
+  }
+
+  async rotateCredential(
+    scope: OwnershipScope,
+    credentialId: string,
+    command: RotateCredentialCommand,
+  ): Promise<ProviderCredentialSummary> {
+    try {
+      return await this.credentialManagement().rotate({
+        scope,
+        credentialId: requireToken(credentialId, "credentialId"),
+        apiKey: command.apiKey,
+      });
+    } catch (error) {
+      if (error instanceof ControlPlaneError) throw error;
+      throw new ControlPlaneError("CONFLICT", "credential could not be rotated");
+    }
+  }
+
+  async removeCredential(scope: OwnershipScope, credentialId: string): Promise<{ removed: boolean }> {
+    try {
+      return {
+        removed: await this.credentialManagement().remove(
+          scope,
+          requireToken(credentialId, "credentialId"),
+        ),
+      };
+    } catch (error) {
+      if (error instanceof ControlPlaneError) throw error;
+      throw new ControlPlaneError("CONFLICT", "credential could not be removed");
+    }
+  }
 
   async dashboard(scope: OwnershipScope): Promise<DashboardView> {
     const automations = await this.dependencies.automations.list(scope);

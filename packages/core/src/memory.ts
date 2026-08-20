@@ -291,6 +291,10 @@ export class InMemoryCredentialMetadataRepository implements CredentialMetadataR
       .map(clone)
       .sort((a, b) => a.priority - b.priority);
   }
+
+  async delete(scope: OwnershipScope, credentialId: string): Promise<void> {
+    this.records.delete(ownedKey(scope, credentialId));
+  }
 }
 
 export class InMemoryScheduler implements SchedulerPort {

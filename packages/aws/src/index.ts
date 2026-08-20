@@ -5,6 +5,7 @@ export * from "./capture-session.js";
 export * from "./capture-session-store.js";
 export * from "./cognito-auth.js";
 export * from "./config.js";
+export * from "./credential-metadata.js";
 export * from "./dynamodb-state.js";
 export * from "./human-resolution.js";
 export * from "./human-resume-audit.js";

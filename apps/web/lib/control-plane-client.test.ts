@@ -46,6 +46,44 @@ describe("WebControlPlaneClient", () => {
     expect(init?.headers).toMatchObject({ authorization: "Bearer request-scoped-token" });
   });
 
+  it("routes BYOK management through the authenticated control plane", async () => {
+    const fetchImpl = vi.fn<FetchLike>(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/v1/credentials")) {
+        return new Response(JSON.stringify({ credentials: [] }), { status: 200 });
+      }
+      if (url.endsWith("/rotate")) {
+        return new Response(JSON.stringify({
+          credentialId: "customer/key",
+          provider: "openai",
+          maskedLabel: "OpenAI",
+          status: "UNKNOWN",
+          priority: 0,
+          failureCount: 0,
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ removed: true }), { status: 200 });
+    });
+    const client = new WebControlPlaneClient(
+      { baseUrl: "https://control.example.test", bearerToken: "request-token" },
+      fetchImpl,
+    );
+
+    await expect(client.credentials()).resolves.toEqual([]);
+    await client.rotateCredential("customer/key", "replacement-secret");
+    await expect(client.removeCredential("customer/key")).resolves.toEqual({ removed: true });
+
+    expect(String(fetchImpl.mock.calls[1]?.[0])).toBe(
+      "https://control.example.test/v1/credentials/customer%2Fkey/rotate",
+    );
+    expect(String(fetchImpl.mock.calls[2]?.[0])).toBe(
+      "https://control.example.test/v1/credentials/customer%2Fkey/remove",
+    );
+    const rotateInit = fetchImpl.mock.calls[1]?.[1];
+    expect(rotateInit?.headers).toMatchObject({ authorization: "Bearer request-token" });
+    expect(rotateInit?.body).toBe(JSON.stringify({ apiKey: "replacement-secret" }));
+  });
+
   it("does not surface remote error bodies", async () => {
     const fetchImpl = vi.fn<FetchLike>(async () =>
       new Response(JSON.stringify({ error: { message: "upstream-private-detail" } }), { status: 500 }),

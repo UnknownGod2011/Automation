@@ -5,7 +5,9 @@ import {
   ControlPlaneError,
   type CompileAutomationCommand,
   type CreateAutomationCommand,
+  type CreateCredentialCommand,
   type PublishAutomationCommand,
+  type RotateCredentialCommand,
   type TestAutomationCommand,
 } from "./control-plane.js";
 
@@ -53,6 +55,14 @@ function integerField(body: Record<string, unknown>, name: string): number {
   return value as number;
 }
 
+function priorityField(body: Record<string, unknown>): number {
+  const value = body.priority;
+  if (!Number.isInteger(value) || (value as number) < 0 || (value as number) > 10_000) {
+    throw new ControlPlaneError("BAD_REQUEST", "priority must be an integer between 0 and 10000");
+  }
+  return value as number;
+}
+
 function routeParts(path: string): readonly string[] {
   const clean = path.split("?", 1)[0] ?? "";
   return clean.split("/").filter(Boolean).map(decodeURIComponent);
@@ -85,7 +95,57 @@ export class AutomationControlPlaneHttpHandler {
   ): Promise<ControlPlaneHttpResponse> {
     try {
       const parts = routeParts(request.path);
-      if (parts[0] !== "v1" || parts[1] !== "automations") {
+      if (parts[0] !== "v1") {
+        return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
+      }
+
+      if (parts[1] === "credentials") {
+        if (request.method === "GET" && parts.length === 2) {
+          return {
+            status: 200,
+            body: { credentials: await this.service.listCredentials(context.scope) },
+          };
+        }
+
+        if (request.method === "POST" && parts.length === 2) {
+          const body = jsonObject(request.body);
+          const command: CreateCredentialCommand = {
+            credentialId: stringField(body, "credentialId"),
+            provider: stringField(body, "provider"),
+            apiKey: stringField(body, "apiKey"),
+            maskedLabel: stringField(body, "maskedLabel"),
+            priority: priorityField(body),
+          };
+          return {
+            status: 201,
+            body: await this.service.createCredential(context.scope, command),
+          };
+        }
+
+        const credentialId = parts[2];
+        if (credentialId && request.method === "POST" && parts.length === 4) {
+          if (parts[3] === "rotate") {
+            const body = jsonObject(request.body);
+            const command: RotateCredentialCommand = {
+              apiKey: stringField(body, "apiKey"),
+            };
+            return {
+              status: 200,
+              body: await this.service.rotateCredential(context.scope, credentialId, command),
+            };
+          }
+          if (parts[3] === "remove") {
+            return {
+              status: 200,
+              body: await this.service.removeCredential(context.scope, credentialId),
+            };
+          }
+        }
+
+        return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
+      }
+
+      if (parts[1] !== "automations") {
         return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
       }
 

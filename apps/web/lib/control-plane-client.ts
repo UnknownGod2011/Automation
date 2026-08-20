@@ -2,6 +2,7 @@ import type {
   AutomationSummaryView,
   CaptureStartResult,
   DashboardView,
+  ProviderCredentialSummary,
   RunSummaryView,
 } from "@automation/core";
 
@@ -83,6 +84,35 @@ export class WebControlPlaneClient {
       { method: "GET" },
     );
     return result.runs;
+  }
+
+  async credentials(): Promise<readonly ProviderCredentialSummary[]> {
+    const result = await this.request<{ credentials: readonly ProviderCredentialSummary[] }>(
+      "/v1/credentials",
+      { method: "GET" },
+    );
+    return result.credentials;
+  }
+
+  async createCredential(body: Readonly<Record<string, unknown>>): Promise<ProviderCredentialSummary> {
+    return this.request("/v1/credentials", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async rotateCredential(credentialId: string, apiKey: string): Promise<ProviderCredentialSummary> {
+    return this.request(`/v1/credentials/${encodeURIComponent(credentialId)}/rotate`, {
+      method: "POST",
+      body: JSON.stringify({ apiKey }),
+    });
+  }
+
+  async removeCredential(credentialId: string): Promise<{ removed: boolean }> {
+    return this.request(`/v1/credentials/${encodeURIComponent(credentialId)}/remove`, {
+      method: "POST",
+      body: "{}",
+    });
   }
 
   async create(body: Readonly<Record<string, unknown>>): Promise<AutomationSummaryView> {

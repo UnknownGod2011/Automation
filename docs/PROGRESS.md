@@ -18,74 +18,89 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - Provider-neutral control-plane HTTP contracts plus `apps/web` provide dashboard/create/capture/compile/test/publish/history UX with same-origin mutation checks.
 - AWS transport/IaC define EventBridge Scheduler -> SQS -> dispatcher -> Step Functions Standard with occurrence-based duplicate suppression, bounded delivery retries, DLQ/backpressure, tenant-scoped schedule identities, and least-privilege roles.
 - AgentCore Live View capture startup restores a server-owned Browser Profile. Durable capture completion saves authenticated profile state before accepting the trace and exposes only safe latest-capture readiness metadata to the UI.
-- Cognito managed login now protects the Next.js/control-plane perimeter with authorization-code + PKCE sessions and API Gateway-verified Cognito access-token claims.
-- `AgentCoreIdentityCredentialVault` already stores BYOK API keys as AgentCore Identity managed API-key credential providers and resolves them at runtime only with a workload identity token. Raw provider keys stay out of normal application metadata.
+- Cognito managed login protects the Next.js/control-plane perimeter with authorization-code + PKCE sessions and API Gateway-verified Cognito access-token claims.
+- `AgentCoreIdentityCredentialVault` stores BYOK API keys as AgentCore Identity managed API-key credential providers and resolves them at runtime only with a workload identity token. Raw provider keys stay out of normal application metadata.
+- Provider-neutral credential-pool routing selects usable BYOK credentials deterministically, performs runtime-only secret resolution, applies bounded cooldown/health state, suppresses same-provider rotation by default, and supports preflight rejection before browser/model cost.
 
 ## Authoritative incoming validation
 
 - PR #1 is the open draft development PR on `agent/bootstrap-platform`.
-- Incoming head `c433b0320e550374fdbb4f86a3b92fb123487f69` is green on GitHub Actions CI #150.
+- Incoming head `26a0e0d6d0b14e6080a6dcb6111df8ce81232b2c` is green on GitHub Actions CI #151.
 
-## 2026-08-20 — Provider-neutral BYOK credential pool + reasoning routing
+## 2026-08-20 — Authenticated BYOK credential management
 
 ### Product slice
 
-Added the provider-neutral layer that was missing above the existing AgentCore Identity vault.
+Made the existing BYOK pool usable from the authenticated product instead of leaving it as an execution-only core primitive.
 
-`ProviderCredentialService` now registers a BYOK credential through `CredentialVault`, stores only provider/priority/health plus the opaque vault reference in `CredentialMetadataRepository`, and returns a sanitized summary that never contains the raw API key or `secretRef`. API-key bytes are treated as opaque input and are not normalized before secure storage.
+Added provider-neutral `ProviderCredentialManagementService` and `ProviderCredentialManagementPort` for create/list/rotate/remove operations. Public results reuse the existing sanitized `ProviderCredentialSummary`; raw API keys and opaque `secretRef` values are never returned. Create rejects an already-used credential ID rather than silently treating a management request as rotation. Rotation preserves provider, label, priority, tenant/user ownership, and the existing vault reference while resetting stale health/cooldown state to `UNKNOWN` so the replacement key is re-evaluated on its next use.
 
-`selectProviderCredential` implements deterministic provider preference and health-aware selection. Provider order is explicit and case-insensitive; within a provider, lower priority wins, then lower failure count, then credential ID. `HEALTHY`/`UNKNOWN` credentials are usable, and expired `COOLDOWN` credentials become eligible again. `DISABLED`, `EXHAUSTED`, malformed cooldown state, and active cooldowns are unavailable.
+Rotation requires the vault adapter to return the same opaque reference for the same credential ID. This is true for the existing AgentCore Identity adapter, whose provider name is deterministically derived from tenant/user + credential ID. If another vault changes the reference during rotation, the newly-created reference is removed and the metadata transition is rejected rather than orphaning the old metadata pointer.
 
-Same-provider key rotation is **off by default**. If the highest-priority key for a provider is unavailable, the pool moves to the next configured provider rather than silently trying another key for the same provider. Same-provider fallback exists only behind the explicit `allowSameProviderCredentialFailover` policy flag; deployments must not use it to evade provider quotas or rate limits.
+Removal revokes the vault secret before deleting normal metadata. If metadata deletion subsequently fails, the safer residual state is stale metadata pointing at a revoked secret; retrying removal remains safe. A missing credential is an idempotent no-op.
 
-`CredentialPoolReasoningProvider` resolves the selected secret only for the reasoning invocation, optionally supplies the workload identity context required by AgentCore Identity, creates a provider-specific reasoner behind a factory interface, and never persists the secret or workload token. Successful calls mark the credential healthy. Authentication failures disable it, quota exhaustion marks it exhausted, and rate-limit/transient failures place it into a bounded cooldown. The failing call is never automatically replayed against another credential.
+Credential deletion authority is intentionally narrower than ordinary health/routing metadata access: the generic `CredentialMetadataRepository` contract remains unchanged, while management uses an extended `CredentialManagementMetadataRepository`. This avoids granting deletion capability to reasoning components that only need list/get/health writes.
 
-`CredentialPoolPreflightCheck` can be inserted into the existing scheduled-run coordinator so a run with no usable BYOK credential pauses before browser/model compute rather than opening a cloud browser and failing later.
+Added `AwsDynamoCredentialMetadataRepository` using the existing tenant/user DynamoDB partition scheme and the shared state table. Reads used for a specific credential and management lists are strongly consistent, embedded ownership/identity is validated before returning records, listing is paginated and deterministically ordered, and delete is scoped to the authenticated partition. No raw API key is ever written to DynamoDB.
+
+`AutomationControlPlaneService` now accepts an optional credential-management port. When it is absent, credential routes fail explicitly as `NOT_CONFIGURED`. The authenticated HTTP API now exposes:
+
+- `GET /v1/credentials`
+- `POST /v1/credentials`
+- `POST /v1/credentials/:credentialId/rotate`
+- `POST /v1/credentials/:credentialId/remove`
+
+All ownership comes from `AuthenticatedControlPlaneContext.scope`; tenant/user fields in JSON have no authority.
+
+The request-scoped Next.js control-plane client now supports those routes. Authenticated users have `/settings/credentials` with sanitized list/health state plus add, rotate, and remove forms. API-key form fields are password inputs, mutation handlers keep the established same-origin requirement, and the navigation exposes Credentials only for an authenticated session. Missing control-plane/credential configuration remains an explicit unavailable state instead of using local placeholder secrets.
 
 ### Security / tenancy / idempotency / concurrency / retry / cost review
 
-- All credential metadata reads/writes remain scoped by the existing tenant/user repository contracts. The AWS AgentCore vault separately validates that opaque secret references belong to the same ownership scope.
-- Raw API keys exist only in the registration request and ephemeral `CredentialSecret` passed to the provider factory. Returned summaries, normal metadata, warnings, and run failures contain no key material.
-- Workload identity tokens are runtime access capability material and are passed only to `CredentialVault.get`; they are never written into credential metadata.
-- Credential selection is deterministic for a fixed metadata snapshot and timestamp. This adds no external browser side effect and no run-idempotency surface.
-- Health metadata writes are advisory rather than execution authority. If a health update fails after a model call, the reasoning decision/failure remains authoritative; only a fixed sanitized warning hook is emitted. This avoids repeating model calls solely because health bookkeeping failed.
-- The router does not perform same-call failover. This avoids duplicate model cost and prevents automatic key rotation from becoming rate-limit circumvention.
-- Preflight rejection happens before browser startup, reducing wasted AgentCore Browser and model spend when credentials are unavailable.
+- Raw keys cross only the authenticated mutation request and `CredentialVault.put`; they are not written to DynamoDB, workflow graphs, run records, browser profiles, logs, or returned summaries.
+- Credential secret references remain server-side. The control plane and settings page expose only credential ID, provider, masked label, health, priority, cooldown, last-success timestamp, and failure count.
+- Tenant/user isolation is enforced in the service repositories and again when DynamoDB records are decoded. Request bodies cannot override authenticated scope.
+- Remove is secret-first and idempotent after completion. Partial metadata cleanup cannot leave an active provider secret accidentally available through the deleted management entry.
+- Rotate is one explicit management action, not provider failover. It never automatically retries a failed reasoning call and therefore does not create rate-limit/quota circumvention behavior.
+- Credential health remains advisory execution metadata. This slice deliberately does not add recovery/outbox machinery around it.
+- DynamoDB credential operations are control-plane scale and use strongly consistent reads for correctness. They do not open AgentCore Browser/model sessions, so management failures do not create browser side effects or model cost.
+- Public management mutation idempotency under repeated user form submission is bounded by credential identity and stable AgentCore reference behavior, but a formal HTTP idempotency-key contract is still pending for control-plane commands generally.
 
 ### Tests
 
 Added regression coverage for:
 
-- default suppression of same-provider key rotation,
-- explicit same-provider fallback policy,
-- sanitized credential registration with tenant isolation,
-- runtime-only secret resolution and success health updates,
-- workload identity context reaching only the vault boundary,
-- invalid-auth disablement without same-call alternate-key replay,
-- preflight blocking when the primary provider has no usable credential,
-- bounded cooldown after provider rate limiting.
+- sanitized tenant-scoped create/list behavior and duplicate create rejection,
+- stable-reference rotation plus health/cooldown reset,
+- rejection/cleanup when a vault changes the reference during rotation,
+- secret-first deletion ordering and idempotent repeated removal,
+- authenticated HTTP scope precedence over spoofed tenant/user body fields,
+- raw-key/secret-ref suppression in HTTP responses,
+- cross-tenant credential-list isolation,
+- AWS DynamoDB tenant isolation, deterministic listing, delete behavior, and corrupted embedded-ownership rejection,
+- authenticated web-client routing for credential list/rotate/remove with encoded IDs.
 
 ### Validation status
 
-- This is the single normal CI-triggering multi-file commit for this run.
-- No dependency was added; the existing AgentCore Identity SDK adapters are reused.
+- This is the single normal CI-triggering multi-file commit planned for this run.
+- No dependency or lock snapshot change is required; existing core, AWS SDK, Cognito, and Next.js dependencies are reused.
 - GitHub Actions on the exact resulting head is authoritative. Do not claim this slice green until deterministic lock verification, frozen install, `pnpm check`, Next.js build/type validation, and the full test suite complete successfully.
 
 ## Next product milestones
 
-1. Expose sanitized BYOK credential create/list/rotate/remove operations through the authenticated control-plane API and minimal Next.js settings UX, then compose `CredentialPoolPreflightCheck` and `CredentialPoolReasoningProvider` into the AWS scheduled-run worker with a workload identity token source.
-2. Add concrete provider-bound reasoners for the supported BYOK providers behind `CredentialBoundReasoningProviderFactory`; preserve the provider-neutral workflow/runtime contract and bounded provider timeouts.
-3. Add SES notifications plus CloudWatch/AgentCore observability for success/failure/attention states.
-4. Compose/deploy the concrete control-plane Lambda + Cognito/API Gateway stack and scheduler/Step Functions stack behind explicit environment outputs.
-5. Perform one controlled real AWS demonstration covering sign-in -> capture -> compile/test -> publish -> scheduled cloud browser execution -> verification/history and one bounded human takeover/resume path.
-6. Add Google federation to Cognito once a deployment-owned Google OAuth client is available; do not hard-code or store those credentials in normal metadata.
+1. Compose `CredentialPoolPreflightCheck` and `CredentialPoolReasoningProvider` into the concrete AWS scheduled-run worker and add a workload-identity-token source for AgentCore Identity; then add concrete provider-bound reasoners behind `CredentialBoundReasoningProviderFactory` with bounded provider timeouts.
+2. Add SES notifications plus CloudWatch/AgentCore observability for success/failure/attention states and run correlation identifiers.
+3. Compose/deploy the concrete control-plane Lambda + Cognito/API Gateway stack and scheduler/Step Functions stack behind explicit environment outputs.
+4. Perform one controlled real AWS demonstration covering sign-in -> credential setup -> capture -> compile/test -> publish -> scheduled cloud browser execution -> reasoning -> verification/history and one bounded human takeover/resume path.
+5. Add Google federation to Cognito once a deployment-owned Google OAuth client is available; do not hard-code or store those credentials in normal metadata.
 
 ## Known parked limitations
 
 - Recovery continuation consumption remains parked until a production cloud worker integration specifically requires it.
 - Sensitive runtime values for target-site workflows still need a separate secret-resolution contract; never place passwords, cookies, provider keys, or equivalent secrets in workflow/runtime-variable metadata.
-- The BYOK core service is not yet exposed through the public authenticated control-plane/Next.js UX, and production AWS worker composition does not yet source the AgentCore workload identity token for the router.
-- Credential health metadata currently has no compare-and-set generation; concurrent reasoning calls may race health bookkeeping. Health is advisory, not execution authority, so this cannot duplicate browser effects, but a later credential-management slice should add versioned/conditional health updates if concurrent provider selection becomes material.
+- Production AWS worker composition does not yet source the AgentCore workload identity token or route reasoning through the new credential pool end-to-end.
+- Concrete provider-bound reasoners are not yet wired behind `CredentialBoundReasoningProviderFactory`; the pool/router contract is ready for them.
+- Credential health metadata currently has no compare-and-set generation; concurrent reasoning calls may race health bookkeeping. Health is advisory, not execution authority, so this cannot duplicate browser effects.
+- Credential create/update metadata writes and vault writes are separate authorities. Stable AgentCore references make rotation deterministic; a future persistence composition may add explicit create transaction cleanup if live fault injection shows orphan-resource risk.
 - Public HTTP command idempotency, production rate limiting beyond API Gateway throttles, and deployment-level capture-worker authentication middleware remain required control-plane work.
 - Cognito refresh currently refreshes server-side on demand when the short-lived access cookie is absent; Server Components cannot rotate the cookie during render, so repeated page renders after access expiry can repeat refresh calls until a Route Handler writes a new access cookie. This is safe but not cost-optimal.
 - Real AWS credentials are not available in CI, so AWS SDK composition/auth boundaries are validated with deterministic tests; live deployment validation remains a later environment gate.
