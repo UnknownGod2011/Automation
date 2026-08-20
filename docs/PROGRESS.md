@@ -25,56 +25,57 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - SES/CloudWatch reporting records sanitized success/failure/attention outcomes without becoming execution authority.
 - `createAwsScheduledRunBootstrap` assembles DynamoDB state, immutable S3 workflows/evidence, AgentCore Browser/Profile, AgentCore Identity BYOK, Playwright execution/verification, OpenAI reasoning, and reporting.
 - Step Functions invokes AgentCore Runtime rather than a browser Lambda. The Runtime is packageable as a Node 22 direct-code artifact and provisioned by `infra/aws/agentcore-runtime.yaml` with bounded compute lifetime and least-privilege execution access.
+- Cognito-backed scheduled notification recipient resolution uses the trusted user `sub`, verified email, and deployment-owned user-pool configuration; scheduled payloads cannot select destinations.
 
 ## Authoritative incoming validation
 
 - PR #1 is the open draft development PR on `agent/bootstrap-platform`.
-- Incoming head `e8b02c834eb3695061049f9e31d756b48771fc78` is green on GitHub Actions CI #164.
+- Incoming head `8c687623502abd81f434ddf89f2c82cf3d2fe9cc` is green on GitHub Actions CI #166.
 - GitHub Actions on the exact new head created by this run is authoritative. Do not claim this slice green until deterministic lock verification, frozen install, `pnpm check`, AgentCore package smoke testing, Next.js build/type validation, and the complete test suite have succeeded.
 
-## 2026-08-20 — trusted Cognito notification directory
+## 2026-08-20 — API Gateway control-plane Lambda transport
 
 ### Product slice
 
-Closed the remaining production email-recipient seam for scheduled execution.
+Closed the missing transport/authentication boundary between the deployed API Gateway HTTP API and the existing provider-neutral `AutomationControlPlaneHttpHandler`.
 
-Added `AwsCognitoUserEmailResolver`, a deployment-owned `SesRecipientResolver` backed by the Cognito user pool. Scheduled JSON never supplies an email address. The resolver accepts only the already-trusted ownership scope/user ID, performs an exact server-side Cognito `sub` lookup, revalidates the durable returned `sub`, requires the account to be enabled, and returns an email only when Cognito marks `email_verified=true`.
+Added `createAwsControlPlaneLambdaHandler`, a dependency-free AWS adapter for API Gateway HTTP API payload format 2.0. It accepts only the already-verified JWT authorizer claim context, resolves the trusted tenant/user through the existing Cognito adapter, normalizes GET/POST path/body input into the core HTTP contract, and maps the sanitized core response back to the Lambda proxy response shape.
 
-`createAwsScheduledRunReporting` now automatically uses that Cognito resolver when `AUTOMATION_COGNITO_USER_POOL_ID` is configured, while preserving an explicit resolver override for tests or a future non-Cognito directory. Missing Cognito configuration remains an explicit notification `NOT_CONFIGURED` state; telemetry and scheduled execution remain available.
+The adapter deliberately does not parse or verify raw bearer tokens. API Gateway remains the cryptographic JWT/scope boundary. Tenant identity remains deployment-owned and user identity remains the Cognito access-token `sub`; request JSON and extra claims cannot override either.
 
-`infra/aws/control-plane-auth.yaml` now exports the concrete Cognito user-pool ID. `infra/aws/agentcore-runtime.yaml` accepts that output as an optional input, passes it to the worker as `AUTOMATION_COGNITO_USER_POOL_ID`, and grants only `cognito-idp:ListUsers` on that exact user-pool ARN when configured. The runtime receives no Cognito write/admin mutation permissions.
+Request handling is bounded and fail-closed: unsupported methods/payload versions and malformed paths/JSON are rejected before core dispatch, decoded bodies are capped at 1 MiB, base64 payloads are decoded without adding Node-specific type dependencies, and unexpected adapter/core failures are converted to a fixed sanitized 500 response. Responses include `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
 
-The AWS package now pins `@aws-sdk/client-cognito-identity-provider@3.1111.0`, matching the already-reviewed AWS SDK line. Because this changes the dependency graph, the first exact-head CI run is expected to stop at the deterministic lock-review gate until the newly generated lock SHA is inspected and, if correct, authenticated in the single allowed corrective commit.
+This slice intentionally does not duplicate `AutomationControlPlaneService` logic or create a second routing implementation. The next composition layer can inject the real DynamoDB/S3/AgentCore/scheduler-backed service into the same core handler and then hand that handler to this Lambda transport.
 
-### Correctness / security / tenancy / idempotency / retry / cost / observability review
+### Correctness / security / tenancy / idempotency / retry / timeout / cost / observability review
 
-- Notification ownership remains tenant/user scoped. Cross-user routing is rejected before the Cognito API is called.
-- The scheduled payload cannot select an email, user pool, or alternate Cognito subject. User pool identity is deployment configuration; user identity is the trusted Runtime/control-plane subject.
-- Only verified email is eligible. Disabled, missing, unverified, mismatched, or ambiguous users produce no destination or fail closed.
-- Cognito `ListUsers` is eventually consistent. A newly-created user may temporarily miss an email notification; reporting is already best-effort and cannot change run state, retry browser/model actions, or manufacture execution success.
-- Cognito/SES outages propagate through the existing best-effort reporting boundary and do not become workflow retry authority.
-- One exact-sub directory read is performed only for notification outcomes that actually send email. This adds small per-notification Cognito API cost/latency but no browser/model compute.
-- No email, Cognito attributes, BYOK key, workload token, browser state, or raw provider exception is added to run/checkpoint telemetry.
-- The Runtime role receives only read access to the configured user pool. Credential and browser permissions are unchanged.
+- Authentication is resolved before parsing/dispatching an application request, so unauthenticated calls cannot reach DynamoDB, S3, AgentCore Browser, Identity, or Scheduler adapters through this boundary.
+- Ownership is derived from deployment tenant + verified Cognito `sub`; spoofed `tenantId`/`userId` fields and claims do not influence scope.
+- Raw Authorization headers/tokens are not accepted by this adapter and therefore are not copied into application logs or errors.
+- Body size is bounded before JSON parsing to cap Lambda memory/CPU exposure from oversized requests. API Gateway/Lambda still provide the outer transport timeout; no application retry loop was added.
+- This transport does not add execution authority or side-effect retries. Existing command/service idempotency and workflow verification rules remain authoritative.
+- Error responses are fixed/sanitized; provider exceptions, BYOK material, browser-profile/session identifiers, and secret-bearing DOM data are not reflected.
+- No new dependency, AWS SDK client, persistent table, metric dimension, or cloud call was introduced, so dependency graph and steady-state cloud cost are unchanged.
+- `NOT_CONFIGURED` remains explicit when Cognito issuer/client/tenant deployment configuration is absent rather than constructing a partially authenticated handler.
 
 ### Tests / validation
 
 Regression coverage now proves:
 
-- explicit Cognito user-pool configuration and malformed configuration rejection,
-- exact-sub lookup and verified-email resolution,
-- cross-user rejection before AWS network access,
-- disabled/unverified/missing users returning no destination,
-- ambiguous or mismatched Cognito identities failing closed,
-- reporting auto-composition through Cognito while preserving the explicit resolver override,
-- production bootstrap showing notifications configured only when sender + Cognito directory configuration are present.
+- incomplete Cognito deployment configuration returns `NOT_CONFIGURED`,
+- verified access-token claims map to the trusted provider-neutral ownership scope while spoofed ownership fields are ignored,
+- payload-format 2.0 POST/JSON and base64-encoded JSON map correctly into the core handler,
+- invalid identity is rejected before core dispatch,
+- malformed JSON, unsupported HTTP methods, invalid paths, and unsupported payload versions fail closed,
+- oversized request bodies are rejected before core dispatch,
+- unexpected handler failures produce a fixed sanitized 500 without reflecting secret-bearing error text.
 
-Validation status for this slice: implementation, tests, AWS exports, IAM/environment wiring, auth-stack output, and this progress update are being published as one normal CI-triggering Git-data commit. Exact-head GitHub Actions is authoritative; no pass is claimed here until it exists.
+Validation status for this slice: implementation, tests, AWS package export, and this progress update are being published as one normal CI-triggering Git-data commit. Exact-head GitHub Actions is authoritative; no pass is claimed here until it exists.
 
 ## Next product milestones
 
-1. Compose the concrete control-plane Lambda/API handler from API Gateway verified Cognito claims and the existing provider-neutral `AutomationControlPlaneHttpHandler`, using DynamoDB/S3/AgentCore adapters with explicit `NOT_CONFIGURED` deployment states.
-2. Wire stack outputs together so publishing an automation creates/updates the real EventBridge Scheduler resource using the deployed Runtime/SQS/Step Functions resources rather than manually supplied environment values.
+1. Compose the concrete production `AutomationControlPlaneService` graph behind this Lambda transport: DynamoDB automation/run state, S3 workflow/capture artifacts, AgentCore Browser/Profile capture starter, capture completion state, AgentCore Identity credential management, and the real Scheduler port, with aggregated `NOT_CONFIGURED` deployment state.
+2. Wire publish/update/disable lifecycle operations to the deployed EventBridge Scheduler resources automatically, using stack outputs for dispatch queue/role/group rather than manual environment assembly.
 3. Add the Runtime artifact upload/deploy release command around the tested ZIP, requiring a versioned S3 object in production.
 4. Perform one controlled real AWS demonstration: sign in -> BYOK -> capture -> compile/test -> publish -> schedule -> AgentCore cloud browser/OpenAI execution -> verification/history/email, plus one bounded human takeover/resume path.
 5. Add Google federation/adapters only after the AWS vertical slice is demonstrably complete.
@@ -83,6 +84,8 @@ Validation status for this slice: implementation, tests, AWS exports, IAM/enviro
 
 - Recovery continuation consumption remains parked until a production cloud worker integration specifically requires it.
 - Sensitive target-site runtime values still need a separate secret-resolution contract; never place passwords, cookies, provider keys, or equivalent secrets in workflow/runtime-variable metadata.
+- The API Gateway Lambda transport is now defined, but the concrete cloud-backed `AutomationControlPlaneService` dependency graph and deployable Lambda resource/package remain the next control-plane milestone.
+- Trusted capture-completion worker authentication remains a separate deployment boundary; it must not be exposed through the ordinary end-user JWT route.
 - The Runtime resource/package is represented in code/IaC, but live creation and invocation still require a controlled AWS deployment and uploaded Runtime ZIP; CI intentionally uses no cloud credentials.
 - `PUBLIC` Runtime networking is suitable for the arbitrary-web MVP but should be revisited for production environments that can provide VPC egress without breaking permitted target-site access.
 - Cognito directory reads are eventually consistent, so notification delivery for a just-created account can be delayed; execution remains unaffected.
