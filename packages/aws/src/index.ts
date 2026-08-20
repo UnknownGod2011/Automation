@@ -21,6 +21,7 @@ export * from "./playwright-runtime.js";
 export * from "./reasoning.js";
 export * from "./scheduled-execution-composition.js";
 export * from "./scheduled-reporting-composition.js";
+export * from "./scheduled-run-bootstrap.js";
 export * from "./scheduled-run-handler.js";
 export * from "./scheduling-composition.js";
 export * from "./scheduling-dispatch.js";
