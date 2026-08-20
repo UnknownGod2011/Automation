@@ -24,46 +24,35 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - Scheduled execution composes DynamoDB run/checkpoint/lock state, immutable S3 workflows/evidence, AgentCore Browser/Profile, AgentCore Identity BYOK, Playwright execution/verification, OpenAI reasoning, SES notifications, CloudWatch EMF telemetry, and trusted Cognito email lookup.
 - AgentCore Runtime is packageable as a Node 22 direct-code ZIP and provisioned by `infra/aws/agentcore-runtime.yaml` with a bounded worker role.
 - `createAwsControlPlaneBootstrap` composes the production control-plane graph from DynamoDB/S3 persistence, AgentCore Browser/Profile capture, AgentCore Identity credential management, AgentCore Runtime fresh testing, EventBridge Scheduler, Cognito-authenticated HTTP transport, and a separate trusted capture-completion handler.
+- The control-plane Lambda is packageable as a Node 22 ZIP and provisioned by `infra/aws/control-plane-service.yaml` with bounded concurrency and least-privilege control-plane IAM.
 
 ## Authoritative incoming validation
 
 - PR #1 is the open draft development PR on `agent/bootstrap-platform`.
-- Incoming head `62dcf1adb0f15bdf4494c1b73673c12c2c975944` is green on GitHub Actions CI #174.
+- Incoming head `d05b981b9372fdabb3e4efe1cdcaa39167f8ad95` is red on GitHub Actions CI #176 after deterministic lock verification and frozen install passed. The sole known blocker is strict typing of the fixed API Gateway failure response: `ApiGatewayHttpApiV2Response` requires `isBase64Encoded: false`.
 - GitHub Actions on the exact head created by each run remains authoritative. Never claim a new slice green until deterministic lock verification, frozen install, `pnpm check`, deployment-package smoke tests, Next.js build/type validation, and the complete test suite succeed.
 
-## 2026-08-20 — deployable control-plane Lambda
+## 2026-08-21 — close control-plane Lambda response contract blocker
 
 ### Product slice
 
-Added the process/deployment boundary required to turn the already-composed AWS control plane into a real Lambda artifact.
+Closed the concrete CI #176 blocker before stacking another lifecycle feature on a red production head. The process-scoped control-plane Lambda runtime now returns the complete API Gateway HTTP API v2 response contract for its fixed sanitized `500 INTERNAL_ERROR` and `503 NOT_CONFIGURED` paths, including explicit `isBase64Encoded: false`.
 
-`createAwsControlPlaneRuntimeEntrypoint` lazily initializes `createAwsControlPlaneBootstrap` once per Lambda execution environment. It returns a fixed sanitized `503 NOT_CONFIGURED` when mandatory deployment composition is absent and a fixed sanitized `500 INTERNAL_ERROR` for bootstrap/provider failures. The initialization promise is memoized so a broken cold-start configuration is not repeatedly reconstructed on every request in the same environment. Configured requests are forwarded unchanged to the existing API Gateway HTTP API v2 Lambda adapter.
-
-`packages/aws/control-plane-lambda.mjs` is the actual Node 22 Lambda handler. `scripts/package-control-plane-lambda.sh` builds contracts/core/AWS, materializes only production dependencies, adds the thin handler, and emits a deterministic ZIP. CI now smoke-builds this ZIP in addition to the existing AgentCore Runtime ZIP; neither package is uploaded as a GitHub Actions artifact.
-
-Added `infra/aws/control-plane-service.yaml` to provision the Lambda, bounded reserved concurrency, 30-day log retention, code from an optionally version-pinned S3 object, required control-plane environment contracts, and a scoped execution role. Its `ControlPlaneLambdaArn` output is intended to feed the already-existing Cognito/API Gateway auth stack.
+The regression suite now asserts this transport invariant on both fixed-failure paths, and the configured forwarding fixture also returns a fully valid API Gateway response shape. No auth, tenancy, persistence, execution, scheduling, dependency, retry, or IAM boundary changed.
 
 ### Security / tenancy / idempotency / retry / timeout / cost / observability review
 
-- The Lambda role deliberately does not receive `GetResourceApiKey`, workload-token acquisition, browser automation-stream, Step Functions execution, SES-send, or scheduled-worker permissions. Those stay in the execution plane.
-- AgentCore Runtime fresh-test invocation is limited to the configured Runtime ARN and includes both `InvokeAgentRuntime` and `InvokeAgentRuntimeForUser`, because the control plane supplies the authenticated user through AgentCore's dedicated Runtime user boundary.
-- EventBridge Scheduler mutations are limited to the configured schedule group. `iam:PassRole` is limited to the exact Scheduler target role and `iam:PassedToService = scheduler.amazonaws.com`.
-- Browser Profile creation is conditioned on the platform's `managedBy=automation-platform` request tag. Existing Browser Profile resources are the only profile-management resource class granted. Live View connection is isolated in its own wildcard-resource statement because AWS currently defines `ConnectBrowserLiveViewStream` without resource-level authorization.
-- Managed API-key provider mutation is restricted to the platform's `automation_*` provider namespace inside AgentCore token vaults; the raw credential remains handled only by the AgentCore Identity control API and is never stored in DynamoDB/S3/logs.
-- DynamoDB access is limited to the configured state table/indexes and S3 to the configured artifact prefix. Optional KMS access is limited to the configured artifact key.
-- The API Lambda timeout is 29 seconds and reserved concurrency defaults to 20, bounding cost and pressure on DynamoDB/Scheduler/AgentCore. There is no whole-request retry layer in the runtime wrapper.
-- A production fresh test remains synchronous across API Gateway -> Lambda -> AgentCore Runtime. API Gateway/Lambda request duration is therefore a known UX/deployment limit for long tests; the next product-facing refinement should move fresh-test initiation to an asynchronous job/status boundary if live validation shows typical tests exceed the HTTP window.
-- Lambda bootstrap and provider failures are never reflected verbatim, so environment values, provider exceptions, browser details, secret refs, and keys do not enter public HTTP failures.
+- Fixed failures remain cache-disabled, `nosniff`, JSON-only, and sanitized; provider/environment exceptions are still never reflected.
+- The change cannot broaden tenant access or execution authority because it only completes the HTTP transport envelope after bootstrap failure/unavailability.
+- No retry layer, AWS call, browser/model operation, dependency, artifact, or cloud resource is added, so cost and concurrency behavior are unchanged.
 
 ### Tests / validation
 
-Regression coverage was added for configured request forwarding, one-time process bootstrap, explicit sanitized `NOT_CONFIGURED`, and sticky sanitized bootstrap failure. CI additionally smoke-packages the production control-plane ZIP.
-
-This implementation, tests, IaC, packaging, CI update, and progress checkpoint are being published as one normal multi-file Git-data commit. Exact-head GitHub Actions is authoritative; this section does not claim the new head green until that run completes.
+This correction and its regression assertions are published with this progress checkpoint as one atomic multi-file Git-data commit. Exact-head GitHub Actions is authoritative; do not treat the blocker as closed until that run succeeds.
 
 ## Next product milestones
 
-1. Add explicit automation update/pause/disable lifecycle commands so recurrence edits and pausing update or disable the concrete EventBridge Scheduler resource automatically; publish already creates/updates schedules.
+1. Add explicit automation recurrence update/pause/disable lifecycle commands so schedule edits update the concrete EventBridge Scheduler resource and pause/disable transitions prevent future scheduled dispatch without deleting workflow/history state.
 2. Add a deployment/release command that uploads both tested ZIPs to versioned S3 objects and wires the resulting object versions/stack outputs without embedding cloud credentials in CI.
 3. Close the trusted capture-completion deployment route: a deployment-authenticated worker/API boundary must invoke the already-separated completion handler without exposing it through the ordinary Cognito end-user route.
 4. If real fresh tests commonly exceed the API Gateway request window, make fresh-test initiation asynchronous with a durable run ID and UI polling/history rather than increasing retries/timeouts.

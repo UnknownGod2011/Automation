@@ -35,7 +35,7 @@ describe("createAwsControlPlaneRuntimeEntrypoint", () => {
           async handler(received) {
             handlerCalls += 1;
             expect(received).toBe(event);
-            return { statusCode: 204, body: "" };
+            return { statusCode: 204, body: "", isBase64Encoded: false };
           },
         },
       };
@@ -62,6 +62,7 @@ describe("createAwsControlPlaneRuntimeEntrypoint", () => {
     const second = await runtime.handler(event);
     expect(first.statusCode).toBe(503);
     expect(second.statusCode).toBe(503);
+    expect(first.isBase64Encoded).toBe(false);
     expect(first.body).toContain("NOT_CONFIGURED");
     expect(first.body).not.toContain("must-not-leak");
     expect(first.headers?.["Cache-Control"]).toBe("no-store");
@@ -79,6 +80,7 @@ describe("createAwsControlPlaneRuntimeEntrypoint", () => {
     const second = await runtime.handler(event);
     expect(first.statusCode).toBe(500);
     expect(second.statusCode).toBe(500);
+    expect(first.isBase64Encoded).toBe(false);
     expect(first.body).toContain("INTERNAL_ERROR");
     expect(first.body).not.toContain("provider secret");
     expect(bootstrapCalls).toBe(1);

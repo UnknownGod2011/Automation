@@ -32,6 +32,7 @@ function fixedFailure(
     statusCode,
     headers: responseHeaders,
     body: JSON.stringify({ error: { code, message } }),
+    isBase64Encoded: false,
   };
 }
 
