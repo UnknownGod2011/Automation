@@ -29,30 +29,40 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 ## Authoritative incoming validation
 
 - PR #1 is the open draft development PR on `agent/bootstrap-platform`.
-- Incoming head `d05b981b9372fdabb3e4efe1cdcaa39167f8ad95` is red on GitHub Actions CI #176 after deterministic lock verification and frozen install passed. The sole known blocker is strict typing of the fixed API Gateway failure response: `ApiGatewayHttpApiV2Response` requires `isBase64Encoded: false`.
+- Incoming head `f24fdbf00af0eee92220dc6a81183e7761dfb33f` is green on GitHub Actions CI #177.
 - GitHub Actions on the exact head created by each run remains authoritative. Never claim a new slice green until deterministic lock verification, frozen install, `pnpm check`, deployment-package smoke tests, Next.js build/type validation, and the complete test suite succeed.
 
-## 2026-08-21 — close control-plane Lambda response contract blocker
+## 2026-08-21 — provider-neutral automation schedule lifecycle
 
 ### Product slice
 
-Closed the concrete CI #176 blocker before stacking another lifecycle feature on a red production head. The process-scoped control-plane Lambda runtime now returns the complete API Gateway HTTP API v2 response contract for its fixed sanitized `500 INTERNAL_ERROR` and `503 NOT_CONFIGURED` paths, including explicit `isBase64Encoded: false`.
+Added the domain boundary needed for users to manage a published automation after first publish without deleting workflow versions, Browser Profile state, or run history. `AutomationScheduleLifecycleService` supports recurrence/timezone updates plus explicit pause, resume, and disable commands against the existing provider-neutral `SchedulerPort`.
 
-The regression suite now asserts this transport invariant on both fixed-failure paths, and the configured forwarding fixture also returns a fully valid API Gateway response shape. No auth, tenancy, persistence, execution, scheduling, dependency, retry, or IAM boundary changed.
+The transition ordering is intentionally fail-closed across the durable automation record and the external scheduler, which cannot be atomically transacted together:
 
-### Security / tenancy / idempotency / retry / timeout / cost / observability review
+- **Pause/disable:** persist `PAUSED`/`DISABLED` first, then disable the schedule. If Scheduler mutation is unavailable or uncertain, a stale schedule delivery still reaches execution preflight against a non-`ACTIVE` durable automation and cannot start Browser/model work.
+- **Resume:** enable the schedule first, then advertise the automation as `ACTIVE`. A delivery racing that boundary can be skipped while the durable record is still `PAUSED`, but cannot execute prematurely.
+- **Recurrence update:** update Scheduler first, then persist the new schedule metadata. Scheduler failure therefore leaves the durable automation advertising its previous schedule instead of a schedule that was never installed. Updating a paused automation preserves `enabled: false`.
+- **Disable:** retains the Scheduler resource in disabled state and preserves the immutable published workflow version, stored recurrence, Browser Profile reference, and history. Repeated disable is idempotent at the domain boundary.
 
-- Fixed failures remain cache-disabled, `nosniff`, JSON-only, and sanitized; provider/environment exceptions are still never reflected.
-- The change cannot broaden tenant access or execution authority because it only completes the HTTP transport envelope after bootstrap failure/unavailability.
-- No retry layer, AWS call, browser/model operation, dependency, artifact, or cloud resource is added, so cost and concurrency behavior are unchanged.
+### Security / tenancy / idempotency / concurrency / retry / timeout / cost / observability review
+
+- All mutations resolve the automation through the existing tenant + user scoped repository; cross-tenant identifiers are rejected before Scheduler mutation.
+- Pause/disable are safe under stale at-least-once delivery because durable automation status remains execution authority in scheduled-run preflight.
+- Resume can lose one occurrence in a narrow race, but the chosen ordering prefers omission over an unauthorized/early browser side effect. The user can retry resume safely if Scheduler enablement fails before the durable state changes.
+- No retry loop is added around Scheduler mutations. Transport uncertainty is surfaced to the caller; it is never guessed as success.
+- No new dependency, cloud resource, browser/model invocation, evidence artifact, or metric dimension is introduced. Scheduler update cost is one control-plane mutation per lifecycle command.
+- The external Scheduler and durable automation record remain separate authorities, so partial failures may require a future reconciliation/status repair command. The current ordering is designed so such drift fails closed for execution rather than enabling duplicate side effects.
 
 ### Tests / validation
 
-This correction and its regression assertions are published with this progress checkpoint as one atomic multi-file Git-data commit. Exact-head GitHub Actions is authoritative; do not treat the blocker as closed until that run succeeds.
+Regression coverage proves ACTIVE and PAUSED recurrence edits, pause/resume failure ordering, disable without destructive cleanup, repeated-disable behavior, tenant isolation, invalid state transitions, and invalid IANA timezone rejection.
+
+This implementation, tests, export, and progress checkpoint are published as one atomic multi-file Git-data commit. Exact-head GitHub Actions is authoritative; this section does not claim the new head green until that run completes.
 
 ## Next product milestones
 
-1. Add explicit automation recurrence update/pause/disable lifecycle commands so schedule edits update the concrete EventBridge Scheduler resource and pause/disable transitions prevent future scheduled dispatch without deleting workflow/history state.
+1. Expose schedule update/pause/resume/disable through `AutomationControlPlaneService` + HTTP contracts + authenticated Next.js automation detail UX, and compose `AutomationScheduleLifecycleService` into the AWS control-plane bootstrap so these commands operate the concrete EventBridge Scheduler adapter.
 2. Add a deployment/release command that uploads both tested ZIPs to versioned S3 objects and wires the resulting object versions/stack outputs without embedding cloud credentials in CI.
 3. Close the trusted capture-completion deployment route: a deployment-authenticated worker/API boundary must invoke the already-separated completion handler without exposing it through the ordinary Cognito end-user route.
 4. If real fresh tests commonly exceed the API Gateway request window, make fresh-test initiation asynchronous with a durable run ID and UI polling/history rather than increasing retries/timeouts.
@@ -64,6 +74,7 @@ This correction and its regression assertions are published with this progress c
 - Recovery continuation consumption remains parked until a production cloud worker integration specifically requires it.
 - Sensitive target-site runtime values still need a dedicated secret-resolution contract; passwords, cookies, provider keys, and equivalent secrets must never enter workflow/runtime-variable metadata.
 - Public HTTP command idempotency is incomplete outside operations that already have durable domain idempotency; add explicit command keys where live UX can produce duplicate mutations.
+- Automation status and EventBridge Scheduler state cannot be atomically committed across DynamoDB/Scheduler; the new lifecycle ordering fails closed, but a future reconciliation/status-repair path should make any partial drift visible and repairable.
 - Trusted capture-completion worker authentication is not yet provisioned as a deployment resource.
 - Live OpenAI/SES/Cognito/AgentCore validation still requires the controlled AWS environment; deterministic CI is not represented as live-cloud proof.
 - AgentCore Runtime/browser networking is PUBLIC for the arbitrary-web MVP and should be revisited where VPC egress can preserve target-site access.
