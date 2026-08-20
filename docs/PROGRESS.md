@@ -20,80 +20,70 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - AgentCore Live View capture startup restores a server-owned Browser Profile. Durable capture completion saves authenticated profile state before accepting the trace and exposes only safe latest-capture readiness metadata to the UI.
 - Cognito managed login protects the Next.js/control-plane perimeter with authorization-code + PKCE sessions and API Gateway-verified Cognito access-token claims.
 - `AgentCoreIdentityCredentialVault` stores BYOK API keys as AgentCore Identity managed API-key credential providers. Raw provider keys stay out of normal application metadata.
-- Provider-neutral credential-pool routing selects usable BYOK credentials deterministically, resolves secrets only at model invocation, applies bounded health/cooldown state, suppresses same-provider rotation by default, and supports preflight rejection before browser/model cost.
-- Authenticated credential-management APIs and `/settings/credentials` support sanitized create/list/rotate/remove operations while keeping raw keys and vault references server-side.
+- Provider-neutral credential-pool routing and authenticated credential settings support deterministic BYOK selection, runtime-only secret resolution, health/cooldown policy, and sanitized create/list/rotate/remove operations.
 - AWS scheduled execution composes BYOK preflight and runtime-only AgentCore workload-token secret access before browser/model work.
-- `OpenAiCredentialBoundReasoningProviderFactory` provides the first concrete BYOK reasoner using the fixed OpenAI Responses endpoint, Structured Outputs, local policy revalidation, bounded network/context/output limits, sanitized provider failures, and no OpenAI SDK dependency.
-- `AwsScheduledRunHandler` binds the trusted Step Functions occurrence scope, AgentCore workload token, deterministic occurrence run ID, concrete OpenAI BYOK factory, and the production scheduled worker path.
+- `OpenAiCredentialBoundReasoningProviderFactory` provides the first concrete BYOK reasoner using the fixed OpenAI Responses endpoint, Structured Outputs, local policy revalidation, bounded network/context/output limits, and sanitized provider failures.
+- `AwsScheduledRunHandler` binds trusted occurrence scope, AgentCore workload token, deterministic occurrence run ID, OpenAI BYOK reasoning, browser execution, and durable reporting.
+- `ScheduledRunOutcomeReporter`, CloudWatch EMF telemetry, and the ownership-scoped SES notification port report success/failure/attention without becoming execution authority.
 
 ## Authoritative incoming validation
 
 - PR #1 is the open draft development PR on `agent/bootstrap-platform`.
-- Incoming head `4432e020c31fd62edaae75307fc39c2ee642d316` is green on GitHub Actions CI #157.
+- Incoming head `b5b8501304f4274c909fad4b9ec90436752650de` is green on GitHub Actions CI #158.
 - GitHub Actions on the exact new head created by this run is authoritative; do not claim the new slice green until deterministic lock verification, frozen install, `pnpm check`, Next.js build/type validation, and the complete test suite have succeeded.
 
-## 2026-08-20 — Scheduled-run notifications and structured observability
+## 2026-08-20 — AWS SES SDK + reporting deployment composition
 
 ### Product slice
 
-Added a provider-neutral `ScheduledRunOutcomeReporter` around the durable scheduled-run result boundary. It converts the authoritative worker result/checkpoint into one bounded telemetry event and, when configured, a user notification. Reporting is intentionally outside workflow execution policy: it cannot change run state, verification, retry, checkpoint, locking, or browser/model ownership.
+Added the concrete production binding from the existing sanitized SES notification port to the official AWS SDK v3 SES v2 client. `AwsSesV2SendEmailTransport` maps one already-sanitized plaintext notification into one `SendEmailCommand`; recipient discovery remains outside the transport and continues to use a deployment-owned, tenant/user-scoped `SesRecipientResolver`.
 
-The reporter classifies outcomes as `SUCCEEDED`, `FAILED`, `NEEDS_ATTENTION`, `SKIPPED`, or `DUPLICATE`. Duplicate and skipped deliveries do not send user email. Success email respects `notifyOnSuccess`; failed email respects `notifyOnFailure`; `WAITING_FOR_HUMAN` remains an operational attention condition and is surfaced even when ordinary failure email is disabled. Authentication and provider-credential blockers map to the existing `AUTH_REQUIRED` / `API_KEY_REQUIRED` notification kinds.
+Added `createAwsScheduledRunReporting`, the deployment composition boundary for scheduled-run telemetry and email. CloudWatch EMF telemetry remains configured by default from low-cardinality namespace/service values. Email becomes `CONFIGURED` only when `AUTOMATION_SES_FROM_EMAIL`, an AWS region, and a trusted recipient resolver are all available. Otherwise the composition returns an explicit `NOT_CONFIGURED` email state while telemetry and execution remain usable; it never guesses an address from Cognito `sub`.
 
-`AwsScheduledRunHandler` now optionally invokes the reporter after scheduled execution. For a preflight `BLOCKED` result it loads the durable checkpoint so the reporter sees the authoritative failure code rather than guessing from a user-facing string. Trusted ownership is still validated before reporting metadata is loaded.
-
-Added `AwsCloudWatchEmfTelemetryPort`, which emits CloudWatch Embedded Metric Format JSON through the runtime log stream. Correlation fields include tenant/user/automation/run/workflow identifiers, status, scheduled timestamp, optional node/failure code, cleanup-warning count, and bounded duration. Only `Service` and `Outcome` are metric dimensions; high-cardinality identifiers stay ordinary structured fields to avoid metric-cardinality cost growth.
-
-Added `AwsSesNotificationPort`, a tenant-scoped SES notification boundary. Recipient email is resolved server-side from the authenticated user identity through a deployment-owned resolver; the run command cannot choose an arbitrary email address. The adapter validates sender/destination/subject/body bounds and forwards only the sanitized notification message to an injected SES transport. The final deployment wrapper must bind this transport to the official AWS SES SDK and bind the recipient resolver to trusted user identity data.
+Added `infra/aws/observability-notifications.yaml` with least-privilege `ses:SendEmail` permission scoped to the verified sender identity, an operational SNS topic, dispatch-DLQ depth alarm, scheduled-run failure and human-attention alarms using the existing low-cardinality EMF dimensions, and a CloudWatch dashboard for outcome counts and DLQ depth.
 
 ### Correctness / security / tenancy / idempotency / concurrency / retry / verification / cost review
 
-- Reporting consumes final durable run/checkpoint state and never acts as execution authority.
-- Notification/telemetry delivery failures are best-effort: they return fixed warnings and never reinterpret a successful run as failed or retry browser/model side effects.
-- Raw failure messages, evidence content, cookies, browser state, API keys, workload tokens, lease owner tokens, and model prompt data are excluded from telemetry and email construction. Only stable failure codes are surfaced.
-- Duplicate scheduled delivery is observable but does not generate another user email, preventing normal Scheduler/SQS redelivery from spamming the owner.
-- The SES adapter rejects cross-user routing before recipient lookup or transport invocation.
-- CloudWatch EMF dimensions intentionally exclude tenant/user/automation/run IDs to avoid high-cardinality custom-metric cost amplification; those values remain searchable log correlation fields.
-- This slice adds no package dependency and therefore should not change the reviewed pnpm lock snapshot. The SES SDK binding remains part of deployment composition rather than introducing a dependency before the user-identity email resolver exists.
-- Browser action verification, bounded workflow retries, occurrence idempotency, automation locking, BYOK secret access, and human-recovery semantics are unchanged.
+- SES delivery remains best-effort reporting only. A mail outage cannot mutate run/checkpoint state or trigger browser/model replay.
+- Recipient email is resolved from trusted ownership context; scheduled payloads still cannot select arbitrary destinations.
+- The sender identity is deployment configuration. Raw BYOK keys, workload tokens, cookies, browser state, raw provider failures, and evidence content are not added to email or telemetry.
+- IAM grants only `ses:SendEmail` on the configured verified sender identity rather than broad SES permissions.
+- CloudWatch custom metrics keep only `Service` + `Outcome` dimensions; tenant/user/automation/run IDs remain log fields, avoiding high-cardinality metric amplification.
+- DLQ and outcome alarms surface transport/execution degradation without adding retries beyond the existing Scheduler/SQS/Step Functions and workflow budgets.
+- The new direct dependency `@aws-sdk/client-sesv2` is pinned to the existing AWS SDK alignment line (`3.1111.0`). This intentionally changes the pnpm dependency graph; the deterministic lock gate must expose and authenticate the new exact graph before the lock hash is updated.
+- Browser verification, schedule idempotency, automation locking, BYOK selection, and human recovery are unchanged.
 
 ### Tests added
 
 Regression coverage proves:
 
-- success telemetry and `notifyOnSuccess` behavior,
-- human-attention notification even when ordinary failure email is disabled,
-- raw failure/evidence data exclusion from telemetry and email,
-- duplicate-delivery email suppression,
-- reporting-outage warnings are sanitized and non-authoritative,
-- cross-tenant reporting context rejection,
-- CloudWatch EMF uses low-cardinality dimensions while retaining correlation fields,
-- SES destination resolution is ownership-scoped and rejects cross-user or malformed recipients,
-- the scheduled handler reports the durable preflight checkpoint after a `BLOCKED` occurrence and performs no reporting lookup before trusted-scope validation.
+- sanitized notification fields map to exactly one SES v2 `SendEmailCommand`,
+- malformed SES regions fail before SDK invocation,
+- missing sender/region/resolver produces explicit email `NOT_CONFIGURED` while EMF telemetry still reports the run,
+- configured reporting resolves the owner through the trusted resolver and sends to that destination through SES,
+- no change to the existing cross-user rejection boundary in `AwsSesNotificationPort`.
 
 ### Validation status
 
-- No package manifest or lock snapshot changed.
-- Implementation, tests, exports, handler integration, and this progress update are published as one normal CI-triggering Git-data commit.
-- Exact-head GitHub Actions remains authoritative. A corrective commit is permitted only if CI exposes a concrete defect that is root-caused from Actions logs.
+- Implementation, tests, dependency declaration, exports, IaC, and this progress update are being published as one normal CI-triggering Git-data commit.
+- Because `@aws-sdk/client-sesv2` changes the reviewed dependency graph, the first CI run is expected to stop at the deterministic lock-snapshot gate with a new SHA-256. That failure is a supply-chain review boundary, not permission to bypass the gate. One corrective commit may update only the reviewed snapshot and any separately root-caused CI defect.
+- Exact-head GitHub Actions remains authoritative; no green result is claimed until it exists.
 
 ## Next product milestones
 
-1. Compose the concrete control-plane Lambda + Cognito/API Gateway stack and scheduler/SQS/Step Functions/AgentCore execution stack behind explicit environment/IaC outputs, including the trusted invocation scope and runtime headers consumed by `AwsScheduledRunHandler`.
-2. Bind `AwsSesNotificationPort` to the official AWS SES SDK and a trusted Cognito/user-email resolver in that deployment composition; expose explicit `NOT_CONFIGURED` state when sender identity/email resolution is unavailable.
-3. Add CloudWatch alarms/dashboard signals for DLQ depth, scheduled-run failure/attention rate, browser/runtime errors, and provider availability without high-cardinality custom metrics.
-4. Perform one controlled real AWS demonstration covering sign-in -> credential setup -> capture -> compile/test -> publish -> scheduled cloud browser execution -> OpenAI BYOK reasoning -> verification/history/email and one bounded human takeover/resume path.
-5. Add Google federation to Cognito once deployment-owned Google OAuth credentials are available; never hard-code them in normal metadata.
+1. Compose the actual scheduled-run worker/bootstrap from stack outputs: DynamoDB repositories, Browser/Browser Profile, AgentCore Identity vault, OpenAI reasoner, trusted invocation scope/runtime headers, and the reporting composition added here.
+2. Add a trusted user-directory/email resolver backed by authenticated control-plane data or Cognito administration data; never derive an email by guessing from `sub`.
+3. Compose the control-plane Lambda handler from Cognito/API Gateway verified claims and existing control-plane HTTP service, with explicit deployment `NOT_CONFIGURED` states where backing stores are absent.
+4. Perform one controlled real AWS demonstration: sign in -> BYOK -> capture -> compile/test -> publish -> schedule -> cloud browser/OpenAI execution -> verification/history/email, plus one bounded human takeover/resume path.
+5. Add Google federation only after deployment-owned Google OAuth credentials exist.
 
 ## Known parked limitations
 
 - Recovery continuation consumption remains parked until a production cloud worker integration specifically requires it.
 - Sensitive target-site runtime values still need a separate secret-resolution contract; never place passwords, cookies, provider keys, or equivalent secrets in workflow/runtime-variable metadata.
-- The trusted scheduled handler exists, but the final deployed AgentCore/Lambda wrapper that constructs DynamoDB/Browser/Identity/reporting adapters from stack outputs remains the main deployment-composition milestone.
-- SES transport and recipient resolution are explicit ports in this slice; live AWS SES SDK/Cognito resolver composition is intentionally deferred to the deployment wrapper so user email cannot be guessed from Cognito `sub`.
-- Live OpenAI provider and SES validation are still pending the controlled AWS environment/demo; CI uses deterministic fakes and never requires user credentials.
-- Gemini/other concrete provider adapters are intentionally deferred until the first real OpenAI-backed vertical slice is deployed; core contracts do not require redesign for them.
-- Credential health metadata has no compare-and-set generation; concurrent reasoning calls may race advisory health bookkeeping. It is not execution authority and cannot duplicate browser effects.
+- The trusted scheduled handler and reporting composition exist, but the final deployed worker bootstrap that constructs all DynamoDB/Browser/Identity dependencies from stack outputs remains the main execution deployment seam.
+- The SES SDK transport exists, but a real trusted user-email resolver is still required before production email can be configured. Missing resolver is explicit `NOT_CONFIGURED`.
+- Notification delivery is intentionally best-effort rather than durable/outboxed; add durable notification retry only if live deployment demonstrates a product need.
+- Live OpenAI/SES/AgentCore validation remains pending the controlled AWS environment; CI uses deterministic fakes and never requires user credentials.
 - Public HTTP command idempotency, deployment-level capture-worker authentication middleware, and broader production API rate limiting remain control-plane work.
-- Notification delivery is currently best-effort rather than durable/outboxed. This may lose an email during an SES outage, but intentionally does not trigger execution replay; add durable notification retry only if the real deployment demonstrates the need.
 - Real AWS credentials are not available in CI, so AWS service boundaries are validated with deterministic tests; live deployment remains an explicit later gate.

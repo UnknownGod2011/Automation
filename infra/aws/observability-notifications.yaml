@@ -1,0 +1,160 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Automation scheduled-run notifications and low-cardinality CloudWatch observability
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+    AllowedPattern: '^[A-Za-z0-9-]+$'
+  WorkerFunctionRoleName:
+    Type: String
+    Description: IAM role name used by the scheduled-run worker Lambda/runtime wrapper.
+  SesFromIdentityArn:
+    Type: String
+    Description: ARN of the verified SES sender identity used for automation notifications.
+  DispatchDeadLetterQueueName:
+    Type: String
+    Description: Name of the scheduling dispatch DLQ created by scheduling-dispatch.yaml.
+  MetricNamespace:
+    Type: String
+    Default: AutomationPlatform
+  MetricService:
+    Type: String
+    Default: scheduled-run
+
+Resources:
+  ScheduledRunSesPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub 'automation-${EnvironmentName}-scheduled-run-ses'
+      Roles:
+        - !Ref WorkerFunctionRoleName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - ses:SendEmail
+            Resource: !Ref SesFromIdentityArn
+
+  OperationalAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'automation-${EnvironmentName}-operational-alerts'
+
+  DispatchDlqDepthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'automation-${EnvironmentName}-dispatch-dlq-visible'
+      AlarmDescription: Scheduled dispatch messages are accumulating in the dead-letter queue.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !Ref DispatchDeadLetterQueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OperationalAlertsTopic
+
+  ScheduledRunFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'automation-${EnvironmentName}-scheduled-run-failures'
+      AlarmDescription: One or more scheduled runs reported FAILED in the observation window.
+      Namespace: !Ref MetricNamespace
+      MetricName: ScheduledRunCount
+      Dimensions:
+        - Name: Service
+          Value: !Ref MetricService
+        - Name: Outcome
+          Value: FAILED
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OperationalAlertsTopic
+
+  ScheduledRunAttentionAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'automation-${EnvironmentName}-scheduled-run-attention'
+      AlarmDescription: One or more scheduled runs entered a human-attention state.
+      Namespace: !Ref MetricNamespace
+      MetricName: ScheduledRunCount
+      Dimensions:
+        - Name: Service
+          Value: !Ref MetricService
+        - Name: Outcome
+          Value: NEEDS_ATTENTION
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OperationalAlertsTopic
+
+  ScheduledRunDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub 'automation-${EnvironmentName}-scheduled-runs'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Scheduled run outcomes",
+                "region": "${AWS::Region}",
+                "stat": "Sum",
+                "period": 300,
+                "metrics": [
+                  ["${MetricNamespace}", "ScheduledRunCount", "Service", "${MetricService}", "Outcome", "SUCCEEDED"],
+                  [".", ".", ".", ".", ".", "FAILED"],
+                  [".", ".", ".", ".", ".", "NEEDS_ATTENTION"],
+                  [".", ".", ".", ".", ".", "DUPLICATE"]
+                ]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Dispatch DLQ depth",
+                "region": "${AWS::Region}",
+                "stat": "Maximum",
+                "period": 60,
+                "metrics": [
+                  ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${DispatchDeadLetterQueueName}"]
+                ]
+              }
+            }
+          ]
+        }
+
+Outputs:
+  OperationalAlertsTopicArn:
+    Value: !Ref OperationalAlertsTopic
+  ScheduledRunDashboardName:
+    Value: !Ref ScheduledRunDashboard
+  SesFromEmailEnvironmentVariable:
+    Value: AUTOMATION_SES_FROM_EMAIL
+  CloudWatchNamespaceEnvironmentVariable:
+    Value: AUTOMATION_CLOUDWATCH_NAMESPACE
