@@ -9,6 +9,7 @@ export * from "./cognito-auth.js";
 export * from "./cognito-user-email.js";
 export * from "./cloudwatch-telemetry.js";
 export * from "./config.js";
+export * from "./control-plane-bootstrap.js";
 export * from "./control-plane-lambda.js";
 export * from "./credential-metadata.js";
 export * from "./dynamodb-state.js";

@@ -29,12 +29,53 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - API Gateway HTTP API payload-format 2.0 transport maps already-verified Cognito claims to the provider-neutral control-plane handler without parsing raw bearer tokens or trusting request-supplied ownership.
 - Completed capture traces now have durable AWS persistence using tenant-scoped DynamoDB metadata plus immutable S3 documents.
 - Production fresh-test execution now has an AgentCore Runtime transport and execution-plane mode that reuses the hardened browser/BYOK worker without falling back to API-Lambda browser/model execution.
+- `createAwsControlPlaneBootstrap` composes the production control-plane service graph from DynamoDB/S3 persistence, AgentCore Browser/Profile capture, AgentCore Identity credential management, AgentCore Runtime fresh tests, EventBridge Scheduler, Cognito-authenticated HTTP transport, and a separate trusted capture-completion handler.
 
 ## Authoritative incoming validation
 
 - PR #1 is the open draft development PR on `agent/bootstrap-platform`.
-- Incoming head `6dcf6301f7f751c058d28c1baf4b044a1b0b8f8b` is green on GitHub Actions CI #171.
+- Incoming head `904a6682a6b84944c89eb9bb0a60a1c8f6b29136` is green on GitHub Actions CI #172.
 - GitHub Actions on the exact new head created by this run is authoritative. Do not claim this slice green until deterministic lock verification, frozen install, `pnpm check`, AgentCore package smoke testing, Next.js build/type validation, and the complete test suite have succeeded.
+
+## 2026-08-20 — production AWS control-plane composition
+
+### Product slice
+
+Added `createAwsControlPlaneBootstrap` as the concrete production composition boundary behind the already-existing API Gateway Lambda adapter. The bootstrap aggregates the deployment contracts for region, DynamoDB state, S3 artifacts, Cognito authorization, AgentCore Runtime fresh testing, and EventBridge Scheduler. Missing mandatory configuration returns one explicit `NOT_CONFIGURED` result before the control plane advertises cloud capability.
+
+The configured graph now wires:
+
+- `AwsDynamoAutomationRepository`, run/checkpoint state, and automation locks,
+- immutable S3/Dynamo workflow versions and capture traces,
+- durable capture-session state,
+- AgentCore Browser Profiles plus Live View capture startup,
+- the separate trusted capture-completion service that saves Browser Profile state before accepting a trace,
+- AgentCore Identity credential storage plus sanitized credential metadata management,
+- `AwsAgentCoreFreshTestExecutionPort` for production fresh tests outside the API Lambda,
+- the real EventBridge Scheduler adapter used by lifecycle publish,
+- Cognito-authenticated `AutomationControlPlaneHttpHandler` and the API Gateway payload-format 2.0 Lambda transport.
+
+`AutomationProductLifecycleService` still has local browser/verifier/reasoner dependencies because local/mock mode uses them. In the production control-plane composition they are explicit fail-closed sentinels, while `cloudExecution = CONFIGURED` requires the AgentCore fresh-test port. The API path therefore cannot silently execute browser/model work inside Lambda if cloud composition regresses.
+
+Trusted capture completion remains a separate returned handler rather than being registered in the ordinary Cognito end-user HTTP router. This preserves the existing deployment-authentication requirement for capture workers/callbacks.
+
+### Correctness / security / tenancy / idempotency / retry / cost / observability review
+
+- Authenticated tenant/user scope continues to come from the Cognito/API Gateway boundary; server-owned Browser Profile and AgentCore Identity references are resolved from authorized automation state rather than request JSON.
+- Production fresh tests use the AgentCore Runtime invocation port and never fall through to local browser/model execution.
+- Publishing now reaches the concrete Scheduler adapter through the existing lifecycle `scheduler.upsert` path, so schedule creation/update uses the same tenant-scoped resource identity and occurrence envelope already covered by scheduler tests.
+- The bootstrap adds no whole-request retry around AgentCore fresh testing, capture startup, or Scheduler mutation. Existing execution-plane occurrence idempotency, locks, bounded workflow retries, and side-effect verification remain authoritative.
+- Capture completion remains profile-save-before-trace and is not exposed through the JWT user route.
+- BYOK raw keys continue to cross only the AgentCore Identity vault boundary; credential responses expose no secret reference or plaintext key.
+- Notification capability is advertised only when both a configured SES sender and trusted Cognito user directory are present. Missing notification configuration does not prevent the rest of the control plane from being constructed.
+- No package dependency, pnpm graph, table, bucket, queue, browser session, model call, CI artifact, or custom metric dimension was added by this composition slice. SDK clients are constructed lazily with the standard AWS credential provider chain and make no cloud calls during bootstrap.
+- The deployable API Lambda resource/IAM role is deliberately still separate work: composition now knows the Runtime ARN and Scheduler resources, but deployment must grant only the required DynamoDB/S3/AgentCore/Identity/Scheduler/Runtime permissions rather than broadening this code boundary.
+
+### Tests / validation
+
+Regression coverage was added for aggregated production `NOT_CONFIGURED` state, construction of the full cloud-backed control-plane graph without AWS credentials or network calls, notification capability gating, and malformed AgentCore Runtime configuration rejection. The production composition is exported through `@automation/aws`.
+
+This implementation, tests, and progress update are being published as one normal CI-triggering Git-data commit. Exact-head GitHub Actions remains authoritative; no pass is claimed until that run completes successfully.
 
 ## 2026-08-20 — AgentCore cloud fresh-test execution
 
@@ -144,19 +185,18 @@ Normal implementation head `b1e2fb618387e851cd7b13d2a17e28a4baff3d6c` reached CI
 
 ## Next product milestones
 
-1. Compose the concrete production `AutomationControlPlaneService` graph behind the existing Lambda transport using DynamoDB automation/run state, S3/Dynamo capture persistence, S3 workflow versions, AgentCore Browser/Profile capture startup, capture completion state, AgentCore Identity credential management, `AwsAgentCoreFreshTestExecutionPort`, and the real Scheduler port, with aggregated `NOT_CONFIGURED` deployment state.
-2. Add the deployable control-plane Lambda/IAM resource and wire the AgentCore Runtime ARN output into it with least-privilege `bedrock-agentcore:InvokeAgentRuntime` and `bedrock-agentcore:InvokeAgentRuntimeForUser`; keep Runtime workload tokens out of API payloads.
-3. Wire publish/update/disable lifecycle operations to deployed EventBridge Scheduler resources automatically, using stack outputs for dispatch queue/role/group rather than manual environment assembly.
-4. Add the Runtime artifact upload/deploy release command around the tested ZIP, requiring a versioned S3 object in production.
-5. Perform one controlled real AWS demonstration: sign in -> BYOK -> capture -> compile/test -> publish -> schedule -> AgentCore cloud browser/OpenAI execution -> verification/history/email, plus one bounded human takeover/resume path.
-6. Add Google federation/adapters only after the AWS vertical slice is demonstrably complete.
+1. Add the deployable control-plane Lambda resource/IAM role and wire the AgentCore Runtime ARN plus DynamoDB/S3/Browser/Profile/Identity/Scheduler permissions with least privilege; keep Runtime workload tokens out of API payloads.
+2. Add explicit update/disable lifecycle commands so schedule changes and pausing automatically update/disable the deployed EventBridge Scheduler resource. Publish already reaches the concrete Scheduler adapter through this control-plane composition.
+3. Add the Runtime artifact upload/deploy release command around the tested ZIP, requiring a versioned S3 object in production.
+4. Perform one controlled real AWS demonstration: sign in -> BYOK -> capture -> compile/test -> publish -> schedule -> AgentCore cloud browser/OpenAI execution -> verification/history/email, plus one bounded human takeover/resume path.
+5. Add Google federation/adapters only after the AWS vertical slice is demonstrably complete.
 
 ## Known parked limitations
 
 - Recovery continuation consumption remains parked until a production cloud worker integration specifically requires it.
 - Sensitive target-site runtime values still need a separate secret-resolution contract; never place passwords, cookies, provider keys, or equivalent secrets in workflow/runtime-variable metadata.
-- The API Gateway Lambda transport is defined, but the complete cloud-backed `AutomationControlPlaneService` composition and deployable control-plane Lambda resource remain in progress.
-- `AwsAgentCoreFreshTestExecutionPort` is implemented, but no control-plane composition currently injects the deployed Runtime ARN/client or grants the API Lambda invoke-for-user permission; production capability must remain `NOT_CONFIGURED` until that wiring exists.
+- The cloud-backed `AutomationControlPlaneService` graph is now composed in code, but the deployable control-plane Lambda resource/IAM role and deployment wrapper are still required before a live API can use it.
+- `AwsAgentCoreFreshTestExecutionPort` is now injected by the production control-plane bootstrap, but the future API Lambda role must still grant the exact AgentCore Runtime invocation capability before production can advertise this deployment as live.
 - Trusted capture-completion worker authentication remains a separate deployment boundary; it must not be exposed through the ordinary end-user JWT route.
 - The Runtime resource/package is represented in code/IaC, but live creation and invocation still require a controlled AWS deployment and uploaded Runtime ZIP; CI intentionally uses no cloud credentials.
 - `PUBLIC` Runtime networking is suitable for the arbitrary-web MVP but should be revisited for production environments that can provide VPC egress without breaking permitted target-site access.
