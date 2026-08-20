@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { WebControlPlaneClient, type FetchLike } from "./control-plane-client.js";
+import { WebControlPlaneClient, readWebControlPlaneConfig, type FetchLike } from "./control-plane-client.js";
 
 describe("WebControlPlaneClient", () => {
   it("returns an explicit NOT_CONFIGURED dashboard without making a network request", async () => {
@@ -19,7 +19,14 @@ describe("WebControlPlaneClient", () => {
     });
   });
 
-  it("keeps the bearer token server-side and encodes automation ids", async () => {
+  it("does not load a static control-plane token from deployment environment", () => {
+    expect(readWebControlPlaneConfig({
+      AUTOMATION_CONTROL_PLANE_URL: "https://control.example.test",
+      AUTOMATION_CONTROL_PLANE_BEARER_TOKEN: "legacy-token",
+    })).toEqual({ baseUrl: "https://control.example.test" });
+  });
+
+  it("keeps a request-scoped bearer token server-side and encodes automation ids", async () => {
     const fetchImpl = vi.fn<FetchLike>(async () =>
       new Response(JSON.stringify({ runs: [] }), {
         status: 200,
@@ -27,7 +34,7 @@ describe("WebControlPlaneClient", () => {
       }),
     );
     const client = new WebControlPlaneClient(
-      { baseUrl: "https://control.example.test", bearerToken: "server-secret-token" },
+      { baseUrl: "https://control.example.test", bearerToken: "request-scoped-token" },
       fetchImpl,
     );
 
@@ -36,12 +43,12 @@ describe("WebControlPlaneClient", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0]!;
     expect(String(url)).toBe("https://control.example.test/v1/automations/customer%2Fdemo/runs");
-    expect(init?.headers).toMatchObject({ authorization: "Bearer server-secret-token" });
+    expect(init?.headers).toMatchObject({ authorization: "Bearer request-scoped-token" });
   });
 
   it("does not surface remote error bodies", async () => {
     const fetchImpl = vi.fn<FetchLike>(async () =>
-      new Response(JSON.stringify({ error: { message: "provider secret: abc123" } }), { status: 500 }),
+      new Response(JSON.stringify({ error: { message: "upstream-private-detail" } }), { status: 500 }),
     );
     const client = new WebControlPlaneClient(
       { baseUrl: "https://control.example.test", bearerToken: "token" },

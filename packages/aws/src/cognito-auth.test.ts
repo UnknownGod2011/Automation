@@ -26,13 +26,13 @@ describe("Cognito control-plane authentication", () => {
     });
   });
 
-  it("derives ownership from trusted deployment tenant plus Cognito sub", () => {
+  it("derives ownership from trusted deployment tenant plus access-token sub", () => {
     const resolved = resolveCognitoControlPlaneContext(
       context({
         iss: config.issuer,
-        aud: config.audience,
+        client_id: config.audience,
         sub: "cognito-user-42",
-        token_use: "id",
+        token_use: "access",
         tenantId: "attacker-tenant",
         userId: "attacker-user",
       }),
@@ -44,39 +44,26 @@ describe("Cognito control-plane authentication", () => {
     });
   });
 
-  it("accepts the expected app client in an audience array", () => {
-    const resolved = resolveCognitoControlPlaneContext(
-      context({
-        iss: config.issuer,
-        aud: ["other-client", config.audience],
-        sub: "cognito-user-42",
-        token_use: "id",
-      }),
-      config,
-    );
-    expect(resolved.scope.userId).toBe("cognito-user-42");
-  });
-
   it.each([
     ["missing claims", {}, "authenticated JWT claims are missing"],
     [
       "wrong issuer",
-      context({ iss: "https://evil.example", aud: config.audience, sub: "user", token_use: "id" }),
+      context({ iss: "https://evil.example", client_id: config.audience, sub: "user", token_use: "access" }),
       "authenticated Cognito identity is invalid",
     ],
     [
-      "wrong audience",
-      context({ iss: config.issuer, aud: "other-client", sub: "user", token_use: "id" }),
+      "wrong client",
+      context({ iss: config.issuer, client_id: "other-client", sub: "user", token_use: "access" }),
       "authenticated Cognito identity is invalid",
     ],
     [
-      "access token",
-      context({ iss: config.issuer, client_id: config.audience, sub: "user", token_use: "access" }),
+      "id token",
+      context({ iss: config.issuer, aud: config.audience, sub: "user", token_use: "id" }),
       "authenticated Cognito identity is invalid",
     ],
     [
       "missing subject",
-      context({ iss: config.issuer, aud: config.audience, token_use: "id" }),
+      context({ iss: config.issuer, client_id: config.audience, token_use: "access" }),
       "authenticated Cognito identity is invalid",
     ],
   ])("rejects %s", (_name, requestContext, message) => {
@@ -98,7 +85,7 @@ describe("Cognito control-plane authentication", () => {
     if (!configured.configured) throw new Error("expected configured resolver");
     expect(
       configured.resolve(
-        context({ iss: config.issuer, aud: config.audience, sub: "user-1", token_use: "id" }),
+        context({ iss: config.issuer, client_id: config.audience, sub: "user-1", token_use: "access" }),
       ),
     ).toEqual({ scope: { tenantId: config.tenantId, userId: "user-1" } });
   });

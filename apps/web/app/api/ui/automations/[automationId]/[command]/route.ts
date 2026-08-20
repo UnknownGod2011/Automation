@@ -1,12 +1,10 @@
 import { NextResponse } from "next/server";
-import { WebControlPlaneClient, WebControlPlaneError } from "../../../../../../lib/control-plane-client";
+import { WebControlPlaneError } from "../../../../../../lib/control-plane-client";
 import { isSameOriginMutation } from "../../../../../../lib/mutation-security";
+import { createAuthenticatedWebControlPlaneClient, WebAuthError } from "../../../../../../lib/server-auth";
 
 function redirectBack(request: Request, automationId: string, notice: string): NextResponse {
-  return NextResponse.redirect(
-    new URL(`/automations/${encodeURIComponent(automationId)}?notice=${encodeURIComponent(notice)}`, request.url),
-    303,
-  );
+  return NextResponse.redirect(new URL(`/automations/${encodeURIComponent(automationId)}?notice=${encodeURIComponent(notice)}`, request.url), 303);
 }
 
 function positiveInteger(value: FormDataEntryValue | null): number | null {
@@ -14,21 +12,14 @@ function positiveInteger(value: FormDataEntryValue | null): number | null {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
-export async function POST(
-  request: Request,
-  context: { params: Promise<{ automationId: string; command: string }> },
-): Promise<NextResponse> {
-  if (!isSameOriginMutation(request.url, request.headers)) {
-    return new NextResponse("Forbidden", { status: 403 });
-  }
+export async function POST(request: Request, context: { params: Promise<{ automationId: string; command: string }> }): Promise<NextResponse> {
+  if (!isSameOriginMutation(request.url, request.headers)) return new NextResponse("Forbidden", { status: 403 });
   const { automationId, command } = await context.params;
-  if (!automationId || !["capture", "compile", "test", "publish"].includes(command)) {
-    return new NextResponse("Not found", { status: 404 });
-  }
+  if (!automationId || !["capture", "compile", "test", "publish"].includes(command)) return new NextResponse("Not found", { status: 404 });
   const form = await request.formData();
-  const client = new WebControlPlaneClient();
 
   try {
+    const client = await createAuthenticatedWebControlPlaneClient();
     if (command === "capture") {
       const result = await client.capture(automationId);
       if (result.kind === "NOT_CONFIGURED") return redirectBack(request, automationId, "not-configured");
@@ -52,9 +43,7 @@ export async function POST(
       let runtimeVariables: Record<string, unknown> | undefined;
       if (rawVariables) {
         const parsed: unknown = JSON.parse(rawVariables);
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-          return redirectBack(request, automationId, "invalid-input");
-        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return redirectBack(request, automationId, "invalid-input");
         runtimeVariables = parsed as Record<string, unknown>;
       }
       await client.command(automationId, "test", { runId, ...(runtimeVariables ? { runtimeVariables } : {}) });
@@ -65,18 +54,12 @@ export async function POST(
     const kind = String(form.get("kind") ?? "");
     const expression = String(form.get("expression") ?? "").trim();
     const timezone = String(form.get("timezone") ?? "").trim();
-    if (!workflowVersion || !["HOURLY", "DAILY", "WEEKLY", "CRON"].includes(kind) || !expression || !timezone) {
-      return redirectBack(request, automationId, "invalid-input");
-    }
-    await client.command(automationId, "publish", {
-      workflowVersion,
-      schedule: { kind, expression, timezone },
-    });
+    if (!workflowVersion || !["HOURLY", "DAILY", "WEEKLY", "CRON"].includes(kind) || !expression || !timezone) return redirectBack(request, automationId, "invalid-input");
+    await client.command(automationId, "publish", { workflowVersion, schedule: { kind, expression, timezone } });
     return redirectBack(request, automationId, "published");
   } catch (error) {
-    if (error instanceof WebControlPlaneError && error.code === "NOT_CONFIGURED") {
-      return redirectBack(request, automationId, "not-configured");
-    }
+    if (error instanceof WebAuthError) return NextResponse.redirect(new URL(`/api/auth/sign-in?returnTo=${encodeURIComponent(`/automations/${automationId}`)}`, request.url), 303);
+    if (error instanceof WebControlPlaneError && error.code === "NOT_CONFIGURED") return redirectBack(request, automationId, "not-configured");
     return redirectBack(request, automationId, "request-failed");
   }
 }

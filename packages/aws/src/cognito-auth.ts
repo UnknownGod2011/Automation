@@ -38,11 +38,6 @@ function claimString(claims: Readonly<Record<string, unknown>>, name: string): s
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
-function audienceMatches(value: unknown, expected: string): boolean {
-  if (typeof value === "string") return value === expected;
-  return Array.isArray(value) && value.every((entry) => typeof entry === "string") && value.includes(expected);
-}
-
 export function loadAwsCognitoControlPlaneAuthConfig(
   env: Readonly<Record<string, string | undefined>>,
 ): AwsCognitoControlPlaneAuthConfigResult {
@@ -64,10 +59,10 @@ export function loadAwsCognitoControlPlaneAuthConfig(
 }
 
 /**
- * Converts claims already verified by an API Gateway JWT authorizer into the
- * provider-neutral control-plane identity. This function does not accept a raw
- * bearer token and is not a JWT verifier; API Gateway remains the signature,
- * expiry, issuer and audience verification boundary.
+ * Converts access-token claims already verified by an API Gateway JWT authorizer
+ * into the provider-neutral control-plane identity. API Gateway remains the
+ * signature, expiry, issuer, audience/client-id and OAuth-scope verification
+ * boundary; this adapter never parses or verifies raw bearer tokens.
  */
 export function resolveCognitoControlPlaneContext(
   requestContext: ApiGatewayJwtAuthorizerContext,
@@ -79,7 +74,8 @@ export function resolveCognitoControlPlaneContext(
   const issuer = claimString(claims, "iss");
   const subject = claimString(claims, "sub");
   const tokenUse = claimString(claims, "token_use");
-  if (issuer !== config.issuer || !audienceMatches(claims.aud, config.audience) || tokenUse !== "id" || !subject) {
+  const clientId = claimString(claims, "client_id");
+  if (issuer !== config.issuer || clientId !== config.audience || tokenUse !== "access" || !subject) {
     throw new AwsCognitoAuthError("UNAUTHENTICATED", "authenticated Cognito identity is invalid");
   }
 
