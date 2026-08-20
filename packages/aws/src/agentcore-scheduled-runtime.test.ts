@@ -1,8 +1,10 @@
 import type { ScheduledRunWorkerResult } from "@automation/core";
 import { describe, expect, it } from "vitest";
 import {
+  AGENTCORE_RUNTIME_USER_ID_HEADER,
   AwsAgentCoreScheduledRuntimeEntrypoint,
   createAwsAgentCoreScheduledRuntime,
+  createAwsAgentCoreScheduledRuntimeInvocationFromHttp,
   readAwsAgentCoreScheduledRuntimeConfiguration,
 } from "./agentcore-scheduled-runtime.js";
 import type { AwsScheduledRunInvocation } from "./scheduled-run-handler.js";
@@ -55,6 +57,47 @@ describe("AgentCore scheduled runtime configuration", () => {
         "OPENAI_BYOK_MODEL",
       ],
     });
+  });
+});
+
+describe("AgentCore Runtime HTTP invocation boundary", () => {
+  it("derives Runtime user identity from a case-insensitive managed header", () => {
+    const payload = { automationId: "auto-1" };
+    expect(
+      createAwsAgentCoreScheduledRuntimeInvocationFromHttp({
+        headers: {
+          "X-Amzn-Bedrock-AgentCore-Runtime-User-Id": "user-1",
+          WorkloadAccessToken: "runtime-token",
+        },
+        payload,
+      }),
+    ).toEqual({
+      runtimeUserId: "user-1",
+      headers: {
+        [AGENTCORE_RUNTIME_USER_ID_HEADER]: "user-1",
+        workloadaccesstoken: "runtime-token",
+      },
+      payload,
+    });
+  });
+
+  it("fails closed on ambiguous multi-valued or conflicting managed headers", () => {
+    expect(() =>
+      createAwsAgentCoreScheduledRuntimeInvocationFromHttp({
+        headers: { WorkloadAccessToken: ["token-a", "token-b"] },
+        payload: {},
+      }),
+    ).toThrow("multi-valued invocation header");
+
+    expect(() =>
+      createAwsAgentCoreScheduledRuntimeInvocationFromHttp({
+        headers: {
+          WorkloadAccessToken: "token-a",
+          workloadaccesstoken: "token-b",
+        },
+        payload: {},
+      }),
+    ).toThrow("conflicting invocation headers");
   });
 });
 

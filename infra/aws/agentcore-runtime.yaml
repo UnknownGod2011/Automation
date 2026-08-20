@@ -1,0 +1,223 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Production AgentCore Runtime host for scheduled cloud-browser automation execution.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+    AllowedPattern: '^[A-Za-z0-9-]+$'
+  AgentRuntimeName:
+    Type: String
+    Default: AutomationScheduledRuntime
+    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9_]{0,47}$'
+  AutomationTenantId:
+    Type: String
+    MinLength: 1
+    MaxLength: 256
+    NoEcho: true
+    Description: Deployment-owned tenant scope; never accepted from scheduled payloads.
+  RuntimeCodeBucket:
+    Type: String
+    AllowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+  RuntimeCodePrefix:
+    Type: String
+    MinLength: 1
+    MaxLength: 1024
+    Description: S3 object key/prefix containing the packaged AgentCore Runtime ZIP.
+  RuntimeCodeVersionId:
+    Type: String
+    Default: ''
+    Description: Optional immutable S3 object VersionId. Production deployments should set this.
+  StateTableName:
+    Type: String
+    MinLength: 3
+  ArtifactBucketName:
+    Type: String
+    AllowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+  ArtifactPrefix:
+    Type: String
+    Default: automation
+    MinLength: 1
+    MaxLength: 512
+  ArtifactKmsKeyArn:
+    Type: String
+    Default: ''
+    Description: Optional customer-managed KMS key used by the S3 artifact adapter.
+  AgentCoreBrowserIdentifier:
+    Type: String
+    Default: aws.browser.v1
+    MinLength: 1
+    MaxLength: 256
+  AgentCoreBrowserResourceArn:
+    Type: String
+    Description: Exact ARN of the AgentCore Browser resource used by scheduled runs.
+  OpenAiByokModel:
+    Type: String
+    MinLength: 1
+    MaxLength: 256
+  BrowserSessionTimeoutSeconds:
+    Type: Number
+    Default: 3600
+    MinValue: 1
+    MaxValue: 28800
+  IdleRuntimeSessionTimeoutSeconds:
+    Type: Number
+    Default: 300
+    MinValue: 60
+    MaxValue: 28800
+  MaxRuntimeLifetimeSeconds:
+    Type: Number
+    Default: 3600
+    MinValue: 60
+    MaxValue: 28800
+
+Conditions:
+  HasRuntimeCodeVersion: !Not [!Equals [!Ref RuntimeCodeVersionId, '']]
+  HasArtifactKmsKey: !Not [!Equals [!Ref ArtifactKmsKeyArn, '']]
+
+Resources:
+  ScheduledRuntimeExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'automation-${EnvironmentName}-agentcore-runtime'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AgentCoreRuntimeAssumeRole
+            Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:runtime/*'
+      Policies:
+        - PolicyName: RuntimeCodeRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${RuntimeCodeBucket}/${RuntimeCodePrefix}'
+        - PolicyName: DurableExecutionState
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:TransactWriteItems
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${StateTableName}'
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${StateTableName}/index/*'
+        - PolicyName: ProtectedArtifacts
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/${ArtifactPrefix}/*'
+              - !If
+                - HasArtifactKmsKey
+                - Effect: Allow
+                  Action:
+                    - kms:Encrypt
+                    - kms:Decrypt
+                    - kms:GenerateDataKey
+                  Resource: !Ref ArtifactKmsKeyArn
+                - !Ref AWS::NoValue
+        - PolicyName: AgentCoreBrowserExecution
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock-agentcore:StartBrowserSession
+                  - bedrock-agentcore:StopBrowserSession
+                  - bedrock-agentcore:SaveBrowserSessionProfile
+                Resource:
+                  - !Ref AgentCoreBrowserResourceArn
+                  - !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:browser-profile/*'
+              - Effect: Allow
+                Action: bedrock-agentcore:ConnectBrowserAutomationStream
+                Resource: '*'
+        - PolicyName: AgentCoreByokRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: bedrock-agentcore:GetResourceApiKey
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:token-vault/*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:token-vault/*/apikeycredentialprovider/automation_*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default'
+                  - !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default/workload-identity/*'
+        - PolicyName: AgentCoreRuntimeLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*:log-stream:*'
+
+  ScheduledAgentRuntime:
+    Type: AWS::BedrockAgentCore::Runtime
+    Properties:
+      AgentRuntimeName: !Ref AgentRuntimeName
+      Description: !Sub 'Automation scheduled browser worker (${EnvironmentName})'
+      RoleArn: !GetAtt ScheduledRuntimeExecutionRole.Arn
+      AgentRuntimeArtifact:
+        CodeConfiguration:
+          Code:
+            S3:
+              Bucket: !Ref RuntimeCodeBucket
+              Prefix: !Ref RuntimeCodePrefix
+              VersionId: !If [HasRuntimeCodeVersion, !Ref RuntimeCodeVersionId, !Ref AWS::NoValue]
+          EntryPoint:
+            - runtime-http.mjs
+          Runtime: NODE_22
+      NetworkConfiguration:
+        NetworkMode: PUBLIC
+      LifecycleConfiguration:
+        IdleRuntimeSessionTimeout: !Ref IdleRuntimeSessionTimeoutSeconds
+        MaxLifetime: !Ref MaxRuntimeLifetimeSeconds
+      EnvironmentVariables:
+        AUTOMATION_TENANT_ID: !Ref AutomationTenantId
+        AWS_DYNAMODB_TABLE: !Ref StateTableName
+        AWS_ARTIFACT_BUCKET: !Ref ArtifactBucketName
+        AWS_ARTIFACT_PREFIX: !Ref ArtifactPrefix
+        AWS_ARTIFACT_KMS_KEY_ID: !If [HasArtifactKmsKey, !Ref ArtifactKmsKeyArn, '']
+        AWS_AGENTCORE_BROWSER_IDENTIFIER: !Ref AgentCoreBrowserIdentifier
+        AWS_AGENTCORE_BROWSER_SESSION_TIMEOUT_SECONDS: !Sub '${BrowserSessionTimeoutSeconds}'
+        OPENAI_BYOK_MODEL: !Ref OpenAiByokModel
+      Tags:
+        managedBy: automation-platform
+        environment: !Ref EnvironmentName
+
+Outputs:
+  AgentRuntimeArn:
+    Value: !GetAtt ScheduledAgentRuntime.AgentRuntimeArn
+  AgentRuntimeId:
+    Value: !GetAtt ScheduledAgentRuntime.AgentRuntimeId
+  AgentRuntimeVersion:
+    Value: !GetAtt ScheduledAgentRuntime.AgentRuntimeVersion
+  AgentRuntimeExecutionRoleArn:
+    Value: !GetAtt ScheduledRuntimeExecutionRole.Arn

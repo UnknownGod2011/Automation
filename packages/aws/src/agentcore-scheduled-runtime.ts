@@ -11,6 +11,13 @@ import type {
 
 const TENANT_ID_ENV = "AUTOMATION_TENANT_ID";
 const MAX_RUNTIME_USER_ID_LENGTH = 128;
+export const AGENTCORE_RUNTIME_USER_ID_HEADER =
+  "x-amzn-bedrock-agentcore-runtime-user-id";
+
+export type AwsAgentCoreRuntimeHttpHeaderValue =
+  | string
+  | readonly string[]
+  | undefined;
 
 export type AwsAgentCoreScheduledRuntimeConfiguration =
   | { kind: "CONFIGURED"; tenantId: string }
@@ -31,6 +38,49 @@ export interface AwsAgentCoreScheduledRuntimeInvocation {
   headers: Readonly<Record<string, string | undefined>>;
   /** Scheduled dispatch payload supplied by Step Functions. */
   payload: unknown;
+}
+
+export interface AwsAgentCoreScheduledRuntimeHttpRequest {
+  headers: Readonly<Record<string, AwsAgentCoreRuntimeHttpHeaderValue>>;
+  payload: unknown;
+}
+
+function normalizeRuntimeHeaders(
+  input: Readonly<Record<string, AwsAgentCoreRuntimeHttpHeaderValue>>,
+): Readonly<Record<string, string>> {
+  const normalized: Record<string, string> = {};
+  for (const [rawName, rawValue] of Object.entries(input)) {
+    if (rawValue === undefined) continue;
+    const name = rawName.trim().toLowerCase();
+    if (!name) throw new Error("AgentCore Runtime returned an invalid header name");
+    const values = typeof rawValue === "string" ? [rawValue] : [...rawValue];
+    if (values.length !== 1) {
+      throw new Error("AgentCore Runtime returned a multi-valued invocation header");
+    }
+    const value = values[0] ?? "";
+    const existing = normalized[name];
+    if (existing !== undefined && existing !== value) {
+      throw new Error("AgentCore Runtime returned conflicting invocation headers");
+    }
+    normalized[name] = value;
+  }
+  return normalized;
+}
+
+/**
+ * Converts the managed Runtime HTTP request into the provider-specific host
+ * contract without trusting JSON payload fields for ownership. Header names are
+ * normalized case-insensitively and ambiguous duplicate values fail closed.
+ */
+export function createAwsAgentCoreScheduledRuntimeInvocationFromHttp(
+  request: AwsAgentCoreScheduledRuntimeHttpRequest,
+): AwsAgentCoreScheduledRuntimeInvocation {
+  const headers = normalizeRuntimeHeaders(request.headers);
+  return {
+    runtimeUserId: headers[AGENTCORE_RUNTIME_USER_ID_HEADER] ?? "",
+    headers,
+    payload: request.payload,
+  };
 }
 
 function validateRuntimeUserId(value: string): string {
