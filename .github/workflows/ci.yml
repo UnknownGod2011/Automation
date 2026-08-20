@@ -37,4 +37,7 @@ jobs:
       - name: Package control-plane Lambda
         shell: bash
         run: bash scripts/package-control-plane-lambda.sh "$RUNNER_TEMP/automation-control-plane.zip"
+      - name: Verify AWS release artifact contract
+        shell: bash
+        run: bash scripts/test-release-aws-artifacts.sh
       - run: pnpm test
