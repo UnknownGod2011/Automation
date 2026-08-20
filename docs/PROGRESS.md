@@ -58,7 +58,7 @@ The transition ordering is intentionally fail-closed across the durable automati
 
 Regression coverage proves ACTIVE and PAUSED recurrence edits, pause/resume failure ordering, disable without destructive cleanup, repeated-disable behavior, tenant isolation, invalid state transitions, and invalid IANA timezone rejection.
 
-This implementation, tests, export, and progress checkpoint are published as one atomic multi-file Git-data commit. Exact-head GitHub Actions is authoritative; this section does not claim the new head green until that run completes.
+Normal implementation commit `516d4d5b67973becc87a544528fb2abc0fa9e5a1` triggered CI #178. CI stopped exclusively at the deterministic pnpm supply-chain gate before install/type-check/tests: no package manifest changed, but pnpm 10.15.0 re-resolved the transitive graph from reviewed SHA-256 `18eb9a0d0d9e0adb4ef8e6ba8ace35f11989fe5a84a8f227fb4a2d97290d4626` to authoritative CI-produced SHA-256 `e6ffd328cb3c39ba33360ccd00fc509cb37a4b63eb31c2349c276eaf3f525d07`. Existing AWS SDK alignment checks remain in place; the corrective commit changes only the reviewed lock fingerprint plus this validation record. Exact-head CI after that corrective commit remains authoritative.
 
 ## Next product milestones
 
