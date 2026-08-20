@@ -39,7 +39,9 @@ function normalizedConfig(config: WebControlPlaneConfig): { baseUrl: URL; bearer
   }
 }
 
-export function readWebControlPlaneConfig(env: NodeJS.ProcessEnv = process.env): WebControlPlaneConfig {
+export function readWebControlPlaneConfig(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): WebControlPlaneConfig {
   const baseUrl = env.AUTOMATION_CONTROL_PLANE_URL;
   return baseUrl === undefined ? {} : { baseUrl };
 }
