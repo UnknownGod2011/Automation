@@ -31,6 +31,7 @@ import {
   loadAwsDynamoDbConfig,
   type DynamoDocumentClientLike,
 } from "./dynamodb-state.js";
+import { AwsFreshTestRunHandler } from "./fresh-test-runtime.js";
 import {
   AgentCoreIdentityCredentialVault,
   AwsSdkAgentCoreApiKeyControlApi,
@@ -61,11 +62,6 @@ const DEFAULT_CREDENTIAL_POLICY: ReasoningCredentialPoolPolicy = {
   allowSameProviderCredentialFailover: false,
 };
 
-/**
- * Narrow seams used by deterministic tests or deployment wrappers that already
- * own long-lived SDK clients. Production defaults construct the concrete AWS
- * adapters directly and continue to use the standard AWS credential chain.
- */
 export interface AwsScheduledRunBootstrapOverrides {
   dynamo?: DynamoDocumentClientLike;
   artifacts?: S3ArtifactApi;
@@ -77,6 +73,7 @@ export interface AwsScheduledRunBootstrapOverrides {
   credentialData?: AgentCoreApiKeyDataApi;
   runtimeFactory?: BrowserExecutionRuntimeFactory;
   runner?: AwsScheduledRunExecutionRunner;
+  freshTestRunner?: AwsScheduledRunExecutionRunner;
   openAiFetch?: OpenAiFetch;
 }
 
@@ -95,6 +92,7 @@ export type AwsScheduledRunBootstrapResult =
   | {
       kind: "CONFIGURED";
       handler: AwsScheduledRunHandler;
+      freshTestHandler: AwsFreshTestRunHandler;
       notifications: AwsScheduledReportingNotificationState;
       configuration: {
         region: string;
@@ -109,14 +107,6 @@ function uniqueMissing(groups: readonly (readonly string[])[]): readonly string[
   return [...new Set(groups.flat())];
 }
 
-/**
- * Builds the production scheduled-run dependency graph from deployment output
- * environment variables without performing network I/O during composition.
- *
- * Missing mandatory execution configuration is returned as one fail-closed
- * NOT_CONFIGURED result. Optional SES recipient resolution remains independent
- * so a notification deployment gap cannot disable execution or telemetry.
- */
 export function createAwsScheduledRunBootstrap(
   options: AwsScheduledRunBootstrapOptions,
 ): AwsScheduledRunBootstrapResult {
@@ -208,36 +198,52 @@ export function createAwsScheduledRunBootstrap(
     env: options.env,
     ...(options.reporting ?? {}),
   });
+  const coordinator = {
+    automations: automationRepository,
+    workflows: workflowRepository,
+    runs: runRepository,
+    checkpoints: checkpointRepository,
+    profiles: browserProfiles,
+    locks: lockManager,
+  };
+  const worker = {
+    sessions,
+    runtimeFactory,
+    runs: runRepository,
+    checkpoints: checkpointRepository,
+    browserSessionTimeoutSeconds: adapter.config.browserSessionTimeoutSeconds,
+  };
+  const credentials = {
+    metadata: credentialMetadata,
+    vault: credentialVault,
+    policy: options.credentialPolicy ?? DEFAULT_CREDENTIAL_POLICY,
+  };
 
   const handler = new AwsScheduledRunHandler(handlerConfiguration, {
-    coordinator: {
-      automations: automationRepository,
-      workflows: workflowRepository,
-      runs: runRepository,
-      checkpoints: checkpointRepository,
-      profiles: browserProfiles,
-      locks: lockManager,
-    },
-    worker: {
-      sessions,
-      runtimeFactory,
-      runs: runRepository,
-      checkpoints: checkpointRepository,
-      browserSessionTimeoutSeconds: adapter.config.browserSessionTimeoutSeconds,
-    },
-    credentials: {
-      metadata: credentialMetadata,
-      vault: credentialVault,
-      policy: options.credentialPolicy ?? DEFAULT_CREDENTIAL_POLICY,
-    },
+    coordinator,
+    worker,
+    credentials,
     reporter: reporting.reporter,
     ...(overrides?.runner ? { runner: overrides.runner } : {}),
     ...(overrides?.openAiFetch ? { openAiFetch: overrides.openAiFetch } : {}),
   });
+  const freshTestHandler = new AwsFreshTestRunHandler(
+    handlerConfiguration.openAiModel,
+    {
+      coordinator,
+      worker,
+      credentials,
+      ...(overrides?.freshTestRunner
+        ? { runner: overrides.freshTestRunner }
+        : {}),
+      ...(overrides?.openAiFetch ? { openAiFetch: overrides.openAiFetch } : {}),
+    },
+  );
 
   return {
     kind: "CONFIGURED",
     handler,
+    freshTestHandler,
     notifications: reporting.notifications,
     configuration: {
       region,

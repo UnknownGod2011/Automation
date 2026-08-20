@@ -1,4 +1,7 @@
-import type { ScheduledRunWorkerResult } from "@automation/core";
+import type {
+  FreshTestRunResult,
+  ScheduledRunWorkerResult,
+} from "@automation/core";
 import {
   createAwsScheduledRunBootstrap,
   type AwsScheduledRunBootstrapOptions,
@@ -8,6 +11,10 @@ import type {
   AwsScheduledRunHandler,
   AwsScheduledRunInvocation,
 } from "./scheduled-run-handler.js";
+import {
+  isAwsAgentCoreFreshTestPayload,
+  type AwsFreshTestRunHandler,
+} from "./fresh-test-runtime.js";
 
 const TENANT_ID_ENV = "AUTOMATION_TENANT_ID";
 const MAX_RUNTIME_USER_ID_LENGTH = 128;
@@ -36,7 +43,7 @@ export interface AwsAgentCoreScheduledRuntimeInvocation {
   runtimeUserId: string;
   /** Runtime-injected invocation headers, including WorkloadAccessToken. */
   headers: Readonly<Record<string, string | undefined>>;
-  /** Scheduled dispatch payload supplied by Step Functions. */
+  /** Scheduled dispatch or fresh-test payload. */
   payload: unknown;
 }
 
@@ -67,11 +74,6 @@ function normalizeRuntimeHeaders(
   return normalized;
 }
 
-/**
- * Converts the managed Runtime HTTP request into the provider-specific host
- * contract without trusting JSON payload fields for ownership. Header names are
- * normalized case-insensitively and ambiguous duplicate values fail closed.
- */
 export function createAwsAgentCoreScheduledRuntimeInvocationFromHttp(
   request: AwsAgentCoreScheduledRuntimeHttpRequest,
 ): AwsAgentCoreScheduledRuntimeInvocation {
@@ -91,13 +93,14 @@ function validateRuntimeUserId(value: string): string {
   return userId;
 }
 
+export type AwsAgentCoreRuntimeExecutionResult =
+  | ScheduledRunWorkerResult
+  | FreshTestRunResult;
+
 /**
- * AgentCore-hosted boundary for scheduled execution.
- *
- * The tenant is deployment-owned and the user identity is supplied separately
- * by AgentCore Runtime. The scheduled payload never establishes authorization;
- * AwsScheduledRunHandler revalidates its embedded scope against this trusted
- * scope before BYOK or browser/model work begins.
+ * AgentCore-hosted boundary for scheduled execution and explicit fresh tests.
+ * Tenant/user ownership is always reconstructed from Runtime context; fresh
+ * test JSON carries no ownership identity and cannot supply a workload token.
  */
 export class AwsAgentCoreScheduledRuntimeEntrypoint {
   constructor(
@@ -106,21 +109,28 @@ export class AwsAgentCoreScheduledRuntimeEntrypoint {
       { kind: "CONFIGURED" }
     >,
     private readonly handler: Pick<AwsScheduledRunHandler, "handle">,
+    private readonly freshTestHandler?: Pick<AwsFreshTestRunHandler, "handle">,
   ) {}
 
   async handle(
     invocation: AwsAgentCoreScheduledRuntimeInvocation,
-  ): Promise<ScheduledRunWorkerResult> {
+  ): Promise<AwsAgentCoreRuntimeExecutionResult> {
     const trustedScope = {
       tenantId: this.configuration.tenantId,
       userId: validateRuntimeUserId(invocation.runtimeUserId),
     };
-    const scheduledInvocation: AwsScheduledRunInvocation = {
+    const trustedInvocation: AwsScheduledRunInvocation = {
       trustedScope,
       headers: invocation.headers,
       payload: invocation.payload,
     };
-    return this.handler.handle(scheduledInvocation);
+    if (isAwsAgentCoreFreshTestPayload(invocation.payload)) {
+      if (!this.freshTestHandler) {
+        throw new Error("AgentCore fresh-test execution is not configured");
+      }
+      return this.freshTestHandler.handle(trustedInvocation);
+    }
+    return this.handler.handle(trustedInvocation);
   }
 }
 
@@ -132,11 +142,6 @@ export type AwsAgentCoreScheduledRuntimeResult =
       bootstrap: Extract<AwsScheduledRunBootstrapResult, { kind: "CONFIGURED" }>;
     };
 
-/**
- * Composes the production scheduled worker for an AgentCore Runtime host.
- * Network calls remain deferred until invocation; missing deployment state is
- * aggregated into a fail-closed NOT_CONFIGURED result.
- */
 export function createAwsAgentCoreScheduledRuntime(
   options: AwsScheduledRunBootstrapOptions,
 ): AwsAgentCoreScheduledRuntimeResult {
@@ -160,6 +165,7 @@ export function createAwsAgentCoreScheduledRuntime(
     entrypoint: new AwsAgentCoreScheduledRuntimeEntrypoint(
       runtime,
       bootstrap.handler,
+      bootstrap.freshTestHandler,
     ),
     bootstrap,
   };

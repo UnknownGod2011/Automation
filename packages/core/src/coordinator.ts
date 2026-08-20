@@ -41,7 +41,10 @@ export interface ScheduledRunRequest {
   automationId: string;
   scheduledAt: string;
   runId: string;
+  runtimeVariables?: Readonly<Record<string, unknown>>;
 }
+
+export type RunPreparationMode = "SCHEDULED" | "FRESH_TEST";
 
 export type PrepareScheduledRunResult =
   | { kind: "DUPLICATE"; run: RunRecord }
@@ -64,6 +67,7 @@ export interface ScheduledRunCoordinatorDependencies {
   profiles: BrowserProfileStore;
   locks: AutomationLockManager;
   preflightChecks?: readonly RunPreflightCheck[];
+  mode?: RunPreparationMode;
   now?: () => Date;
   lockTtlMs?: number;
 }
@@ -72,15 +76,27 @@ function preflightFailure(code: RunFailure["code"], message: string): RunFailure
   return { code, message, retryable: false, evidenceRefs: [] };
 }
 
+function cloneVariables(
+  graph: WorkflowGraph,
+  runtimeVariables: Readonly<Record<string, unknown>> | undefined,
+): Readonly<Record<string, unknown>> {
+  return structuredClone({
+    ...(graph.initialVariables ?? {}),
+    ...(runtimeVariables ?? {}),
+  });
+}
+
 export class ScheduledRunCoordinator {
   private readonly now: () => Date;
   private readonly lockTtlMs: number;
   private readonly preflightChecks: readonly RunPreflightCheck[];
+  private readonly mode: RunPreparationMode;
 
   constructor(private readonly dependencies: ScheduledRunCoordinatorDependencies) {
     this.now = dependencies.now ?? (() => new Date());
     this.lockTtlMs = dependencies.lockTtlMs ?? 5 * 60_000;
     this.preflightChecks = dependencies.preflightChecks ?? [];
+    this.mode = dependencies.mode ?? "SCHEDULED";
     if (this.lockTtlMs <= 0) throw new Error("lockTtlMs must be positive");
   }
 
@@ -88,15 +104,23 @@ export class ScheduledRunCoordinator {
     const automation = await this.dependencies.automations.get(request.scope, request.automationId);
     if (!automation) throw new Error(`automation '${request.automationId}' does not exist in ownership scope`);
 
+    const graph = await this.resolveGraph(request.scope, automation);
+    const scheduledAt = new Date(request.scheduledAt).toISOString();
     const queued: RunRecord = {
       tenantId: request.scope.tenantId,
       userId: request.scope.userId,
       runId: request.runId,
       automationId: request.automationId,
-      workflowVersion: automation.publishedWorkflowVersion ?? 0,
-      occurrenceKey: makeOccurrenceKey(request.automationId, request.scheduledAt),
+      workflowVersion:
+        this.mode === "FRESH_TEST"
+          ? graph?.version ?? 0
+          : automation.publishedWorkflowVersion ?? 0,
+      occurrenceKey:
+        this.mode === "FRESH_TEST"
+          ? `${request.automationId}:test:${request.runId}`
+          : makeOccurrenceKey(request.automationId, request.scheduledAt),
       status: "QUEUED",
-      scheduledAt: new Date(request.scheduledAt).toISOString(),
+      scheduledAt,
     };
 
     const created = await this.dependencies.runs.createIfAbsent(queued);
@@ -105,36 +129,61 @@ export class ScheduledRunCoordinator {
     let run = transitionRun(created.run, "PREFLIGHT", { now: this.now().toISOString() });
     await this.dependencies.runs.update(run);
 
-    if (automation.status !== "ACTIVE") {
+    if (this.mode === "SCHEDULED" && automation.status !== "ACTIVE") {
       run = transitionRun(run, "SKIPPED", { now: this.now().toISOString() });
       await this.dependencies.runs.update(run);
       return { kind: "SKIPPED", run, reason: "AUTOMATION_NOT_ACTIVE" };
     }
 
-    if (automation.publishedWorkflowVersion === undefined) {
-      return this.fail(run, preflightFailure("NOT_CONFIGURED", "active automation has no published workflow version"));
+    if (this.mode === "SCHEDULED" && automation.publishedWorkflowVersion === undefined) {
+      return this.fail(
+        run,
+        preflightFailure("NOT_CONFIGURED", "active automation has no published workflow version"),
+      );
     }
-
-    const graph = await this.dependencies.workflows.get(
-      request.scope,
-      automation.automationId,
-      automation.publishedWorkflowVersion,
-    );
     if (!graph) {
       return this.fail(
         run,
-        preflightFailure("NOT_CONFIGURED", `published workflow version ${automation.publishedWorkflowVersion} is unavailable`),
+        preflightFailure(
+          "NOT_CONFIGURED",
+          this.mode === "FRESH_TEST"
+            ? "automation has no compiled workflow version"
+            : `published workflow version ${automation.publishedWorkflowVersion ?? 0} is unavailable`,
+        ),
       );
     }
-    if (graph.automationId !== automation.automationId || graph.version !== automation.publishedWorkflowVersion) {
-      return this.fail(run, preflightFailure("NOT_CONFIGURED", "published workflow identity does not match automation"));
+    if (
+      graph.automationId !== automation.automationId ||
+      (this.mode === "SCHEDULED" && graph.version !== automation.publishedWorkflowVersion)
+    ) {
+      return this.fail(
+        run,
+        preflightFailure(
+          "NOT_CONFIGURED",
+          this.mode === "FRESH_TEST"
+            ? "fresh-test workflow identity does not match automation"
+            : "published workflow identity does not match automation",
+        ),
+      );
     }
 
     if (!automation.browserProfileRef) {
-      return this.block(request.scope, run, graph, preflightFailure("TARGET_AUTH_REQUIRED", "automation has no browser profile"));
+      return this.block(
+        request.scope,
+        run,
+        graph,
+        preflightFailure("TARGET_AUTH_REQUIRED", "automation has no browser profile"),
+        request.runtimeVariables,
+      );
     }
     if (!(await this.dependencies.profiles.exists(request.scope, automation.browserProfileRef))) {
-      return this.block(request.scope, run, graph, preflightFailure("TARGET_AUTH_REQUIRED", "automation browser profile is unavailable"));
+      return this.block(
+        request.scope,
+        run,
+        graph,
+        preflightFailure("TARGET_AUTH_REQUIRED", "automation browser profile is unavailable"),
+        request.runtimeVariables,
+      );
     }
 
     const context: RunPreflightContext = { scope: request.scope, automation, graph, run };
@@ -142,7 +191,7 @@ export class ScheduledRunCoordinator {
       const result = await check.check(context);
       if (result.ready) continue;
       return result.disposition === "WAITING_FOR_HUMAN"
-        ? this.block(request.scope, run, graph, result.failure)
+        ? this.block(request.scope, run, graph, result.failure, request.runtimeVariables)
         : this.fail(run, result.failure);
     }
 
@@ -156,6 +205,21 @@ export class ScheduledRunCoordinator {
       run = transitionRun(run, "SKIPPED", { now: this.now().toISOString() });
       await this.dependencies.runs.update(run);
       return { kind: "SKIPPED", run, reason: "CONCURRENT_RUN" };
+    }
+
+    if (this.mode === "FRESH_TEST") {
+      await this.dependencies.checkpoints.put(request.scope, {
+        runId: run.runId,
+        automationId: run.automationId,
+        workflowVersion: graph.version,
+        currentNodeId: graph.entryNodeId,
+        completedNodeIds: [],
+        attempt: 0,
+        fingerprintRepeatCount: 0,
+        variables: cloneVariables(graph, request.runtimeVariables),
+        evidenceRefs: [],
+        updatedAt: this.now().toISOString(),
+      });
     }
 
     run = transitionRun(run, "RUNNING", { now: this.now().toISOString() });
@@ -173,11 +237,32 @@ export class ScheduledRunCoordinator {
     await this.dependencies.locks.release(scope, lease);
   }
 
+  private async resolveGraph(
+    scope: OwnershipScope,
+    automation: AutomationRecord,
+  ): Promise<WorkflowGraph | null> {
+    if (this.mode === "FRESH_TEST") {
+      if (automation.status !== "READY_TO_TEST" && automation.status !== "READY_TO_PUBLISH") {
+        throw new Error("automation must be READY_TO_TEST or READY_TO_PUBLISH before a fresh test");
+      }
+      const versions = await this.dependencies.workflows.list(scope, automation.automationId);
+      return versions.at(-1) ?? null;
+    }
+
+    if (automation.publishedWorkflowVersion === undefined) return null;
+    return this.dependencies.workflows.get(
+      scope,
+      automation.automationId,
+      automation.publishedWorkflowVersion,
+    );
+  }
+
   private async block(
     scope: OwnershipScope,
     run: RunRecord,
     graph: WorkflowGraph,
     blocker: RunFailure,
+    runtimeVariables?: Readonly<Record<string, unknown>>,
   ): Promise<PrepareScheduledRunResult> {
     await this.dependencies.checkpoints.put(scope, {
       runId: run.runId,
@@ -187,7 +272,8 @@ export class ScheduledRunCoordinator {
       completedNodeIds: [],
       attempt: 0,
       fingerprintRepeatCount: 0,
-      variables: {},
+      variables:
+        this.mode === "FRESH_TEST" ? cloneVariables(graph, runtimeVariables) : {},
       evidenceRefs: blocker.evidenceRefs,
       lastFailure: blocker,
       updatedAt: this.now().toISOString(),

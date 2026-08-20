@@ -81,7 +81,7 @@ const server = createServer((request, response) => {
     } catch {
       // The runtime host is a security boundary: provider/browser exceptions,
       // WorkloadAccessToken values, and BYOK material must never be reflected.
-      sendJson(response, 500, { error: "scheduled execution failed" });
+      sendJson(response, 500, { error: "cloud execution failed" });
     }
   });
   request.on("error", () => {

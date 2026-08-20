@@ -12,6 +12,7 @@ export * from "./config.js";
 export * from "./control-plane-lambda.js";
 export * from "./credential-metadata.js";
 export * from "./dynamodb-state.js";
+export * from "./fresh-test-runtime.js";
 export * from "./human-resolution.js";
 export * from "./human-resume-audit.js";
 export * from "./human-resume-effect.js";

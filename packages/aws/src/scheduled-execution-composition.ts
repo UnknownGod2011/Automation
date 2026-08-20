@@ -10,6 +10,7 @@ import {
   type CredentialVault,
   type OwnershipScope,
   type ReasoningCredentialPoolPolicy,
+  type RunPreparationMode,
   type RunPreflightCheck,
   type RunPreflightCheckResult,
   type ScheduledRunCoordinatorDependencies,
@@ -43,11 +44,7 @@ export interface AgentCoreWorkloadAccessTokenSource {
   get(): string;
 }
 
-/**
- * Reads the AgentCore Runtime payload header named `WorkloadAccessToken`.
- * Header matching is case-insensitive and conflicting duplicate values fail
- * closed instead of guessing which capability should be used.
- */
+/** Reads the Runtime-injected WorkloadAccessToken header fail-closed. */
 export class AgentCoreRuntimeHeaderWorkloadAccessTokenSource
   implements AgentCoreWorkloadAccessTokenSource
 {
@@ -84,7 +81,7 @@ class BoundInvocationScopePreflightCheck implements RunPreflightCheck {
       disposition: "FAILED",
       failure: {
         code: "POLICY_BLOCKED",
-        message: "scheduled execution scope does not match the trusted invocation scope",
+        message: "execution scope does not match the trusted invocation scope",
         retryable: false,
         evidenceRefs: [],
       },
@@ -113,16 +110,9 @@ export interface AwsByokScheduledExecution {
   worker: ScheduledRunWorker;
 }
 
-/**
- * Composes the production scheduled-run worker with BYOK preflight and
- * invocation-time AgentCore Identity secret resolution.
- *
- * Construct this once per trusted execution-plane invocation. The workload
- * token is retained only by the in-memory reasoner closure and is never added
- * to workflow/run/checkpoint metadata.
- */
-export function createAwsByokScheduledExecution(
+function createAwsByokExecution(
   dependencies: AwsByokScheduledExecutionDependencies,
+  mode: RunPreparationMode,
 ): AwsByokScheduledExecution {
   const executionIdentityToken = validateWorkloadAccessToken(
     dependencies.workloadAccessToken.get(),
@@ -139,6 +129,7 @@ export function createAwsByokScheduledExecution(
   const invocationScopePreflight = new BoundInvocationScopePreflightCheck(boundScope);
   const coordinator = new ScheduledRunCoordinator({
     ...dependencies.coordinator,
+    mode,
     preflightChecks: [
       invocationScopePreflight,
       credentialPreflight,
@@ -175,4 +166,23 @@ export function createAwsByokScheduledExecution(
   });
 
   return { coordinator, reasoner, worker };
+}
+
+/** Composes the production scheduled-run path. */
+export function createAwsByokScheduledExecution(
+  dependencies: AwsByokScheduledExecutionDependencies,
+): AwsByokScheduledExecution {
+  return createAwsByokExecution(dependencies, "SCHEDULED");
+}
+
+/**
+ * Composes production fresh testing on the same hardened execution worker as a
+ * scheduled run while selecting the latest immutable draft workflow and the
+ * fresh-test occurrence namespace. The Runtime workload token remains in-memory
+ * capability material exactly as it does for scheduled execution.
+ */
+export function createAwsByokFreshTestExecution(
+  dependencies: AwsByokScheduledExecutionDependencies,
+): AwsByokScheduledExecution {
+  return createAwsByokExecution(dependencies, "FRESH_TEST");
 }
