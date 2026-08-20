@@ -57,7 +57,9 @@ The already-separated `TrustedCaptureCompletionHandler` now has a concrete produ
 
 AWS unit tests cover trusted scope derivation, cross-tenant suppression before completion work, malformed route/body rejection, missing tenant configuration, runtime bootstrap memoization, and sanitized failures. Packaging now requires both Lambda entrypoints, and immutable release validation rejects a control-plane ZIP that lacks the capture-completion entrypoint.
 
-This implementation, tests, packaging, IaC, and progress checkpoint are published as one coherent multi-file Git-data commit. No package manifest or pnpm dependency graph changed. Exact-head GitHub Actions remains authoritative; this section does not claim the new head green until CI completes successfully.
+CI #182 passed deterministic lock verification, frozen installation, strict `pnpm check`, and both real production package builds. It then failed only in `scripts/test-release-aws-artifacts.sh`: the synthetic control-plane ZIP still contained the old single-entrypoint package shape, while the strengthened release validator correctly required `capture-completion-lambda.mjs`. The corrective change updates only that test fixture to model both packaged entrypoints; no production check, dependency gate, or validator is weakened.
+
+This implementation, tests, packaging, IaC, and progress checkpoint are published as one coherent multi-file Git-data commit plus one root-caused corrective fixture commit. No package manifest or pnpm dependency graph changed. Exact-head GitHub Actions remains authoritative; this section does not claim the corrective head green until CI completes successfully.
 
 ## Next product milestones
 

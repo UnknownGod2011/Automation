@@ -39,13 +39,17 @@ AWS
 chmod +x "$WORK_DIR/bin/aws"
 
 python3 - "$WORK_DIR/runtime.zip" "$WORK_DIR/control.zip" <<'PY'
-from pathlib import Path
 import sys
 import zipfile
 
-for output, entrypoint in ((sys.argv[1], "runtime-http.mjs"), (sys.argv[2], "control-plane-lambda.mjs")):
+artifacts = (
+    (sys.argv[1], ("runtime-http.mjs",)),
+    (sys.argv[2], ("control-plane-lambda.mjs", "capture-completion-lambda.mjs")),
+)
+for output, entrypoints in artifacts:
     with zipfile.ZipFile(output, "w") as archive:
-        archive.writestr(entrypoint, "export {};\n")
+        for entrypoint in entrypoints:
+            archive.writestr(entrypoint, "export {};\n")
         archive.writestr("dist/index.js", "export {};\n")
         archive.writestr("package.json", '{"type":"module"}\n')
 PY
