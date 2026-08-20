@@ -26,65 +26,67 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - `createAwsScheduledRunBootstrap` assembles DynamoDB state, immutable S3 workflows/evidence, AgentCore Browser/Profile, AgentCore Identity BYOK, Playwright execution/verification, OpenAI reasoning, and reporting.
 - Step Functions invokes AgentCore Runtime rather than a browser Lambda. The Runtime is packageable as a Node 22 direct-code artifact and provisioned by `infra/aws/agentcore-runtime.yaml` with bounded compute lifetime and least-privilege execution access.
 - Cognito-backed scheduled notification recipient resolution uses the trusted user `sub`, verified email, and deployment-owned user-pool configuration; scheduled payloads cannot select destinations.
+- API Gateway HTTP API payload-format 2.0 transport maps already-verified Cognito claims to the provider-neutral control-plane handler without parsing raw bearer tokens or trusting request-supplied ownership.
 
 ## Authoritative incoming validation
 
 - PR #1 is the open draft development PR on `agent/bootstrap-platform`.
-- Incoming head `8c687623502abd81f434ddf89f2c82cf3d2fe9cc` is green on GitHub Actions CI #166.
+- Incoming head `59d73fac079e4ecaa412ea356bf16d205be747a2` is green on GitHub Actions CI #167.
 - GitHub Actions on the exact new head created by this run is authoritative. Do not claim this slice green until deterministic lock verification, frozen install, `pnpm check`, AgentCore package smoke testing, Next.js build/type validation, and the complete test suite have succeeded.
 
-## 2026-08-20 — API Gateway control-plane Lambda transport
+## 2026-08-20 — immutable AWS capture-trace persistence
 
 ### Product slice
 
-Closed the missing transport/authentication boundary between the deployed API Gateway HTTP API and the existing provider-neutral `AutomationControlPlaneHttpHandler`.
+During composition review, a concrete cloud-control-plane gap was found: capture-session completion was durable in DynamoDB and workflow versions were durable in S3, but there was no production `CaptureTraceRepository`. The local lifecycle therefore could not be assembled against real AWS persistence without substituting an in-memory capture store.
 
-Added `createAwsControlPlaneLambdaHandler`, a dependency-free AWS adapter for API Gateway HTTP API payload format 2.0. It accepts only the already-verified JWT authorizer claim context, resolves the trusted tenant/user through the existing Cognito adapter, normalizes GET/POST path/body input into the core HTTP contract, and maps the sanitized core response back to the Lambda proxy response shape.
+Added `AwsCaptureTraceRepository`. Capture-trace metadata is stored under the existing tenant/user-scoped DynamoDB partition, while the full validated trace document is stored as immutable JSON in the configured S3 artifact bucket. Object keys use hashed scope/automation/trace identities rather than raw tenant, user, or trace identifiers.
 
-The adapter deliberately does not parse or verify raw bearer tokens. API Gateway remains the cryptographic JWT/scope boundary. Tenant identity remains deployment-owned and user identity remains the Cognito access-token `sub`; request JSON and extra claims cannot override either.
+The write sequence is deliberately recoverable: canonical trace bytes are written to S3 with the existing create-only document API before conditional DynamoDB metadata is created. If S3 succeeds and the metadata write fails, an exact retry verifies the orphaned S3 bytes and can safely finish metadata creation. If the orphaned document differs, the repository fails closed rather than attaching metadata to the wrong trace.
 
-Request handling is bounded and fail-closed: unsupported methods/payload versions and malformed paths/JSON are rejected before core dispatch, decoded bodies are capped at 1 MiB, base64 payloads are decoded without adding Node-specific type dependencies, and unexpected adapter/core failures are converted to a fixed sanitized 500 response. Responses include `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
+Reads use strongly consistent DynamoDB metadata lookup, fetch the referenced immutable S3 document, run `assertCaptureTrace`, and revalidate tenant/user/automation/trace identity. Listing queries only the caller's ownership partition and then validates every referenced document before returning capture-ordered results.
 
-This slice intentionally does not duplicate `AutomationControlPlaneService` logic or create a second routing implementation. The next composition layer can inject the real DynamoDB/S3/AgentCore/scheduler-backed service into the same core handler and then hand that handler to this Lambda transport.
+### Correctness / security / tenancy / idempotency / retry / cost / observability review
 
-### Correctness / security / tenancy / idempotency / retry / timeout / cost / observability review
-
-- Authentication is resolved before parsing/dispatching an application request, so unauthenticated calls cannot reach DynamoDB, S3, AgentCore Browser, Identity, or Scheduler adapters through this boundary.
-- Ownership is derived from deployment tenant + verified Cognito `sub`; spoofed `tenantId`/`userId` fields and claims do not influence scope.
-- Raw Authorization headers/tokens are not accepted by this adapter and therefore are not copied into application logs or errors.
-- Body size is bounded before JSON parsing to cap Lambda memory/CPU exposure from oversized requests. API Gateway/Lambda still provide the outer transport timeout; no application retry loop was added.
-- This transport does not add execution authority or side-effect retries. Existing command/service idempotency and workflow verification rules remain authoritative.
-- Error responses are fixed/sanitized; provider exceptions, BYOK material, browser-profile/session identifiers, and secret-bearing DOM data are not reflected.
-- No new dependency, AWS SDK client, persistent table, metric dimension, or cloud call was introduced, so dependency graph and steady-state cloud cost are unchanged.
-- `NOT_CONFIGURED` remains explicit when Cognito issuer/client/tenant deployment configuration is absent rather than constructing a partially authenticated handler.
+- Raw capture content remains outside DynamoDB; only bounded control metadata and the S3 object key are stored in the state table.
+- S3 object paths do not expose tenant ID, user ID, automation ID, or trace ID. The bucket/prefix/KMS policy remains the deployment security boundary.
+- Existing capture artifacts referenced by the trace remain references; this repository does not duplicate screenshots/recordings into DynamoDB.
+- Capture replacement is forbidden. A trace ID is immutable, and a metadata collision never becomes an overwrite.
+- The S3-before-Dynamo ordering intentionally supports the already-existing trusted capture-completion replay behavior after acknowledgement uncertainty.
+- Cross-tenant reads cannot discover metadata because partition identity is scope-derived; document identity is revalidated after S3 decode as defense in depth.
+- Transport/storage failures propagate. There is no retry loop that could duplicate browser actions because this adapter persists completed capture evidence only.
+- Listing incurs one DynamoDB query plus one S3 read per trace. This is acceptable for the capture/compile control path; dashboard readiness continues to use the cheaper latest-capture pointer rather than listing trace documents.
+- No dependency, CI artifact, new table, new bucket, model call, browser session, or metric dimension was added.
 
 ### Tests / validation
 
-Regression coverage now proves:
+Regression coverage added for:
 
-- incomplete Cognito deployment configuration returns `NOT_CONFIGURED`,
-- verified access-token claims map to the trusted provider-neutral ownership scope while spoofed ownership fields are ignored,
-- payload-format 2.0 POST/JSON and base64-encoded JSON map correctly into the core handler,
-- invalid identity is rejected before core dispatch,
-- malformed JSON, unsupported HTTP methods, invalid paths, and unsupported payload versions fail closed,
-- oversized request bodies are rejected before core dispatch,
-- unexpected handler failures produce a fixed sanitized 500 without reflecting secret-bearing error text.
+- canonical stable capture serialization,
+- DynamoDB metadata + immutable S3 trace persistence,
+- replacement rejection,
+- recovery when S3 succeeds before a transient metadata failure,
+- conflicting orphan-document rejection,
+- capture-order listing,
+- cross-tenant isolation.
 
 Validation status for this slice: implementation, tests, AWS package export, and this progress update are being published as one normal CI-triggering Git-data commit. Exact-head GitHub Actions is authoritative; no pass is claimed here until it exists.
 
 ## Next product milestones
 
-1. Compose the concrete production `AutomationControlPlaneService` graph behind this Lambda transport: DynamoDB automation/run state, S3 workflow/capture artifacts, AgentCore Browser/Profile capture starter, capture completion state, AgentCore Identity credential management, and the real Scheduler port, with aggregated `NOT_CONFIGURED` deployment state.
-2. Wire publish/update/disable lifecycle operations to the deployed EventBridge Scheduler resources automatically, using stack outputs for dispatch queue/role/group rather than manual environment assembly.
-3. Add the Runtime artifact upload/deploy release command around the tested ZIP, requiring a versioned S3 object in production.
-4. Perform one controlled real AWS demonstration: sign in -> BYOK -> capture -> compile/test -> publish -> schedule -> AgentCore cloud browser/OpenAI execution -> verification/history/email, plus one bounded human takeover/resume path.
-5. Add Google federation/adapters only after the AWS vertical slice is demonstrably complete.
+1. Compose the concrete production `AutomationControlPlaneService` graph behind the existing Lambda transport using DynamoDB automation/run state, this S3/Dynamo capture repository, S3 workflow versions, AgentCore Browser/Profile capture startup, capture completion state, AgentCore Identity credential management, and the real Scheduler port, with aggregated `NOT_CONFIGURED` deployment state.
+2. Resolve the production fresh-test execution seam correctly: the local lifecycle assumes an in-process browser/reasoner, while production BYOK reasoning requires AgentCore workload identity. Fresh tests should execute through an explicit trusted cloud execution boundary rather than allocating AgentCore Browser/model work inside the API Lambda or mutating a run before discovering credentials are unavailable.
+3. Wire publish/update/disable lifecycle operations to deployed EventBridge Scheduler resources automatically, using stack outputs for dispatch queue/role/group rather than manual environment assembly.
+4. Add the Runtime artifact upload/deploy release command around the tested ZIP, requiring a versioned S3 object in production.
+5. Perform one controlled real AWS demonstration: sign in -> BYOK -> capture -> compile/test -> publish -> schedule -> AgentCore cloud browser/OpenAI execution -> verification/history/email, plus one bounded human takeover/resume path.
+6. Add Google federation/adapters only after the AWS vertical slice is demonstrably complete.
 
 ## Known parked limitations
 
 - Recovery continuation consumption remains parked until a production cloud worker integration specifically requires it.
 - Sensitive target-site runtime values still need a separate secret-resolution contract; never place passwords, cookies, provider keys, or equivalent secrets in workflow/runtime-variable metadata.
-- The API Gateway Lambda transport is now defined, but the concrete cloud-backed `AutomationControlPlaneService` dependency graph and deployable Lambda resource/package remain the next control-plane milestone.
+- The API Gateway Lambda transport is defined, but the complete cloud-backed `AutomationControlPlaneService` composition and deployable control-plane Lambda resource remain in progress.
+- Production fresh tests must not reuse the local in-process browser/reasoner assumption; they need a trusted AgentCore Runtime/workload-identity execution boundary before publish can be fully cloud-native.
 - Trusted capture-completion worker authentication remains a separate deployment boundary; it must not be exposed through the ordinary end-user JWT route.
 - The Runtime resource/package is represented in code/IaC, but live creation and invocation still require a controlled AWS deployment and uploaded Runtime ZIP; CI intentionally uses no cloud credentials.
 - `PUBLIC` Runtime networking is suitable for the arbitrary-web MVP but should be revisited for production environments that can provide VPC egress without breaking permitted target-site access.
