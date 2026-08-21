@@ -17,8 +17,29 @@ sign in -> dashboard -> create -> cloud capture -> persisted Browser Profile + t
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head `173c81233d042ee49405d84ea259be3ccde2e95e` (`Add live capture effect verification`) is green on CI #201.
+- Incoming head `e0c5c156265756f37964a400a3b2eaf23b5312e4` (`Refresh deterministic pnpm lock snapshot`) is green on CI #203.
 - GitHub Actions on the exact new head remains authoritative; no new pass is claimed before it exists.
+
+## 2026-08-21 — server-owned publish workflow selection
+
+The remaining approval UX asked the user to type a workflow-version number even though workflow versions are internal immutable state. This slice removes that browser-controlled value. The authenticated Next.js server now resolves the publish candidate from durable successful run history only when the automation is `READY_TO_PUBLISH`, and the browser submits only recurrence, schedule expression, and timezone.
+
+The existing provider-neutral lifecycle remains the final authority: publish still requires `READY_TO_PUBLISH`, loads the requested immutable workflow version, and rejects it unless it is the latest workflow. Compiling a newer version moves the automation back to `READY_TO_TEST`, while a successful fresh test is what returns it to `READY_TO_PUBLISH`. The web resolver is therefore a convenience/security boundary, not a replacement for lifecycle validation.
+
+### Security / tenancy / idempotency / concurrency / retry / timeout / cost / observability / recovery
+
+- Tenant/user ownership remains Cognito/control-plane derived. The browser cannot choose a workflow version, trace, run ID, tenant, or user for publication.
+- The resolver considers only successful durable run summaries and refuses to produce a candidate unless the automation is currently `READY_TO_PUBLISH`; malformed/non-positive versions are ignored.
+- The lifecycle's latest-version check remains defense in depth. Stale or inconsistent run-history state cannot force publication of an older graph.
+- Publication still uses the existing Scheduler upsert and durable automation transition; no retry, execution, Browser, model, recovery, IAM, dependency, or cloud-resource behavior changed.
+- The publish POST adds two authenticated reads (automation summary and run history) before the existing mutation. This is bounded control-plane cost and avoids trusting an internal identifier from the browser.
+- The automation page hides the publish form until trusted state proves a successful test is available, while the POST handler re-resolves that state so stale rendered pages cannot bypass the gate.
+
+### Validation added
+
+- Web unit coverage proves the server resolver chooses the highest successful immutable version only in `READY_TO_PUBLISH`, ignores failed runs, and returns no candidate for untested state.
+- The Next.js production build remains the integration gate for removal of the workflow-version form field and server-side publish resolution.
+- Exact-head GitHub Actions after publication is authoritative.
 
 ## 2026-08-21 — server-owned compile and fresh-test identities
 
@@ -117,18 +138,16 @@ The release manifest now contains a third immutable, versioned S3 artifact for t
 ## Next product milestones
 
 1. Run the protected deployment workflow and require the live smoke gate to pass against the real AWS environment.
-2. Execute the controlled interactive vertical demo from `outputs.webOrigin`: Cognito sign-in -> BYOK -> Live View capture -> compile -> fresh test -> publish -> scheduled execution -> verification/history/email -> target-auth takeover/resume. The compile/test UX no longer asks the user for internal workflow/run/trace identifiers; the capture-to-compile path must prove the new effect-verification bridge on a real page before broader targets are attempted.
+2. Execute the controlled interactive vertical demo from `outputs.webOrigin`: Cognito sign-in -> BYOK -> Live View capture -> compile -> fresh test -> publish -> scheduled execution -> verification/history/email -> target-auth takeover/resume. The browser no longer asks for workflow, trace, run, or publish-version identifiers; the capture-to-compile path must prove the effect-verification bridge on a real page before broader targets are attempted.
 3. Fix only concrete defects exposed by that environment; do not return to recovery micro-hardening without a demonstrated need.
-4. After the first real demo, remove the remaining manual workflow-version field from approval by exposing the latest successfully tested version as trusted control-plane state rather than guessing it in the browser.
-5. If the vertical slice is repeatable, add a minimal authenticated live-cloud smoke using a dedicated test identity and short-lived credentials without retaining secret-bearing Actions artifacts.
-6. Add Google federation/adapters only after the AWS vertical slice is demonstrated.
+4. If the vertical slice is repeatable, add a minimal authenticated live-cloud smoke using a dedicated test identity and short-lived credentials without retaining secret-bearing Actions artifacts.
+5. Add Google federation/adapters only after the AWS vertical slice is demonstrated.
 
 ## Parked limitations
 
 - Live OpenAI/SES/Cognito/AgentCore behavior still requires real AWS validation; deterministic CI is not live-cloud proof.
 - The new anonymous deployment smoke validates reachability/configuration/auth boundaries, not an authenticated user lifecycle or AgentCore Browser/model execution.
 - Capture structural verification is intentionally coarse and content-redacted. Dynamic pages whose post-action structure is unstable may fail verification and require a recapture or a future explicit user-authored effect assertion; do not silently weaken verification for them.
-- The approval form still exposes a workflow-version number. The control plane enforces latest-tested-only publication, but the product should eventually resolve that tested version server-side rather than ask the user to know it.
 - Sensitive target-site runtime values still need a dedicated secret-resolution contract if a workflow needs secrets beyond the persisted Browser Profile.
 - DynamoDB automation state and EventBridge Scheduler state cannot be atomically committed; current ordering fails closed.
 - Capture-task duplicate suppression remains process-local while capture completion is globally durable; harden only if live Runtime replacement demonstrates a defect.

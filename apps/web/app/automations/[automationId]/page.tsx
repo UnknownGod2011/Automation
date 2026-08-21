@@ -2,6 +2,7 @@ import type { CaptureRecordingView } from "@automation/core";
 import Link from "next/link";
 import { WebControlPlaneError } from "../../../lib/control-plane-client";
 import { shouldPollCaptureReadiness } from "../../../lib/capture-readiness";
+import { serverResolvedPublishWorkflowVersion } from "../../../lib/product-flow-identities";
 import { createAuthenticatedWebControlPlaneClient, WebAuthError } from "../../../lib/server-auth";
 import { automationPhase, formatSchedule, runTone } from "../../../lib/view-model";
 import { CaptureReadinessPoller } from "./capture-readiness-poller";
@@ -57,6 +58,7 @@ export default async function AutomationDetailPage({
     finishRequested: captureRecording.finishRequested,
     hasLatestCapture: automation.latestCompletedCapture !== undefined,
   });
+  const publishWorkflowVersion = serverResolvedPublishWorkflowVersion(automation, runs);
 
   return (
     <>
@@ -76,8 +78,8 @@ export default async function AutomationDetailPage({
 
         <div className="card stack">
           <h2>Approve and publish</h2><p>Publishing remains gated by the control plane: only the latest successfully tested immutable workflow version can be activated.</p>
-          <form action={`/api/ui/automations/${encodeURIComponent(automationId)}/publish`} method="post"><label>Workflow version<input name="workflowVersion" type="number" min="1" defaultValue={automation.publishedWorkflowVersion ?? 1} required /></label><label>Recurrence<select name="kind" defaultValue="DAILY"><option value="HOURLY">Hourly</option><option value="DAILY">Daily</option><option value="WEEKLY">Weekly</option><option value="CRON">Custom cron</option></select></label><label>Schedule expression<input name="expression" defaultValue="09:00" required /></label><label>Timezone<input name="timezone" defaultValue="Asia/Kolkata" required /></label><button className="button" type="submit">Approve and publish</button></form>
-          <p className="muted">The server validates the IANA timezone and tested workflow version; this form cannot override tenant/user ownership.</p>
+          {publishWorkflowVersion !== null ? <form action={`/api/ui/automations/${encodeURIComponent(automationId)}/publish`} method="post"><label>Recurrence<select name="kind" defaultValue="DAILY"><option value="HOURLY">Hourly</option><option value="DAILY">Daily</option><option value="WEEKLY">Weekly</option><option value="CRON">Custom cron</option></select></label><label>Schedule expression<input name="expression" defaultValue="09:00" required /></label><label>Timezone<input name="timezone" defaultValue="Asia/Kolkata" required /></label><button className="button" type="submit">Approve and publish</button></form> : <p className="muted">Complete a successful fresh test before publishing. The tested workflow version is resolved from trusted run state rather than entered by the user.</p>}
+          <p className="muted">The server resolves the tested workflow version, validates the IANA timezone, and cannot accept tenant/user ownership from this form.</p>
         </div>
       </section>
 

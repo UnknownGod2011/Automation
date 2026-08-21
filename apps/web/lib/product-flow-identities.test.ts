@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { freshTestRunId, workflowIdForAutomation } from "./product-flow-identities";
+import {
+  freshTestRunId,
+  serverResolvedPublishWorkflowVersion,
+  workflowIdForAutomation,
+} from "./product-flow-identities";
 
 describe("product-flow server-owned identities", () => {
   it("uses the authenticated automation identity as the stable workflow identity", () => {
@@ -12,5 +16,31 @@ describe("product-flow server-owned identities", () => {
       "test-123e4567-e89b-12d3-a456-426614174000",
     );
     expect(() => freshTestRunId(() => "contains spaces")).toThrow(/identity/);
+  });
+
+  it("resolves publish version only from durable successful runs when the automation is ready", () => {
+    expect(
+      serverResolvedPublishWorkflowVersion(
+        { status: "READY_TO_PUBLISH" },
+        [
+          { status: "SUCCEEDED", workflowVersion: 1 },
+          { status: "FAILED", workflowVersion: 3 },
+          { status: "SUCCEEDED", workflowVersion: 2 },
+        ],
+      ),
+    ).toBe(2);
+
+    expect(
+      serverResolvedPublishWorkflowVersion(
+        { status: "READY_TO_TEST" },
+        [{ status: "SUCCEEDED", workflowVersion: 2 }],
+      ),
+    ).toBeNull();
+    expect(
+      serverResolvedPublishWorkflowVersion(
+        { status: "READY_TO_PUBLISH" },
+        [{ status: "FAILED", workflowVersion: 2 }],
+      ),
+    ).toBeNull();
   });
 });

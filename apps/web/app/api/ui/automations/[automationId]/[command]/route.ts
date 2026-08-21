@@ -1,16 +1,15 @@
 import { NextResponse } from "next/server";
 import { WebControlPlaneError } from "../../../../../../lib/control-plane-client";
 import { isSameOriginMutation } from "../../../../../../lib/mutation-security";
-import { freshTestRunId, workflowIdForAutomation } from "../../../../../../lib/product-flow-identities";
+import {
+  freshTestRunId,
+  serverResolvedPublishWorkflowVersion,
+  workflowIdForAutomation,
+} from "../../../../../../lib/product-flow-identities";
 import { createAuthenticatedWebControlPlaneClient, WebAuthError } from "../../../../../../lib/server-auth";
 
 function redirectBack(request: Request, automationId: string, notice: string): NextResponse {
   return NextResponse.redirect(new URL(`/automations/${encodeURIComponent(automationId)}?notice=${encodeURIComponent(notice)}`, request.url), 303);
-}
-
-function positiveInteger(value: FormDataEntryValue | null): number | null {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
 function scheduleFromForm(form: FormData): { kind: "HOURLY" | "DAILY" | "WEEKLY" | "CRON"; expression: string; timezone: string } | null {
@@ -100,8 +99,12 @@ export async function POST(request: Request, context: { params: Promise<{ automa
       return redirectBack(request, automationId, "schedule-updated");
     }
 
-    const workflowVersion = positiveInteger(form.get("workflowVersion"));
-    if (!workflowVersion) return redirectBack(request, automationId, "invalid-input");
+    const [automation, runs] = await Promise.all([
+      client.automation(automationId),
+      client.runs(automationId),
+    ]);
+    const workflowVersion = serverResolvedPublishWorkflowVersion(automation, runs);
+    if (workflowVersion === null) return redirectBack(request, automationId, "invalid-input");
     await client.command(automationId, "publish", { workflowVersion, schedule });
     return redirectBack(request, automationId, "published");
   } catch (error) {
