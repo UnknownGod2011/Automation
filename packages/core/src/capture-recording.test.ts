@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   CaptureCollectionControlService,
   InMemoryCaptureCollectionControlStore,
@@ -9,6 +9,7 @@ import {
   CaptureAwareControlPlaneHttpHandler,
   CaptureRecordingControlPlaneService,
   type ActiveCaptureSessionReader,
+  type CaptureCollectionTaskStarter,
   type ControlPlaneHttpHandlerPort,
 } from "./capture-recording.js";
 import type { OwnershipScope } from "./index.js";
@@ -27,7 +28,7 @@ const record: CaptureSessionRecord = {
   status: "STARTED",
 };
 
-async function setup() {
+async function setup(taskStarter?: CaptureCollectionTaskStarter) {
   const sessions = new InMemoryCaptureSessionStore();
   const controls = new InMemoryCaptureCollectionControlStore();
   await sessions.putStarted(record);
@@ -48,7 +49,7 @@ async function setup() {
     controls,
     () => new Date("2026-08-21T00:10:00.000Z"),
   );
-  return { service: new CaptureRecordingControlPlaneService(active, control), controls };
+  return { service: new CaptureRecordingControlPlaneService(active, control, taskStarter), controls };
 }
 
 describe("CaptureRecordingControlPlaneService", () => {
@@ -82,6 +83,36 @@ describe("CaptureRecordingControlPlaneService", () => {
       finishRequested: true,
     });
     await expect(service.finish(command)).resolves.toMatchObject({ finishRequested: true });
+  });
+
+  it("launches the cloud collector after the durable WORKFLOW transition and retries launch on replay", async () => {
+    const start = vi.fn(async () => undefined);
+    const { service, controls } = await setup({ start });
+    const command = { scope: owner, automationId: "auto-1", captureSessionId: "capture-1" };
+
+    await service.startWorkflow(command);
+    await service.startWorkflow(command);
+
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(start).toHaveBeenCalledWith(command);
+    await expect(controls.getState(owner, "capture-1")).resolves.toEqual({
+      phase: "WORKFLOW",
+      finishRequested: false,
+    });
+  });
+
+  it("keeps WORKFLOW durable when collector launch is uncertain so Start can be retried", async () => {
+    const start = vi.fn().mockRejectedValueOnce(new Error("runtime unavailable")).mockResolvedValueOnce(undefined);
+    const { service, controls } = await setup({ start });
+    const command = { scope: owner, automationId: "auto-1", captureSessionId: "capture-1" };
+
+    await expect(service.startWorkflow(command)).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(controls.getState(owner, "capture-1")).resolves.toEqual({
+      phase: "WORKFLOW",
+      finishRequested: false,
+    });
+    await expect(service.startWorkflow(command)).resolves.toMatchObject({ phase: "WORKFLOW" });
+    expect(start).toHaveBeenCalledTimes(2);
   });
 
   it("rejects cross-tenant and stale-session commands before changing control state", async () => {

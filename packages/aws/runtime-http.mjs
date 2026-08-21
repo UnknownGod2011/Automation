@@ -1,13 +1,16 @@
 import { createServer } from "node:http";
 import {
+  captureCollectionTaskKey,
   createAwsAgentCoreScheduledRuntime,
   createAwsAgentCoreScheduledRuntimeInvocationFromHttp,
+  isAwsAgentCoreCaptureCollectionPayload,
 } from "./dist/index.js";
 
 const PORT = 8080;
 const MAX_BODY_BYTES = 1_048_576;
 const MAX_RUNTIME_REQUEST_MILLISECONDS = 3_600_000;
 const composition = createAwsAgentCoreScheduledRuntime({ env: process.env });
+const backgroundCaptureTasks = new Map();
 
 function sendJson(response, statusCode, body) {
   response.writeHead(statusCode, {
@@ -21,14 +24,36 @@ function requestPath(request) {
   return (request.url ?? "").split("?", 1)[0];
 }
 
+function startCaptureTask(invocation, payload) {
+  const key = captureCollectionTaskKey({
+    scope: {
+      tenantId: process.env.AUTOMATION_TENANT_ID ?? "",
+      userId: invocation.runtimeUserId,
+    },
+    automationId: payload.automationId,
+    captureSessionId: payload.captureSessionId,
+  });
+  if (!backgroundCaptureTasks.has(key)) {
+    const task = composition.entrypoint.handle(invocation)
+      .catch(() => {
+        // Never reflect provider/browser/session errors or secret-bearing payloads.
+        console.error(JSON.stringify({ event: "capture_collection_task_failed" }));
+      })
+      .finally(() => {
+        backgroundCaptureTasks.delete(key);
+      });
+    backgroundCaptureTasks.set(key, task);
+  }
+}
+
 const server = createServer((request, response) => {
   const path = requestPath(request);
   if (request.method === "GET" && path === "/ping") {
-    sendJson(
-      response,
-      composition.kind === "CONFIGURED" ? 200 : 503,
-      { status: composition.kind === "CONFIGURED" ? "Healthy" : "Unhealthy" },
-    );
+    const configured = composition.kind === "CONFIGURED";
+    const status = configured
+      ? backgroundCaptureTasks.size > 0 ? "HealthyBusy" : "Healthy"
+      : "Unhealthy";
+    sendJson(response, configured ? 200 : 503, { status });
     return;
   }
 
@@ -76,6 +101,14 @@ const server = createServer((request, response) => {
         headers: request.headers,
         payload,
       });
+      if (isAwsAgentCoreCaptureCollectionPayload(payload)) {
+        startCaptureTask(invocation, payload);
+        sendJson(response, 200, {
+          kind: "CAPTURE_COLLECTION_STARTED",
+          captureSessionId: payload.captureSessionId,
+        });
+        return;
+      }
       const result = await composition.entrypoint.handle(invocation);
       sendJson(response, 200, result);
     } catch {

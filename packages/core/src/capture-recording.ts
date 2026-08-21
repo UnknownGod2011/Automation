@@ -12,6 +12,14 @@ export interface ActiveCaptureSessionReader {
   activeForAutomation(scope: OwnershipScope, automationId: string): Promise<CaptureSessionRecord | null>;
 }
 
+export interface CaptureCollectionTaskStarter {
+  start(request: {
+    scope: OwnershipScope;
+    automationId: string;
+    captureSessionId: string;
+  }): Promise<void>;
+}
+
 export type CaptureRecordingView =
   | { kind: "NONE" }
   | {
@@ -39,6 +47,7 @@ export class CaptureRecordingControlPlaneService {
   constructor(
     private readonly sessions: ActiveCaptureSessionReader,
     private readonly controls: Pick<CaptureCollectionControlService, "getState" | "startWorkflow" | "finish">,
+    private readonly taskStarter?: CaptureCollectionTaskStarter,
   ) {}
 
   private async current(command: { scope: OwnershipScope; automationId: string }): Promise<CaptureSessionRecord | null> {
@@ -100,6 +109,16 @@ export class CaptureRecordingControlPlaneService {
         automationId: record.automationId,
         captureSessionId: record.captureSessionId,
       });
+      // Start is intentionally after the durable phase transition. If Runtime invocation is
+      // uncertain, the user can repeat Start: the control transition replays and this launch
+      // is attempted again, while the Runtime suppresses duplicate active tasks.
+      if (this.taskStarter) {
+        await this.taskStarter.start({
+          scope: command.scope,
+          automationId: record.automationId,
+          captureSessionId: record.captureSessionId,
+        });
+      }
       return await this.view(command.scope, record);
     } catch (error) {
       if (error instanceof ControlPlaneError) throw error;

@@ -27,6 +27,10 @@ import {
 } from "./browser-session.js";
 import { AwsDynamoCaptureCollectionControlStore } from "./capture-control.js";
 import {
+  AwsAgentCoreCaptureCollectionTaskStarter,
+  type AgentCoreCaptureCollectionInvokeApi,
+} from "./capture-runtime.js";
+import {
   AgentCoreCaptureSessionFinalizer,
   AgentCoreCaptureSessionStarter,
   AwsAgentCoreBrowserLiveViewSigner,
@@ -65,9 +69,7 @@ import {
   type AgentCoreApiKeyDataApi,
 } from "./identity-vault.js";
 import { loadAwsAdapterConfig } from "./config.js";
-import {
-  loadAwsArtifactStoreConfig,
-} from "./artifact-store.js";
+import { loadAwsArtifactStoreConfig } from "./artifact-store.js";
 import {
   createAwsSchedulingComposition,
   type AwsSchedulingComposition,
@@ -113,6 +115,7 @@ export interface AwsControlPlaneBootstrapOverrides {
   credentialControl?: AgentCoreApiKeyControlApi;
   credentialData?: AgentCoreApiKeyDataApi;
   freshTestInvoke?: AgentCoreFreshTestInvokeApi;
+  captureCollectionInvoke?: AgentCoreCaptureCollectionInvokeApi;
   scheduling?: AwsSchedulingComposition;
 }
 
@@ -253,6 +256,10 @@ export function createAwsControlPlaneBootstrap(
     freshTest,
     options.overrides?.freshTestInvoke,
   );
+  const captureTaskStarter = new AwsAgentCoreCaptureCollectionTaskStarter(
+    freshTest,
+    options.overrides?.captureCollectionInvoke,
+  );
   const capabilities: ControlPlaneCapabilities = {
     auth: "CONFIGURED",
     capture: "CONFIGURED",
@@ -272,7 +279,11 @@ export function createAwsControlPlaneBootstrap(
     scheduleLifecycle,
   });
   const baseHttp = new AutomationControlPlaneHttpHandler(service);
-  const captureRecording = new CaptureRecordingControlPlaneService(captureState, captureControl);
+  const captureRecording = new CaptureRecordingControlPlaneService(
+    captureState,
+    captureControl,
+    captureTaskStarter,
+  );
   const http = new CaptureAwareControlPlaneHttpHandler(baseHttp, captureRecording);
   const lambda = createAwsControlPlaneLambdaHandler(options.env, http);
   if (lambda.kind !== "CONFIGURED") {

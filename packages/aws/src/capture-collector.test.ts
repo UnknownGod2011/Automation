@@ -23,7 +23,10 @@ const automation: AutomationRecord = {
   updatedAt: "2026-08-21T00:00:00.000Z",
 };
 
-function request(controlStates = [{ phase: "WORKFLOW" as const, finishRequested: true }]): CaptureCollectionSourceRequest {
+function request(controlStates = [
+  { phase: "WORKFLOW" as const, finishRequested: false },
+  { phase: "WORKFLOW" as const, finishRequested: true },
+]): CaptureCollectionSourceRequest {
   let index = 0;
   return {
     scope,
@@ -54,7 +57,7 @@ function signer(): AgentCoreBrowserConnectionSigner {
 describe("AgentCorePlaywrightCaptureEventSource", () => {
   beforeEach(() => playwright.connectOverCDP.mockReset());
 
-  it("observes Live View input without retaining the typed value", async () => {
+  it("starts in durable WORKFLOW phase and observes input without retaining the typed value", async () => {
     let binding: ((source: unknown, payload: unknown) => Promise<void>) | undefined;
     const page = {
       evaluate: vi.fn(async () => {
@@ -91,11 +94,28 @@ describe("AgentCorePlaywrightCaptureEventSource", () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       kind: "INPUT",
-      purpose: "AUTH_SETUP",
+      purpose: "WORKFLOW",
       page: { url: "https://example.com/app" },
       input: { kind: "RUNTIME_VARIABLE", sensitive: true },
     });
     expect(JSON.stringify(events)).not.toContain("must-never-be-captured");
+  });
+
+  it("does not allocate automation-stream work if finish was already durable", async () => {
+    const source = new AgentCorePlaywrightCaptureEventSource(signer(), "aws.browser.v1", {
+      controlPollMs: 1,
+    });
+    await expect(source.collect(request([{ phase: "WORKFLOW", finishRequested: true }]))).resolves.toEqual([]);
+    expect(playwright.connectOverCDP).not.toHaveBeenCalled();
+  });
+
+  it("rejects collection before the workflow phase without connecting", async () => {
+    const source = new AgentCorePlaywrightCaptureEventSource(signer(), "aws.browser.v1", {
+      controlPollMs: 1,
+    });
+    await expect(source.collect(request([{ phase: "AUTH_SETUP", finishRequested: false }])))
+      .rejects.toThrow("requires WORKFLOW phase");
+    expect(playwright.connectOverCDP).not.toHaveBeenCalled();
   });
 
   it("rejects invalid polling configuration before connecting to browser compute", () => {

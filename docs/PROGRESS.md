@@ -24,44 +24,46 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 ## Authoritative incoming validation
 
 - PR #1 is the open draft development PR on `agent/bootstrap-platform`.
-- Incoming head `976f1736b61d69d16ce58a066a9cb6ef87bc9bd2` is green on GitHub Actions CI #187.
+- Incoming head `c761ff4aac60bde8ae4248423edbe194dd7e4fd7` is green on GitHub Actions CI #188.
 - GitHub Actions on the exact head created by each run remains authoritative. Never claim a new slice green until deterministic lock verification, frozen install, `pnpm check`, deployment-package smoke tests, release/deployment contract tests, Next.js build/type validation, and the complete test suite succeed.
 
-## 2026-08-21 — capture recording control reaches the product surface
+## 2026-08-21 — long-running cloud capture collection
 
 ### Product slice
 
-The durable `AUTH_SETUP -> WORKFLOW -> finish` control state is now composed into the production AWS control plane rather than existing as an isolated adapter. `AgentCoreCaptureSessionStarter` receives the production control store, so every new cloud capture creates both durable capture-session metadata and its recording-control state.
+The capture control surface now launches actual observation work instead of only flipping DynamoDB state. A new provider-neutral `CaptureCollectionWorker` loads the tenant-scoped automation and durable capture session, runs the existing observation-only collector, and delegates acceptance to the existing `CaptureCompletionService`. An already-completed session is treated as replay before any browser automation-stream connection is opened.
 
-A new provider-neutral `CaptureRecordingControlPlaneService` exposes only the current capture's opaque session ID, phase, finish-request bit, and expiry. Browser session IDs, Browser Profile references, cookies, typed values, Live View credentials, BYOK material, and workload tokens remain server-side. The service verifies the tenant/user/automation boundary and requires recording commands to target the current active capture before changing state.
+`Start recording workflow` now performs the durable `AUTH_SETUP -> WORKFLOW` transition first and then invokes a new `CaptureCollectionTaskStarter`. The production AWS starter sends only `{kind, automationId, captureSessionId}` to the configured AgentCore Runtime while `runtimeUserId` remains a separate trusted AgentCore invocation field. Tenant identity, Browser Profile refs, BYOK credentials, and workload tokens are not serialized into the task request. If Runtime invocation is uncertain, the durable WORKFLOW state is intentionally retained and repeating Start retries task launch.
 
-`CaptureAwareControlPlaneHttpHandler` adds authenticated `GET /v1/automations/:id/capture-recording`, `POST .../start`, and `POST .../finish` routes while delegating the existing API unchanged. Request JSON cannot override authenticated ownership. The Next.js server client and automation detail page now surface Start recording workflow / Finish capture controls. Returning from Live View and refreshing the automation page reconstructs control state from DynamoDB; the user does not manually copy a capture identifier.
+The AgentCore Runtime now multiplexes a `CAPTURE_COLLECTION` workload alongside scheduled runs and fresh tests. The Node Runtime host starts capture collection as a tracked background task and immediately acknowledges the Start command instead of holding the control-plane request open. `/ping` reports `HealthyBusy` while capture collection is active so the Runtime can keep servicing health checks while the collector polls durable control state. Duplicate active launches in the same Runtime process converge on a stable tenant/user/automation/capture task identity.
 
-`AwsDynamoCaptureSessionStore` now writes a tenant-scoped current-capture pointer atomically with STARTED session metadata. This makes active-capture lookup bounded and strongly consistent instead of scanning a tenant partition. Completion remains authoritative through the existing immutable trace/profile-save path; a pointer that resolves to a completed session is treated as no active capture, and a later capture atomically replaces the current pointer.
+The Playwright collector now reads durable control state before attaching listeners and refuses to observe before `WORKFLOW`. This closes the previous first-event race where a workflow click could be tagged `AUTH_SETUP` until the first poll. If Finish is already durable when the task starts, it skips the automation-stream connection entirely. Raw typed values remain excluded and are represented only by sensitive runtime-variable placeholders.
+
+When Finish becomes durable, the background worker returns the trace to the same trusted Runtime composition, which uses the existing completion authority: save Browser Profile first -> persist immutable trace -> durably complete capture/latest pointer -> stop ephemeral browser. The worker composes the same DynamoDB/S3/AgentCore adapters already used elsewhere; no new recovery subsystem or provider-specific core contract was added. The separately deployed IAM-only completion endpoint remains available for external trusted workers, while the co-located AgentCore worker intentionally calls the same completion service directly to avoid an unnecessary signed HTTP hop.
 
 ### Security / tenancy / idempotency / concurrency / retry / timeout / cost / observability review
 
-- Active capture lookup is tenant/user scoped and validates the pointer, automation identity, and durable session before exposing a bounded view.
-- Start/finish commands accept the opaque capture ID only as a concurrency target; ownership still comes solely from authenticated context and durable state.
-- Existing conditional capture-control transitions retain duplicate-delivery idempotency. A stale capture ID cannot mutate a newer current session.
-- Active lookup uses two strongly consistent DynamoDB reads (pointer + session), avoiding unbounded partition scans; this is a small control-plane cost and does not add browser/model compute.
-- Capture startup writes session + current pointer in one DynamoDB transaction, so the UI cannot observe a pointer to a session whose durable STARTED record was never committed.
-- No new retry loop, browser action, model call, secret path, notification behavior, or recovery subsystem was added.
-- Live View remains a same-tab HTTPS handoff. After authentication the user returns to the application and refreshes capture state; automatic polling remains a UX improvement for the collector-worker slice.
+- Runtime scope remains deployment-owned tenant + AgentCore-provided user identity. Task JSON cannot override either.
+- Start launch happens only after the authenticated control-plane service validates the current capture session and commits WORKFLOW. Cross-tenant launch is rejected before AgentCore invocation.
+- Repeating Start retries an uncertain launch without rewinding control state. Same-process duplicate active Runtime tasks are suppressed; durable completed-session replay suppresses browser reconnection after completion.
+- Collector launch does not introduce a browser/model retry loop. It polls only bounded DynamoDB control state and exits on Finish or session expiry.
+- AgentCore Runtime already has the exact DynamoDB/S3/Browser Profile/automation-stream permissions required by capture completion; no new IAM wildcard or secret capability is required.
+- Background task failures are logged with a fixed event label only; browser/provider exception text and secrets are not reflected to the user or Runtime HTTP response.
+- The Runtime reports busy health while collection is active. Capture duration remains bounded by the existing durable capture expiry and Runtime max lifetime.
+- Observation cost starts only when the user presses Start recording workflow, so login/authentication time in Live View does not consume Playwright collector polling/automation-stream work.
 
 ### Tests / validation
 
-- New core tests cover bounded active-capture views, AUTH_SETUP -> WORKFLOW -> finish, duplicate finish replay, stale-session rejection, cross-tenant suppression, authenticated HTTP ownership, delegation of unrelated routes, and sanitized errors.
-- AWS capture-session tests cover atomic STARTED/current-pointer persistence, strongly consistent active lookup, completed-session suppression, completion transaction behavior, and replay classification.
-- Web client tests cover authenticated capture-state/start/finish routing and opaque capture-ID forwarding.
+- Core tests cover collection -> completion handoff, completed-session replay without browser work, session/automation identity mismatch, task launch after durable WORKFLOW, launch retry on replay, and durable WORKFLOW retention after uncertain Runtime launch.
+- AWS tests cover trusted Runtime task invocation, omission of tenant/workload secrets from task JSON, cross-tenant suppression, acknowledgement identity validation, Runtime-to-worker scope routing, WORKFLOW-first observation, no raw input retention, finish-before-connect optimization, and pre-WORKFLOW rejection.
 - This section does not claim the new head green until GitHub Actions completes on the exact published SHA.
 
 ## Next product milestones
 
-1. Run the existing Playwright capture collector as a long-running AgentCore Runtime capture task attached to the active browser session. It must poll the durable control state, record only `WORKFLOW` events, stop on finish/expiry, and invoke the existing IAM-only trusted capture-completion endpoint automatically.
-2. Add automatic readiness polling in the Next.js capture UX so finish transitions to compile-ready without manual refresh, while keeping signed Live View URLs and internal browser/profile identifiers out of browser storage and query strings.
-3. Add a deployment workflow/example using GitHub OIDC/short-lived AWS credentials that runs release + deploy without retaining ZIP artifacts in GitHub Actions storage.
-4. Perform one controlled real AWS demonstration: sign in -> BYOK -> capture -> compile/test -> publish -> schedule -> AgentCore browser/OpenAI execution -> verification/history/email, plus one bounded human takeover/resume path.
+1. Add automatic capture-readiness polling in the authenticated Next.js automation page so Finish transitions to `latestCapture` / Compile-ready without manual refresh, with a bounded interval and no Live View/browser identifiers stored client-side.
+2. Add a deployment workflow/example using GitHub OIDC/short-lived AWS credentials that runs release + deploy without retaining ZIP artifacts in GitHub Actions storage.
+3. Perform one controlled real AWS demonstration: sign in -> BYOK -> Live View capture -> compile -> fresh test -> approve/publish -> scheduled AgentCore browser/OpenAI execution -> verification/history/email, plus one bounded human takeover/resume path.
+4. Close only defects exposed by that vertical demo (including collector replacement-worker recovery if it proves necessary); do not return to speculative recovery micro-hardening.
 5. Add Google federation/adapters only after the AWS vertical slice is demonstrably complete.
 
 ## Known parked limitations
@@ -70,7 +72,8 @@ A new provider-neutral `CaptureRecordingControlPlaneService` exposes only the cu
 - Sensitive target-site runtime values still need a dedicated secret-resolution contract; passwords, cookies, provider keys, and equivalent secrets must never enter workflow/runtime-variable metadata.
 - Public HTTP command idempotency is incomplete outside operations that already have durable domain idempotency; add explicit command keys where live UX can produce duplicate mutations.
 - Automation status and EventBridge Scheduler state cannot be atomically committed across DynamoDB/Scheduler; lifecycle ordering fails closed, but a future reconciliation/status-repair path should make partial drift visible and repairable.
-- Recording controls are now production-composed, but the long-running capture worker still must consume them and call trusted completion; requesting Finish does not yet itself create a trace.
+- Capture-task duplicate suppression is process-local while the durable completed-session boundary is global. If a Runtime process is replaced mid-recording, the controlled AWS demo should determine whether a small durable collector claim is required; do not add it speculatively before evidence.
+- A background collector failure currently leaves WORKFLOW/finish state durable for user-visible retry/expiry rather than manufacturing a trace. A later UX/status slice should surface this explicitly if the real demo shows it is confusing.
 - Release upload is deliberately not transactional across both S3 objects. Partial upload produces no manifest/deployment authority but may leave an orphan object version until cleanup.
 - Live OpenAI/SES/Cognito/AgentCore validation still requires the controlled AWS environment; deterministic CI is not represented as live-cloud proof.
 - AgentCore Runtime/browser networking is PUBLIC for the arbitrary-web MVP and should be revisited where VPC egress can preserve target-site access.

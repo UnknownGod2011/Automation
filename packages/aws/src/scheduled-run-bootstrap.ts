@@ -3,6 +3,11 @@ import type {
   ReasoningCredentialPoolPolicy,
 } from "@automation/core";
 import {
+  CaptureCollectionService,
+  CaptureCollectionWorker,
+  CaptureCompletionService,
+} from "@automation/core";
+import {
   AwsS3ArtifactStore,
   AwsSdkS3ArtifactApi,
   loadAwsArtifactStoreConfig,
@@ -20,6 +25,14 @@ import {
   type AgentCoreBrowserConnectionSigner,
   type AgentCoreBrowserDataApi,
 } from "./browser-session.js";
+import { AgentCorePlaywrightCaptureEventSource } from "./capture-collector.js";
+import { AwsDynamoCaptureCollectionControlStore } from "./capture-control.js";
+import { AwsCaptureCollectionRuntimeHandler } from "./capture-runtime.js";
+import {
+  AgentCoreCaptureSessionFinalizer,
+} from "./capture-session.js";
+import { AwsDynamoCaptureSessionStore } from "./capture-session-store.js";
+import { AwsCaptureTraceRepository } from "./capture-trace-store.js";
 import { loadAwsAdapterConfig } from "./config.js";
 import { AwsDynamoCredentialMetadataRepository } from "./credential-metadata.js";
 import {
@@ -93,6 +106,7 @@ export type AwsScheduledRunBootstrapResult =
       kind: "CONFIGURED";
       handler: AwsScheduledRunHandler;
       freshTestHandler: AwsFreshTestRunHandler;
+      captureCollectionHandler: AwsCaptureCollectionRuntimeHandler;
       notifications: AwsScheduledReportingNotificationState;
       configuration: {
         region: string;
@@ -133,35 +147,17 @@ export function createAwsScheduledRunBootstrap(
 
   const overrides = options.overrides;
   const region = adapter.config.region;
-  const documentClient =
-    overrides?.dynamo ?? createAwsDynamoDocumentClient({ region });
+  const documentClient = overrides?.dynamo ?? createAwsDynamoDocumentClient({ region });
 
-  const automationRepository = new AwsDynamoAutomationRepository(
-    documentClient,
-    dynamo.config,
-  );
+  const automationRepository = new AwsDynamoAutomationRepository(documentClient, dynamo.config);
   const runRepository = new AwsDynamoRunRepository(documentClient, dynamo.config);
-  const checkpointRepository = new AwsDynamoCheckpointRepository(
-    documentClient,
-    dynamo.config,
-  );
-  const lockManager = new AwsDynamoAutomationLockManager(
-    documentClient,
-    dynamo.config,
-  );
-  const credentialMetadata = new AwsDynamoCredentialMetadataRepository(
-    documentClient,
-    dynamo.config,
-  );
+  const checkpointRepository = new AwsDynamoCheckpointRepository(documentClient, dynamo.config);
+  const lockManager = new AwsDynamoAutomationLockManager(documentClient, dynamo.config);
+  const credentialMetadata = new AwsDynamoCredentialMetadataRepository(documentClient, dynamo.config);
 
-  const artifactApi =
-    overrides?.artifacts ?? new AwsSdkS3ArtifactApi(artifacts.config, { region });
-  const artifactStore = new AwsS3ArtifactStore(
-    artifactApi,
-    artifacts.config.prefix,
-  );
-  const workflowDocuments =
-    overrides?.workflowDocuments ??
+  const artifactApi = overrides?.artifacts ?? new AwsSdkS3ArtifactApi(artifacts.config, { region });
+  const artifactStore = new AwsS3ArtifactStore(artifactApi, artifacts.config.prefix);
+  const workflowDocuments = overrides?.workflowDocuments ??
     new AwsSdkS3WorkflowDocumentApi(artifacts.config, { region });
   const workflowRepository = new AwsWorkflowVersionRepository(
     documentClient,
@@ -170,29 +166,20 @@ export function createAwsScheduledRunBootstrap(
     artifacts.config,
   );
 
-  const browserProfileApi =
-    overrides?.browserProfiles ?? new AwsSdkAgentCoreBrowserProfileApi({ region });
+  const browserProfileApi = overrides?.browserProfiles ?? new AwsSdkAgentCoreBrowserProfileApi({ region });
   const browserProfiles = new AgentCoreBrowserProfileStore(browserProfileApi);
-  const browserData =
-    overrides?.browserData ?? new AwsSdkAgentCoreBrowserDataApi({ region });
-  const browserSigner =
-    overrides?.browserSigner ?? new AwsAgentCoreBrowserConnectionSigner(region);
+  const browserData = overrides?.browserData ?? new AwsSdkAgentCoreBrowserDataApi({ region });
+  const browserSigner = overrides?.browserSigner ?? new AwsAgentCoreBrowserConnectionSigner(region);
   const sessions = new AgentCoreBrowserSessionManager(
     browserData,
     browserSigner,
     adapter.config.browserIdentifier,
   );
-  const runtimeFactory =
-    overrides?.runtimeFactory ?? new AgentCorePlaywrightRuntimeFactory(artifactStore);
+  const runtimeFactory = overrides?.runtimeFactory ?? new AgentCorePlaywrightRuntimeFactory(artifactStore);
 
-  const credentialControl =
-    overrides?.credentialControl ?? new AwsSdkAgentCoreApiKeyControlApi({ region });
-  const credentialData =
-    overrides?.credentialData ?? new AwsSdkAgentCoreApiKeyDataApi({ region });
-  const credentialVault = new AgentCoreIdentityCredentialVault(
-    credentialControl,
-    credentialData,
-  );
+  const credentialControl = overrides?.credentialControl ?? new AwsSdkAgentCoreApiKeyControlApi({ region });
+  const credentialData = overrides?.credentialData ?? new AwsSdkAgentCoreApiKeyDataApi({ region });
+  const credentialVault = new AgentCoreIdentityCredentialVault(credentialControl, credentialData);
 
   const reporting = createAwsScheduledRunReporting({
     env: options.env,
@@ -227,23 +214,60 @@ export function createAwsScheduledRunBootstrap(
     ...(overrides?.runner ? { runner: overrides.runner } : {}),
     ...(overrides?.openAiFetch ? { openAiFetch: overrides.openAiFetch } : {}),
   });
-  const freshTestHandler = new AwsFreshTestRunHandler(
-    handlerConfiguration.openAiModel,
+  const freshTestHandler = new AwsFreshTestRunHandler(handlerConfiguration.openAiModel, {
+    coordinator,
+    worker,
+    credentials,
+    ...(overrides?.freshTestRunner ? { runner: overrides.freshTestRunner } : {}),
+    ...(overrides?.openAiFetch ? { openAiFetch: overrides.openAiFetch } : {}),
+  });
+
+  const captureSessions = new AwsDynamoCaptureSessionStore(
+    documentClient,
+    dynamo.config.tableName,
+  );
+  const captureControls = new AwsDynamoCaptureCollectionControlStore(
+    documentClient,
+    dynamo.config.tableName,
+  );
+  const captureTraces = new AwsCaptureTraceRepository(
+    documentClient,
+    dynamo.config,
+    workflowDocuments,
+    artifacts.config,
+  );
+  const captureCollector = new CaptureCollectionService(
+    new AgentCorePlaywrightCaptureEventSource(
+      browserSigner,
+      adapter.config.browserIdentifier,
+    ),
+  );
+  const captureCompletion = new CaptureCompletionService(
+    captureSessions,
+    new AgentCoreCaptureSessionFinalizer(browserData, adapter.config.browserIdentifier),
     {
-      coordinator,
-      worker,
-      credentials,
-      ...(overrides?.freshTestRunner
-        ? { runner: overrides.freshTestRunner }
-        : {}),
-      ...(overrides?.openAiFetch ? { openAiFetch: overrides.openAiFetch } : {}),
+      async persistCapture(request) {
+        await captureTraces.putImmutable(request.trace);
+        return request.trace;
+      },
     },
+    captureTraces,
+  );
+  const captureCollectionHandler = new AwsCaptureCollectionRuntimeHandler(
+    new CaptureCollectionWorker({
+      automations: automationRepository,
+      sessions: captureSessions,
+      controls: captureControls,
+      collector: captureCollector,
+      completion: captureCompletion,
+    }),
   );
 
   return {
     kind: "CONFIGURED",
     handler,
     freshTestHandler,
+    captureCollectionHandler,
     notifications: reporting.notifications,
     configuration: {
       region,

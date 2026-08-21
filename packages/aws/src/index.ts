@@ -6,6 +6,7 @@ export * from "./capture-collector.js";
 export * from "./capture-control.js";
 export * from "./capture-completion-lambda.js";
 export * from "./capture-completion-runtime.js";
+export * from "./capture-runtime.js";
 export * from "./capture-session.js";
 export * from "./capture-session-store.js";
 export * from "./capture-trace-store.js";

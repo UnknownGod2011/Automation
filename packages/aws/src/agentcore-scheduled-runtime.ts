@@ -1,4 +1,5 @@
 import type {
+  CompleteCaptureResult,
   FreshTestRunResult,
   ScheduledRunWorkerResult,
 } from "@automation/core";
@@ -15,16 +16,17 @@ import {
   isAwsAgentCoreFreshTestPayload,
   type AwsFreshTestRunHandler,
 } from "./fresh-test-runtime.js";
+import {
+  isAwsAgentCoreCaptureCollectionPayload,
+  type AwsCaptureCollectionRuntimeHandler,
+} from "./capture-runtime.js";
 
 const TENANT_ID_ENV = "AUTOMATION_TENANT_ID";
 const MAX_RUNTIME_USER_ID_LENGTH = 128;
 export const AGENTCORE_RUNTIME_USER_ID_HEADER =
   "x-amzn-bedrock-agentcore-runtime-user-id";
 
-export type AwsAgentCoreRuntimeHttpHeaderValue =
-  | string
-  | readonly string[]
-  | undefined;
+export type AwsAgentCoreRuntimeHttpHeaderValue = string | readonly string[] | undefined;
 
 export type AwsAgentCoreScheduledRuntimeConfiguration =
   | { kind: "CONFIGURED"; tenantId: string }
@@ -39,11 +41,8 @@ export function readAwsAgentCoreScheduledRuntimeConfiguration(
 }
 
 export interface AwsAgentCoreScheduledRuntimeInvocation {
-  /** User identity supplied by AgentCore Runtime's trusted invocation context. */
   runtimeUserId: string;
-  /** Runtime-injected invocation headers, including WorkloadAccessToken. */
   headers: Readonly<Record<string, string | undefined>>;
-  /** Scheduled dispatch or fresh-test payload. */
   payload: unknown;
 }
 
@@ -95,13 +94,9 @@ function validateRuntimeUserId(value: string): string {
 
 export type AwsAgentCoreRuntimeExecutionResult =
   | ScheduledRunWorkerResult
-  | FreshTestRunResult;
+  | FreshTestRunResult
+  | CompleteCaptureResult;
 
-/**
- * AgentCore-hosted boundary for scheduled execution and explicit fresh tests.
- * Tenant/user ownership is always reconstructed from Runtime context; fresh
- * test JSON carries no ownership identity and cannot supply a workload token.
- */
 export class AwsAgentCoreScheduledRuntimeEntrypoint {
   constructor(
     private readonly configuration: Extract<
@@ -110,6 +105,7 @@ export class AwsAgentCoreScheduledRuntimeEntrypoint {
     >,
     private readonly handler: Pick<AwsScheduledRunHandler, "handle">,
     private readonly freshTestHandler?: Pick<AwsFreshTestRunHandler, "handle">,
+    private readonly captureCollectionHandler?: Pick<AwsCaptureCollectionRuntimeHandler, "handle">,
   ) {}
 
   async handle(
@@ -124,6 +120,12 @@ export class AwsAgentCoreScheduledRuntimeEntrypoint {
       headers: invocation.headers,
       payload: invocation.payload,
     };
+    if (isAwsAgentCoreCaptureCollectionPayload(invocation.payload)) {
+      if (!this.captureCollectionHandler) {
+        throw new Error("AgentCore capture collection is not configured");
+      }
+      return this.captureCollectionHandler.handle(trustedInvocation);
+    }
     if (isAwsAgentCoreFreshTestPayload(invocation.payload)) {
       if (!this.freshTestHandler) {
         throw new Error("AgentCore fresh-test execution is not configured");
@@ -166,6 +168,7 @@ export function createAwsAgentCoreScheduledRuntime(
       runtime,
       bootstrap.handler,
       bootstrap.freshTestHandler,
+      bootstrap.captureCollectionHandler,
     ),
     bootstrap,
   };

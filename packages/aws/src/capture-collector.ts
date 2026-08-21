@@ -1,10 +1,9 @@
 import type { CaptureEvent, CaptureSemanticTarget } from "@automation/contracts";
 import type {
   CaptureCollectionEventSource,
-  CaptureCollectionPhase,
   CaptureCollectionSourceRequest,
 } from "@automation/core";
-import { chromium, type BrowserContext, type Page } from "playwright-core";
+import { chromium, type Page } from "playwright-core";
 import type { AgentCoreBrowserConnectionSigner } from "./browser-session.js";
 
 const DEFAULT_CONTROL_POLL_MS = 250;
@@ -128,6 +127,18 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
   }
 
   async collect(request: CaptureCollectionSourceRequest): Promise<readonly CaptureEvent[]> {
+    // Production launches this task only after the durable AUTH_SETUP -> WORKFLOW transition.
+    // Read that authority before attaching listeners so the first observed event cannot be
+    // incorrectly classified as authentication setup while a control poll is still pending.
+    const initialState = await request.control.getState(
+      request.scope,
+      request.session.captureSessionId,
+    );
+    if (initialState.phase !== "WORKFLOW") {
+      throw new Error("capture event collection requires WORKFLOW phase");
+    }
+    if (initialState.finishRequested) return [];
+
     const connection = await this.signer.sign(this.browserIdentifier, request.session.browserSessionId);
     const browser = await chromium.connectOverCDP(connection.endpoint, {
       headers: { ...connection.headers },
@@ -137,7 +148,6 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
     if (!context) throw new Error("AgentCore capture browser has no Playwright context");
 
     const events: CaptureEvent[] = [];
-    let phase: CaptureCollectionPhase = "AUTH_SETUP";
     let sequence = 0;
     let lastTimestamp = new Date(request.session.startedAt).getTime();
 
@@ -153,7 +163,7 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
         eventId: `${request.session.captureSessionId}-event-${sequence}`,
         sequence,
         occurredAt: timestamp(),
-        purpose: phase,
+        purpose: "WORKFLOW",
       });
     };
 
@@ -215,7 +225,9 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
 
     while (true) {
       const state = await request.control.getState(request.scope, request.session.captureSessionId);
-      phase = state.phase;
+      if (state.phase !== "WORKFLOW") {
+        throw new Error("capture collection phase changed unexpectedly");
+      }
       if (state.finishRequested) break;
       if (this.now().getTime() >= new Date(request.session.expiresAt).getTime()) {
         throw new Error("capture session expired while waiting for completion");

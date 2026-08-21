@@ -50,6 +50,7 @@ export * from "./capture-control.js";
 export * from "./capture-completion.js";
 export * from "./capture-completion-http.js";
 export * from "./capture-recording.js";
+export * from "./capture-worker.js";
 export * from "./control-plane.js";
 export * from "./control-plane-http.js";
 export * from "./coordinator.js";
