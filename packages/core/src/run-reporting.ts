@@ -5,6 +5,7 @@ import type {
   RunRecord,
   RunStatus,
 } from "@automation/contracts";
+import type { ExecutionResult } from "./execution.js";
 import type { NotificationPort, OwnershipScope } from "./index.js";
 import type { ScheduledRunWorkerResult } from "./worker.js";
 
@@ -15,8 +16,10 @@ export type ScheduledRunTelemetryOutcome =
   | "SKIPPED"
   | "DUPLICATE";
 
+export type RunTelemetryEventName = "scheduled_run_outcome" | "human_resume_outcome";
+
 export interface ScheduledRunTelemetryEvent {
-  eventName: "scheduled_run_outcome";
+  eventName: RunTelemetryEventName;
   observedAt: string;
   tenantId: string;
   userId: string;
@@ -56,6 +59,23 @@ export interface ScheduledRunOutcomeContext {
   checkpoint?: RunCheckpoint | null;
 }
 
+export interface HumanResumeOutcomeContext {
+  scope: OwnershipScope;
+  automation: AutomationRecord;
+  execution: ExecutionResult;
+}
+
+interface ResolvedOutcomeContext {
+  eventName: RunTelemetryEventName;
+  warningPrefix: "scheduled run" | "human resume";
+  scope: OwnershipScope;
+  automation: AutomationRecord;
+  run: RunRecord;
+  checkpoint: RunCheckpoint | null;
+  outcome: ScheduledRunTelemetryOutcome;
+  cleanupWarningCount: number;
+}
+
 function resultRun(result: ScheduledRunWorkerResult): RunRecord {
   return result.kind === "EXECUTED" ? result.execution.run : result.preparation.run;
 }
@@ -72,10 +92,18 @@ function outcomeFor(result: ScheduledRunWorkerResult, run: RunRecord): Scheduled
     if (result.preparation.kind === "DUPLICATE") return "DUPLICATE";
     if (result.preparation.kind === "SKIPPED") return "SKIPPED";
   }
+  return outcomeForRun(run);
+}
+
+function outcomeForRun(run: RunRecord): ScheduledRunTelemetryOutcome {
   if (run.status === "SUCCEEDED") return "SUCCEEDED";
   if (run.status === "WAITING_FOR_HUMAN") return "NEEDS_ATTENTION";
   if (run.status === "SKIPPED" || run.status === "CANCELED") return "SKIPPED";
   return "FAILED";
+}
+
+function isHumanResumeReportable(status: RunStatus): boolean {
+  return ["WAITING_FOR_HUMAN", "SUCCEEDED", "FAILED", "CANCELED", "SKIPPED"].includes(status);
 }
 
 function durationMs(run: RunRecord): number | undefined {
@@ -148,21 +176,55 @@ export class ScheduledRunOutcomeReporter {
 
   async report(context: ScheduledRunOutcomeContext): Promise<ScheduledRunOutcomeReport> {
     const run = resultRun(context.result);
+    return this.reportResolved({
+      eventName: "scheduled_run_outcome",
+      warningPrefix: "scheduled run",
+      scope: context.scope,
+      automation: context.automation,
+      run,
+      checkpoint: resultCheckpoint(context.result, context.checkpoint),
+      outcome: outcomeFor(context.result, run),
+      cleanupWarningCount: context.result.cleanupWarnings.length,
+    });
+  }
+
+  /**
+   * Reports only newly executed human-resume outcomes. Callers should never
+   * invoke this for claim replay/conflict/busy results, which prevents duplicate
+   * user email when a resolution command is delivered more than once.
+   */
+  async reportHumanResume(context: HumanResumeOutcomeContext): Promise<ScheduledRunOutcomeReport> {
+    const run = context.execution.run;
+    if (!isHumanResumeReportable(run.status)) {
+      return { telemetryDelivered: false, notificationDelivered: false, warnings: [] };
+    }
+    return this.reportResolved({
+      eventName: "human_resume_outcome",
+      warningPrefix: "human resume",
+      scope: context.scope,
+      automation: context.automation,
+      run,
+      checkpoint: context.execution.checkpoint,
+      outcome: outcomeForRun(run),
+      cleanupWarningCount: 0,
+    });
+  }
+
+  private async reportResolved(context: ResolvedOutcomeContext): Promise<ScheduledRunOutcomeReport> {
+    const { run } = context;
     if (
       run.tenantId !== context.scope.tenantId ||
       run.userId !== context.scope.userId ||
       run.automationId !== context.automation.automationId
     ) {
-      throw new Error("scheduled run reporting ownership does not match context");
+      throw new Error(`${context.warningPrefix} reporting ownership does not match context`);
     }
 
-    const checkpoint = resultCheckpoint(context.result, context.checkpoint);
-    const failure = run.failure ?? checkpoint?.lastFailure;
-    const outcome = outcomeFor(context.result, run);
+    const failure = run.failure ?? context.checkpoint?.lastFailure;
     const warnings: string[] = [];
     const duration = durationMs(run);
     const event: ScheduledRunTelemetryEvent = {
-      eventName: "scheduled_run_outcome",
+      eventName: context.eventName,
       observedAt: this.now().toISOString(),
       tenantId: run.tenantId,
       userId: run.userId,
@@ -171,8 +233,8 @@ export class ScheduledRunOutcomeReporter {
       workflowVersion: run.workflowVersion,
       scheduledAt: run.scheduledAt,
       runStatus: run.status,
-      outcome,
-      cleanupWarningCount: context.result.cleanupWarnings.length,
+      outcome: context.outcome,
+      cleanupWarningCount: context.cleanupWarningCount,
       ...(duration !== undefined ? { durationMs: duration } : {}),
       ...(run.currentNodeId ? { nodeId: run.currentNodeId } : {}),
       ...(failure ? { failureCode: failure.code } : {}),
@@ -183,19 +245,19 @@ export class ScheduledRunOutcomeReporter {
       await this.dependencies.telemetry.emit(event);
       telemetryDelivered = true;
     } catch {
-      const warning = "scheduled run telemetry delivery failed";
+      const warning = `${context.warningPrefix} telemetry delivery failed`;
       warnings.push(warning);
       this.warn(warning);
     }
 
     let notificationDelivered = false;
-    const notification = notificationFor(context.automation, run, outcome, failure?.code);
+    const notification = notificationFor(context.automation, run, context.outcome, failure?.code);
     if (notification && this.dependencies.notifications) {
       try {
         await this.dependencies.notifications.send(context.scope, notification);
         notificationDelivered = true;
       } catch {
-        const warning = "scheduled run notification delivery failed";
+        const warning = `${context.warningPrefix} notification delivery failed`;
         warnings.push(warning);
         this.warn(warning);
       }

@@ -31,6 +31,8 @@ describe("AwsCloudWatchEmfTelemetryPort", () => {
     expect(lines).toHaveLength(1);
     const payload = JSON.parse(lines[0] ?? "{}") as {
       _aws?: { CloudWatchMetrics?: Array<{ Dimensions?: string[][] }> };
+      EventName?: string;
+      ScheduledRunCount?: number;
       TenantId?: string;
       RunId?: string;
       Outcome?: string;
@@ -39,6 +41,8 @@ describe("AwsCloudWatchEmfTelemetryPort", () => {
     };
     expect(payload._aws?.CloudWatchMetrics?.[0]?.Dimensions).toEqual([["Service", "Outcome"]]);
     expect(payload).toMatchObject({
+      EventName: "scheduled_run_outcome",
+      ScheduledRunCount: 1,
       TenantId: "tenant-1",
       RunId: "run-1",
       Outcome: "FAILED",
@@ -47,6 +51,37 @@ describe("AwsCloudWatchEmfTelemetryPort", () => {
     });
     expect(lines[0]).not.toContain("cookie");
     expect(lines[0]).not.toContain("ownerToken");
+  });
+
+  it("counts human-resume outcomes separately from scheduled occurrences", async () => {
+    const lines: string[] = [];
+    const telemetry = new AwsCloudWatchEmfTelemetryPort(
+      { namespace: "AutomationPlatform", service: "scheduled-run" },
+      { write(value) { lines.push(value); } },
+    );
+    const { failureCode: _failureCode, ...baseEvent } = event;
+
+    await telemetry.emit({
+      ...baseEvent,
+      eventName: "human_resume_outcome",
+      outcome: "SUCCEEDED",
+      runStatus: "SUCCEEDED",
+      cleanupWarningCount: 0,
+    });
+
+    const payload = JSON.parse(lines[0] ?? "{}") as {
+      _aws?: { CloudWatchMetrics?: Array<{ Metrics?: Array<{ Name?: string }> }> };
+      EventName?: string;
+      HumanResumeCount?: number;
+      ScheduledRunCount?: number;
+    };
+    expect(payload.EventName).toBe("human_resume_outcome");
+    expect(payload.HumanResumeCount).toBe(1);
+    expect(payload.ScheduledRunCount).toBeUndefined();
+    expect(payload._aws?.CloudWatchMetrics?.[0]?.Metrics?.map((metric) => metric.Name))
+      .toContain("HumanResumeCount");
+    expect(payload._aws?.CloudWatchMetrics?.[0]?.Metrics?.map((metric) => metric.Name))
+      .not.toContain("ScheduledRunCount");
   });
 
   it("rejects invalid configuration and timestamps before emitting", async () => {

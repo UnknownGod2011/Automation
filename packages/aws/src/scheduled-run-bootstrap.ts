@@ -242,6 +242,7 @@ export function createAwsScheduledRunBootstrap(
     credentialPolicy,
     openAiModel: handlerConfiguration.openAiModel,
     browserSessionTimeoutSeconds: adapter.config.browserSessionTimeoutSeconds,
+    reporter: reporting.reporter,
     ...(overrides?.openAiFetch ? { openAiFetch: overrides.openAiFetch } : {}),
   });
 

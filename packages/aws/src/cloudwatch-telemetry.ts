@@ -44,8 +44,11 @@ export class AwsCloudWatchEmfTelemetryPort implements RunTelemetryPort {
     const timestamp = Date.parse(event.observedAt);
     if (!Number.isFinite(timestamp)) throw new Error("telemetry observedAt must be an ISO timestamp");
 
+    const countMetricName = event.eventName === "human_resume_outcome"
+      ? "HumanResumeCount"
+      : "ScheduledRunCount";
     const metricDefinitions: Array<{ Name: string; Unit: "Count" | "Milliseconds" }> = [
-      { Name: "ScheduledRunCount", Unit: "Count" },
+      { Name: countMetricName, Unit: "Count" },
       { Name: "CleanupWarningCount", Unit: "Count" },
     ];
     if (event.durationMs !== undefined) {
@@ -63,7 +66,8 @@ export class AwsCloudWatchEmfTelemetryPort implements RunTelemetryPort {
       },
       Service: this.service,
       Outcome: event.outcome,
-      ScheduledRunCount: 1,
+      EventName: event.eventName,
+      [countMetricName]: 1,
       CleanupWarningCount: event.cleanupWarningCount,
       TenantId: event.tenantId,
       UserId: event.userId,

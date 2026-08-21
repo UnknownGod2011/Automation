@@ -21,6 +21,7 @@ import {
   type OwnershipScope,
   type ReasoningCredentialPoolPolicy,
   type RunRepository,
+  type ScheduledRunOutcomeReporter,
   type WorkflowVersionRepository,
 } from "@automation/core";
 import {
@@ -180,6 +181,9 @@ export interface AwsHumanResumeRunHandlerDependencies {
   openAiModel: string;
   browserSessionTimeoutSeconds: number;
   openAiFetch?: OpenAiFetch;
+  /** Best-effort terminal outcome reporting; never human-resume execution authority. */
+  reporter?: Pick<ScheduledRunOutcomeReporter, "reportHumanResume">;
+  onReportingWarning?: (message: string) => void;
   now?: () => Date;
 }
 
@@ -200,6 +204,13 @@ export class AwsHumanResumeRunHandler {
     }
     if (run.status !== "WAITING_FOR_HUMAN") {
       return { kind: "NOT_WAITING", runId: run.runId, status: run.status };
+    }
+
+    const reportingAutomation = this.dependencies.reporter
+      ? await this.dependencies.automations.get(scope, payload.automationId)
+      : null;
+    if (this.dependencies.reporter && !reportingAutomation) {
+      throw new Error("human-resume automation is unavailable for trusted outcome reporting");
     }
 
     const workloadAccessToken = new AgentCoreRuntimeHeaderWorkloadAccessTokenSource(
@@ -273,6 +284,17 @@ export class AwsHumanResumeRunHandler {
       resolutionId: payload.resolutionId,
     });
     if (outcome.kind === "EXECUTED") {
+      if (this.dependencies.reporter && reportingAutomation) {
+        try {
+          await this.dependencies.reporter.reportHumanResume({
+            scope,
+            automation: reportingAutomation,
+            execution: outcome.execution,
+          });
+        } catch {
+          this.dependencies.onReportingWarning?.("human resume outcome reporting failed");
+        }
+      }
       return {
         kind: "RESUMED",
         runId: payload.runId,

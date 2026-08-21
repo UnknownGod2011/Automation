@@ -163,6 +163,55 @@ describe("ScheduledRunOutcomeReporter", () => {
     expect(messages[0]?.body).not.toContain("artifact-private");
   });
 
+  it("reports a newly executed human resume through the same sanitized success boundary", async () => {
+    const events: unknown[] = [];
+    const messages: NotificationMessage[] = [];
+    const reporter = new ScheduledRunOutcomeReporter({
+      telemetry: { async emit(event) { events.push(event); } },
+      notifications: { async send(_scope, message) { messages.push(message); } },
+    });
+
+    const report = await reporter.reportHumanResume({
+      scope,
+      automation: automation({ notifyOnSuccess: true }),
+      execution: {
+        run: run("SUCCEEDED", {
+          startedAt: "2026-08-20T06:00:01.000Z",
+          finishedAt: "2026-08-20T06:00:04.000Z",
+        }),
+        checkpoint: null,
+      },
+    });
+
+    expect(report).toMatchObject({ telemetryDelivered: true, notificationDelivered: true });
+    expect(events).toEqual([expect.objectContaining({
+      eventName: "human_resume_outcome",
+      outcome: "SUCCEEDED",
+      runId: "run-1",
+    })]);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.kind).toBe("RUN_SUCCEEDED");
+  });
+
+  it("does not report an in-progress human resume as a terminal product outcome", async () => {
+    let calls = 0;
+    const reporter = new ScheduledRunOutcomeReporter({
+      telemetry: { async emit() { calls += 1; } },
+      notifications: { async send() { calls += 1; } },
+    });
+
+    await expect(reporter.reportHumanResume({
+      scope,
+      automation: automation(),
+      execution: { run: run("RUNNING"), checkpoint: null },
+    })).resolves.toEqual({
+      telemetryDelivered: false,
+      notificationDelivered: false,
+      warnings: [],
+    });
+    expect(calls).toBe(0);
+  });
+
   it("suppresses duplicate-delivery email and treats reporting outages as non-authoritative warnings", async () => {
     const warnings: string[] = [];
     let sends = 0;
