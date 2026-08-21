@@ -212,7 +212,7 @@ export function createAwsControlPlaneBootstrap(
     dynamo.config.tableName,
   );
   const captureControlStore = new AwsDynamoCaptureCollectionControlStore(
-    captureDynamo,
+    documentClient,
     dynamo.config.tableName,
   );
   const captureControl = new CaptureCollectionControlService(captureState, captureControlStore);
