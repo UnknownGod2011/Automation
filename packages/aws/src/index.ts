@@ -28,6 +28,7 @@ export * from "./human-resume-reconciliation-runtime.js";
 export * from "./human-resume-reconciliation-verifier.js";
 export * from "./human-resume-runtime.js";
 export * from "./human-resume-transition.js";
+export * from "./human-takeover.js";
 export * from "./identity-vault.js";
 export * from "./openai-byok-reasoning.js";
 export * from "./playwright-runtime.js";

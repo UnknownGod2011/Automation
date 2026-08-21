@@ -103,16 +103,28 @@ function firstHumanSuccessor(graphNode: WorkflowNode | undefined, nodes: Readonl
   return successor;
 }
 
+function resumeEffectBoundary(request: HumanResumeExecutionRequest, graphNode: WorkflowNode | undefined, nodes: Readonly<Record<string, WorkflowNode>>): WorkflowNode | null {
+  if (!graphNode) throw new Error("human resume durable node is missing from immutable workflow");
+  if (graphNode.kind === "HUMAN") return firstHumanSuccessor(graphNode, nodes);
+  const failure = request.validated.checkpoint.lastFailure;
+  if (
+    failure?.code !== "TARGET_AUTH_REQUIRED" ||
+    failure.nodeId !== request.command.expectedNodeId
+  ) {
+    throw new Error("human resume non-HUMAN node is not a target-authentication repair boundary");
+  }
+  return null;
+}
+
 /**
  * Provider-neutral production resume worker. It reconstructs the exact immutable
  * workflow/browser-profile runtime and continuously fences browser/model work behind
  * durable human-resume execution ownership.
  *
- * Before the first resumed successor can dispatch an external side effect, the worker
- * durably prepares one reconciliation identity for the exact pause/resolution/successor
- * boundary. Preparation is lease-fenced and is reused across deterministic/semantic
- * fallback for the same node. A storage conflict or uncertainty fails closed before
- * the browser action starts.
+ * Explicit HUMAN nodes retain durable first-successor effect reconciliation. A
+ * non-HUMAN resume is permitted only after a durable TARGET_AUTH_REQUIRED failure on
+ * that exact node, because the repair path restores authentication and retries the
+ * same immutable node rather than selecting new control flow.
  */
 export class HumanResumeWorker implements HumanResumeExecutor {
   private readonly now: () => Date;
@@ -165,7 +177,11 @@ export class HumanResumeWorker implements HumanResumeExecutor {
     if (graph.automationId !== run.automationId || graph.version !== run.workflowVersion) {
       throw new Error("human resume workflow identity does not match durable run");
     }
-    const firstSuccessor = firstHumanSuccessor(graph.nodes[request.command.expectedNodeId], graph.nodes);
+    const firstSuccessor = resumeEffectBoundary(
+      request,
+      graph.nodes[request.command.expectedNodeId],
+      graph.nodes,
+    );
 
     const profileRef = automation.browserProfileRef;
     if (!profileRef) {
@@ -192,7 +208,6 @@ export class HumanResumeWorker implements HumanResumeExecutor {
       this.heartbeatIntervalMs,
     );
 
-    // Fence browser/model startup itself, then keep ownership alive during long calls.
     await heartbeat.renewNow();
     heartbeat.start();
     const renewingCheckpoints = new LeaseRenewingCheckpointRepository(
@@ -203,7 +218,7 @@ export class HumanResumeWorker implements HumanResumeExecutor {
     let preparedFirstSuccessorEffect = false;
     let effectIdentity: HumanResumeEffectIdentity | null = null;
     const prepareFirstSuccessorEffect = async (node: WorkflowNode): Promise<void> => {
-      if (node.id !== firstSuccessor.id || node.allowedSideEffects.length === 0) return;
+      if (!firstSuccessor || node.id !== firstSuccessor.id || node.allowedSideEffects.length === 0) return;
       if (preparedFirstSuccessorEffect) return;
       if (!node.verification) {
         throw new Error("side-effecting human resume successor has no verification contract");

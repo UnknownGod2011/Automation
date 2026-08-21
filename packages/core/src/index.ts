@@ -71,6 +71,7 @@ export * from "./human-resume-recovery.js";
 export * from "./human-resume-transition.js";
 export * from "./human-resume.js";
 export * from "./human-resume-worker.js";
+export * from "./human-takeover.js";
 export * from "./memory.js";
 export * from "./product-lifecycle.js";
 export * from "./run-detail.js";

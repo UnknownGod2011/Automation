@@ -14,6 +14,8 @@ import {
   CaptureRecordingControlPlaneService,
   HumanResumeControlPlaneHttpHandler,
   HumanResumeControlPlaneService,
+  HumanTakeoverControlPlaneHttpHandler,
+  HumanTakeoverService,
   ProviderCredentialManagementService,
   RunDetailControlPlaneHttpHandler,
   RunDetailService,
@@ -66,6 +68,10 @@ import {
   type AgentCoreFreshTestInvokeApi,
 } from "./fresh-test-runtime.js";
 import { AwsAgentCoreHumanResumeExecutionPort } from "./human-resume-runtime.js";
+import {
+  AgentCoreHumanTakeoverBrowser,
+  AwsDynamoHumanTakeoverSessionStore,
+} from "./human-takeover.js";
 import {
   AgentCoreIdentityCredentialVault,
   AwsSdkAgentCoreApiKeyControlApi,
@@ -292,16 +298,28 @@ export function createAwsControlPlaneBootstrap(
     baseHttp,
     new RunDetailService(runs, checkpoints, workflows),
   );
+  const humanResumeService = new HumanResumeControlPlaneService(runs, checkpoints, humanResume);
   const humanResumeHttp = new HumanResumeControlPlaneHttpHandler(
     runDetailHttp,
-    new HumanResumeControlPlaneService(runs, checkpoints, humanResume),
+    humanResumeService,
+  );
+  const takeoverHttp = new HumanTakeoverControlPlaneHttpHandler(
+    humanResumeHttp,
+    new HumanTakeoverService(
+      automations,
+      runs,
+      checkpoints,
+      new AwsDynamoHumanTakeoverSessionStore(documentClient, dynamo.config.tableName),
+      new AgentCoreHumanTakeoverBrowser(browserData, liveViewSigner, adapter.config.browserIdentifier),
+      humanResumeService,
+    ),
   );
   const captureRecording = new CaptureRecordingControlPlaneService(
     captureState,
     captureControl,
     captureTaskStarter,
   );
-  const http = new CaptureAwareControlPlaneHttpHandler(humanResumeHttp, captureRecording);
+  const http = new CaptureAwareControlPlaneHttpHandler(takeoverHttp, captureRecording);
   const lambda = createAwsControlPlaneLambdaHandler(options.env, http);
   if (lambda.kind !== "CONFIGURED") {
     return { kind: "NOT_CONFIGURED", missing: lambda.missing };

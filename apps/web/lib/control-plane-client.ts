@@ -4,6 +4,7 @@ import type {
   CaptureStartResult,
   DashboardView,
   HumanResumeSubmissionResult,
+  HumanTakeoverStartResult,
   ProviderCredentialSummary,
   RunDetailView,
   RunSummaryView,
@@ -112,10 +113,21 @@ export class WebControlPlaneClient {
   ): Promise<HumanResumeSubmissionResult> {
     return this.request(
       `/v1/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}/resume`,
-      {
-        method: "POST",
-        body: JSON.stringify({ expectedNodeId }),
-      },
+      { method: "POST", body: JSON.stringify({ expectedNodeId }) },
+    );
+  }
+
+  async startHumanTakeover(automationId: string, runId: string): Promise<HumanTakeoverStartResult> {
+    return this.request(
+      `/v1/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}/takeover/start`,
+      { method: "POST", body: "{}" },
+    );
+  }
+
+  async finishHumanTakeover(automationId: string, runId: string): Promise<HumanResumeSubmissionResult> {
+    return this.request(
+      `/v1/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}/takeover/finish`,
+      { method: "POST", body: "{}" },
     );
   }
 
@@ -128,23 +140,18 @@ export class WebControlPlaneClient {
   }
 
   async createCredential(body: Readonly<Record<string, unknown>>): Promise<ProviderCredentialSummary> {
-    return this.request("/v1/credentials", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
+    return this.request("/v1/credentials", { method: "POST", body: JSON.stringify(body) });
   }
 
   async rotateCredential(credentialId: string, apiKey: string): Promise<ProviderCredentialSummary> {
     return this.request(`/v1/credentials/${encodeURIComponent(credentialId)}/rotate`, {
-      method: "POST",
-      body: JSON.stringify({ apiKey }),
+      method: "POST", body: JSON.stringify({ apiKey }),
     });
   }
 
   async removeCredential(credentialId: string): Promise<{ removed: boolean }> {
     return this.request(`/v1/credentials/${encodeURIComponent(credentialId)}/remove`, {
-      method: "POST",
-      body: "{}",
+      method: "POST", body: "{}",
     });
   }
 
@@ -154,35 +161,29 @@ export class WebControlPlaneClient {
 
   async capture(automationId: string): Promise<CaptureStartResult> {
     return this.request(`/v1/automations/${encodeURIComponent(automationId)}/capture`, {
-      method: "POST",
-      body: "{}",
+      method: "POST", body: "{}",
     });
   }
 
   async captureRecording(automationId: string): Promise<CaptureRecordingView> {
-    return this.request(`/v1/automations/${encodeURIComponent(automationId)}/capture-recording`, {
-      method: "GET",
-    });
+    return this.request(`/v1/automations/${encodeURIComponent(automationId)}/capture-recording`, { method: "GET" });
   }
 
   async startCaptureRecording(automationId: string, captureSessionId: string): Promise<CaptureRecordingView> {
     return this.request(`/v1/automations/${encodeURIComponent(automationId)}/capture-recording/start`, {
-      method: "POST",
-      body: JSON.stringify({ captureSessionId }),
+      method: "POST", body: JSON.stringify({ captureSessionId }),
     });
   }
 
   async finishCaptureRecording(automationId: string, captureSessionId: string): Promise<CaptureRecordingView> {
     return this.request(`/v1/automations/${encodeURIComponent(automationId)}/capture-recording/finish`, {
-      method: "POST",
-      body: JSON.stringify({ captureSessionId }),
+      method: "POST", body: JSON.stringify({ captureSessionId }),
     });
   }
 
   async command<T>(automationId: string, command: AutomationCommand, body: unknown): Promise<T> {
     return this.request<T>(`/v1/automations/${encodeURIComponent(automationId)}/${command}`, {
-      method: "POST",
-      body: JSON.stringify(body),
+      method: "POST", body: JSON.stringify(body),
     });
   }
 

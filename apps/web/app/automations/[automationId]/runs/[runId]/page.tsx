@@ -30,6 +30,12 @@ export default async function RunDetailPage({
   }
 
   const pausedNodeId = run.checkpoint?.currentNodeId ?? run.currentNodeId;
+  const targetAuthRepairEligible = Boolean(
+    run.needsHumanAttention &&
+    pausedNodeId &&
+    run.checkpoint?.lastFailure?.code === "TARGET_AUTH_REQUIRED" &&
+    run.checkpoint.lastFailure.nodeId === pausedNodeId,
+  );
 
   return (
     <>
@@ -50,6 +56,8 @@ export default async function RunDetailPage({
 
       {notice === "resume-submitted" ? <section className="card" style={{ marginBottom: 18 }}><p>Resume command submitted. Refresh this run to see the latest durable state.</p></section> : null}
       {notice === "resume-failed" ? <section className="card" style={{ marginBottom: 18 }}><p>The resume command was not accepted. The run remains protected by its durable pause boundary.</p></section> : null}
+      {notice === "takeover-finished" ? <section className="card" style={{ marginBottom: 18 }}><p>The repaired browser profile was saved and the durable resume command was submitted. Refresh to see the latest run state.</p></section> : null}
+      {notice === "takeover-failed" ? <section className="card" style={{ marginBottom: 18 }}><p>The repair session could not be completed. The run remains safely paused.</p></section> : null}
 
       {run.needsHumanAttention ? (
         <section className="card stack" style={{ marginBottom: 18 }}>
@@ -65,8 +73,20 @@ export default async function RunDetailPage({
               </form>
               <p className="muted">Duplicate submissions reuse a server-owned resolution identity at the run/node boundary. The UI cannot choose another branch, claim ID, or execution credential.</p>
             </>
+          ) : targetAuthRepairEligible ? (
+            <>
+              <p>The target website requires you to repair its authenticated session. Open the isolated repair browser and sign in or complete any required MFA yourself. The platform will not solve or bypass CAPTCHA, MFA, or other security controls.</p>
+              <form action={`/api/ui/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}/takeover/start`} method="post" target="_blank">
+                <button className="button" type="submit">Open secure repair browser</button>
+              </form>
+              <p>When the site is usable again, return here and save the repaired session. The same paused node will then resume through the existing durable resolution authority.</p>
+              <form action={`/api/ui/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}/takeover/finish`} method="post">
+                <button className="button" type="submit">Save repaired session &amp; resume</button>
+              </form>
+              <p className="muted">Browser session IDs and Browser Profile references stay server-side. Duplicate repair starts reuse the active repair session, and Runtime revalidates the durable run/node before execution.</p>
+            </>
           ) : (
-            <p className="muted">This pause is not an explicit resumable HUMAN node. Browser takeover for authentication or repair remains a separate protected recovery path and is not exposed by this button.</p>
+            <p className="muted">This pause does not expose a safe automated continuation. The platform will keep the run paused rather than guessing or bypassing a security/policy boundary.</p>
           )}
         </section>
       ) : null}
