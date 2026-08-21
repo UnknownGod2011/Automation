@@ -2,6 +2,7 @@ export * from "./agentcore-scheduled-runtime.js";
 export * from "./artifact-store.js";
 export * from "./browser-profile.js";
 export * from "./browser-session.js";
+export * from "./capture-collector.js";
 export * from "./capture-completion-lambda.js";
 export * from "./capture-completion-runtime.js";
 export * from "./capture-session.js";

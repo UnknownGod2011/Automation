@@ -45,6 +45,7 @@ export interface VerificationResult { verified: boolean; evidenceRefs: readonly 
 export interface VerificationEngine { verify(context: VerificationContext): Promise<VerificationResult>; }
 
 export * from "./automation-schedule-lifecycle.js";
+export * from "./capture-collector.js";
 export * from "./capture-completion.js";
 export * from "./capture-completion-http.js";
 export * from "./control-plane.js";
