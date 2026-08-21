@@ -52,6 +52,9 @@ jobs:
       - name: Verify AWS web demo environment contract
         shell: bash
         run: bash scripts/test-prepare-web-demo-env.sh
+      - name: Verify AWS live deployment smoke contract
+        shell: bash
+        run: bash scripts/test-smoke-aws-deployment.sh
       - name: Verify GitHub OIDC deployment workflow contract
         shell: bash
         run: bash scripts/test-github-oidc-deploy-workflow.sh
