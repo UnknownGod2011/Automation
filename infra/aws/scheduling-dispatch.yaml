@@ -6,12 +6,20 @@ Parameters:
     Type: String
     Default: dev
     AllowedPattern: '^[A-Za-z0-9-]+$'
-  DispatcherFunctionArn:
+  DispatcherCodeBucket:
     Type: String
-    Description: ARN of the built dispatcher Lambda using AwsSqsScheduledDispatchHandler.
-  DispatcherFunctionRoleName:
+    Description: Versioned S3 bucket containing the immutable Lambda artifact.
+  DispatcherCodeObjectKey:
     Type: String
-    Description: IAM role name used by the dispatcher Lambda.
+    Description: S3 key of the immutable control-plane Lambda artifact containing dispatcher-lambda.mjs.
+  DispatcherCodeObjectVersion:
+    Type: String
+    Description: Exact S3 VersionId for the dispatcher Lambda artifact.
+  DispatcherReservedConcurrency:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    MaxValue: 100
   AgentRuntimeArn:
     Type: String
     Description: ARN of the AgentCore Runtime hosting the scheduled-run entrypoint.
@@ -115,32 +123,61 @@ Resources:
           }
         }
 
-  DispatcherPermissions:
-    Type: AWS::IAM::Policy
+  DispatcherFunctionRole:
+    Type: AWS::IAM::Role
     Properties:
-      PolicyName: !Sub 'automation-${EnvironmentName}-scheduled-dispatch'
-      Roles:
-        - !Ref DispatcherFunctionRoleName
-      PolicyDocument:
+      AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
-            Action:
-              - sqs:ReceiveMessage
-              - sqs:DeleteMessage
-              - sqs:GetQueueAttributes
-              - sqs:ChangeMessageVisibility
-            Resource: !GetAtt DispatchQueue.Arn
-          - Effect: Allow
-            Action: states:StartExecution
-            Resource: !Ref ScheduledRunStateMachine
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: DispatchScheduledOccurrences
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt DispatchQueue.Arn
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref ScheduledRunStateMachine
+
+  DispatcherFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'automation-${EnvironmentName}-scheduled-dispatcher'
+      Runtime: nodejs22.x
+      Handler: dispatcher-lambda.handler
+      Role: !GetAtt DispatcherFunctionRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      ReservedConcurrentExecutions: !Ref DispatcherReservedConcurrency
+      Code:
+        S3Bucket: !Ref DispatcherCodeBucket
+        S3Key: !Ref DispatcherCodeObjectKey
+        S3ObjectVersion: !Ref DispatcherCodeObjectVersion
+      Environment:
+        Variables:
+          AWS_SCHEDULE_DISPATCH_QUEUE_ARN: !GetAtt DispatchQueue.Arn
+          AWS_SCHEDULE_DISPATCH_DLQ_ARN: !GetAtt DispatchDeadLetterQueue.Arn
+          AWS_SCHEDULER_TARGET_ROLE_ARN: !GetAtt SchedulerTargetRole.Arn
+          AWS_SCHEDULER_GROUP_NAME: !Ref ScheduleGroup
+          AWS_SCHEDULED_RUN_STATE_MACHINE_ARN: !Ref ScheduledRunStateMachine
 
   DispatcherEventSource:
     Type: AWS::Lambda::EventSourceMapping
-    DependsOn: DispatcherPermissions
     Properties:
       EventSourceArn: !GetAtt DispatchQueue.Arn
-      FunctionName: !Ref DispatcherFunctionArn
+      FunctionName: !Ref DispatcherFunction
       BatchSize: 10
       MaximumBatchingWindowInSeconds: 5
       FunctionResponseTypes:
@@ -162,3 +199,7 @@ Outputs:
     Value: !Ref ScheduledRunStateMachine
   ScheduledRunAgentRuntimeArn:
     Value: !Ref AgentRuntimeArn
+  DispatcherFunctionArn:
+    Value: !GetAtt DispatcherFunction.Arn
+  DispatcherFunctionRoleArn:
+    Value: !GetAtt DispatcherFunctionRole.Arn

@@ -30,15 +30,7 @@ standard credential provider chain (for CI, prefer short-lived OIDC credentials)
 EOF
 }
 
-bucket=""
-release_id=""
-prefix="automation/releases"
-region=""
-kms_key_id=""
-runtime_zip=""
-control_plane_zip=""
-output=""
-
+bucket=""; release_id=""; prefix="automation/releases"; region=""; kms_key_id=""; runtime_zip=""; control_plane_zip=""; output=""
 while (($#)); do
   case "$1" in
     --bucket) bucket="${2:-}"; shift 2 ;;
@@ -58,158 +50,79 @@ done
 [[ -n "$release_id" ]] || { echo "--release-id is required" >&2; exit 2; }
 [[ "$bucket" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || { echo "invalid S3 bucket name" >&2; exit 2; }
 [[ "$release_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "invalid release id" >&2; exit 2; }
-
-prefix="${prefix#/}"
-prefix="${prefix%/}"
+prefix="${prefix#/}"; prefix="${prefix%/}"
 [[ -n "$prefix" ]] || { echo "release prefix must not be empty" >&2; exit 2; }
 [[ "$prefix" != *".."* ]] || { echo "release prefix must not contain '..'" >&2; exit 2; }
-
 command -v aws >/dev/null || { echo "aws CLI is required" >&2; exit 2; }
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 2; }
 
-aws_args=()
-if [[ -n "$region" ]]; then
-  aws_args+=(--region "$region")
-fi
+aws_args=(); [[ -z "$region" ]] || aws_args+=(--region "$region")
 export AWS_PAGER=""
-
 versioning_status="$(aws "${aws_args[@]}" s3api get-bucket-versioning --bucket "$bucket" --query Status --output text)"
-if [[ "$versioning_status" != "Enabled" ]]; then
-  echo "release bucket must have S3 Versioning enabled; got '${versioning_status:-unset}'" >&2
-  exit 3
-fi
+[[ "$versioning_status" == "Enabled" ]] || { echo "release bucket must have S3 Versioning enabled; got '${versioning_status:-unset}'" >&2; exit 3; }
 
-work_dir="$(mktemp -d)"
-trap 'rm -rf "$work_dir"' EXIT
-
-if [[ -z "$runtime_zip" ]]; then
-  runtime_zip="$work_dir/automation-agentcore-runtime.zip"
-  bash "$ROOT_DIR/scripts/package-agentcore-runtime.sh" "$runtime_zip"
-fi
-if [[ -z "$control_plane_zip" ]]; then
-  control_plane_zip="$work_dir/automation-control-plane.zip"
-  bash "$ROOT_DIR/scripts/package-control-plane-lambda.sh" "$control_plane_zip"
-fi
+work_dir="$(mktemp -d)"; trap 'rm -rf "$work_dir"' EXIT
+if [[ -z "$runtime_zip" ]]; then runtime_zip="$work_dir/automation-agentcore-runtime.zip"; bash "$ROOT_DIR/scripts/package-agentcore-runtime.sh" "$runtime_zip"; fi
+if [[ -z "$control_plane_zip" ]]; then control_plane_zip="$work_dir/automation-control-plane.zip"; bash "$ROOT_DIR/scripts/package-control-plane-lambda.sh" "$control_plane_zip"; fi
 
 validate_zip() {
-  local path="$1"
-  shift
+  local path="$1"; shift
   [[ -f "$path" ]] || { echo "artifact not found: $path" >&2; exit 4; }
   python3 - "$path" "$@" <<'PY'
-import sys
-import zipfile
-
-path = sys.argv[1]
-required = set(sys.argv[2:])
+import sys, zipfile
+path = sys.argv[1]; required = set(sys.argv[2:])
 try:
     with zipfile.ZipFile(path) as archive:
-        names = set(archive.namelist())
-        bad = archive.testzip()
+        names = set(archive.namelist()); bad = archive.testzip()
 except (OSError, zipfile.BadZipFile) as exc:
     raise SystemExit(f"invalid zip {path}: {exc}")
-if bad:
-    raise SystemExit(f"corrupt zip member in {path}: {bad}")
+if bad: raise SystemExit(f"corrupt zip member in {path}: {bad}")
 missing = sorted(required - names)
-if missing:
-    raise SystemExit(f"artifact {path} missing required entries: {', '.join(missing)}")
+if missing: raise SystemExit(f"artifact {path} missing required entries: {', '.join(missing)}")
 PY
 }
-
 validate_zip "$runtime_zip" runtime-http.mjs dist/index.js package.json
-validate_zip "$control_plane_zip" control-plane-lambda.mjs capture-completion-lambda.mjs dist/index.js package.json
+validate_zip "$control_plane_zip" control-plane-lambda.mjs capture-completion-lambda.mjs dispatcher-lambda.mjs dist/index.js package.json
 
-sha256_file() {
-  python3 - "$1" <<'PY'
-import hashlib
-import sys
+sha256_file() { python3 - "$1" <<'PY'
+import hashlib, sys
 from pathlib import Path
 print(hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest())
 PY
 }
-
-runtime_sha="$(sha256_file "$runtime_zip")"
-control_plane_sha="$(sha256_file "$control_plane_zip")"
-runtime_key="$prefix/$release_id/agentcore-runtime.zip"
-control_plane_key="$prefix/$release_id/control-plane-lambda.zip"
+runtime_sha="$(sha256_file "$runtime_zip")"; control_plane_sha="$(sha256_file "$control_plane_zip")"
+runtime_key="$prefix/$release_id/agentcore-runtime.zip"; control_plane_key="$prefix/$release_id/control-plane-lambda.zip"
 
 upload_versioned() {
-  local path="$1"
-  local key="$2"
-  local sha="$3"
-  local artifact="$4"
+  local path="$1" key="$2" sha="$3" artifact="$4"
   local encryption_args=(--server-side-encryption AES256)
-  if [[ -n "$kms_key_id" ]]; then
-    encryption_args=(--server-side-encryption aws:kms --ssekms-key-id "$kms_key_id")
-  fi
-
+  [[ -z "$kms_key_id" ]] || encryption_args=(--server-side-encryption aws:kms --ssekms-key-id "$kms_key_id")
   local version_id
-  version_id="$(aws "${aws_args[@]}" s3api put-object \
-    --bucket "$bucket" \
-    --key "$key" \
-    --body "$path" \
-    --if-none-match '*' \
-    "${encryption_args[@]}" \
-    --metadata "sha256=$sha,release-id=$release_id,artifact=$artifact" \
-    --query VersionId \
-    --output text)"
-
-  if [[ -z "$version_id" || "$version_id" == "None" || "$version_id" == "null" ]]; then
-    echo "S3 did not return an immutable VersionId for $key" >&2
-    exit 5
-  fi
+  version_id="$(aws "${aws_args[@]}" s3api put-object --bucket "$bucket" --key "$key" --body "$path" --if-none-match '*' "${encryption_args[@]}" --metadata "sha256=$sha,release-id=$release_id,artifact=$artifact" --query VersionId --output text)"
+  [[ -n "$version_id" && "$version_id" != "None" && "$version_id" != "null" ]] || { echo "S3 did not return an immutable VersionId for $key" >&2; exit 5; }
   printf '%s' "$version_id"
 }
-
 runtime_version="$(upload_versioned "$runtime_zip" "$runtime_key" "$runtime_sha" agentcore-runtime)"
 control_plane_version="$(upload_versioned "$control_plane_zip" "$control_plane_key" "$control_plane_sha" control-plane-lambda)"
 
-if [[ -z "$output" ]]; then
-  output="$ROOT_DIR/dist/aws-release-$release_id.json"
-fi
-mkdir -p "$(dirname "$output")"
-manifest_tmp="$output.tmp"
-
-BUCKET="$bucket" RELEASE_ID="$release_id" REGION="$region" \
-RUNTIME_KEY="$runtime_key" RUNTIME_VERSION="$runtime_version" RUNTIME_SHA="$runtime_sha" \
-CONTROL_KEY="$control_plane_key" CONTROL_VERSION="$control_plane_version" CONTROL_SHA="$control_plane_sha" \
-python3 >"$manifest_tmp" <<'PY'
-import json
-import os
-
+[[ -n "$output" ]] || output="$ROOT_DIR/dist/aws-release-$release_id.json"
+mkdir -p "$(dirname "$output")"; manifest_tmp="$output.tmp"
+BUCKET="$bucket" RELEASE_ID="$release_id" REGION="$region" RUNTIME_KEY="$runtime_key" RUNTIME_VERSION="$runtime_version" RUNTIME_SHA="$runtime_sha" CONTROL_KEY="$control_plane_key" CONTROL_VERSION="$control_plane_version" CONTROL_SHA="$control_plane_sha" python3 >"$manifest_tmp" <<'PY'
+import json, os
 manifest = {
-    "schemaVersion": 1,
-    "releaseId": os.environ["RELEASE_ID"],
-    "region": os.environ["REGION"] or None,
-    "bucket": os.environ["BUCKET"],
-    "artifacts": {
-        "agentCoreRuntime": {
-            "key": os.environ["RUNTIME_KEY"],
-            "versionId": os.environ["RUNTIME_VERSION"],
-            "sha256": os.environ["RUNTIME_SHA"],
-        },
-        "controlPlaneLambda": {
-            "key": os.environ["CONTROL_KEY"],
-            "versionId": os.environ["CONTROL_VERSION"],
-            "sha256": os.environ["CONTROL_SHA"],
-        },
-    },
-    "cloudFormationParameters": {
-        "agentCoreRuntime": {
-            "RuntimeCodeBucket": os.environ["BUCKET"],
-            "RuntimeCodePrefix": os.environ["RUNTIME_KEY"],
-            "RuntimeCodeVersionId": os.environ["RUNTIME_VERSION"],
-        },
-        "controlPlaneService": {
-            "CodeBucketName": os.environ["BUCKET"],
-            "CodeObjectKey": os.environ["CONTROL_KEY"],
-            "CodeObjectVersion": os.environ["CONTROL_VERSION"],
-        },
-    },
+  "schemaVersion": 1, "releaseId": os.environ["RELEASE_ID"], "region": os.environ["REGION"] or None, "bucket": os.environ["BUCKET"],
+  "artifacts": {
+    "agentCoreRuntime": {"key": os.environ["RUNTIME_KEY"], "versionId": os.environ["RUNTIME_VERSION"], "sha256": os.environ["RUNTIME_SHA"]},
+    "controlPlaneLambda": {"key": os.environ["CONTROL_KEY"], "versionId": os.environ["CONTROL_VERSION"], "sha256": os.environ["CONTROL_SHA"]},
+  },
+  "cloudFormationParameters": {
+    "agentCoreRuntime": {"RuntimeCodeBucket": os.environ["BUCKET"], "RuntimeCodePrefix": os.environ["RUNTIME_KEY"], "RuntimeCodeVersionId": os.environ["RUNTIME_VERSION"]},
+    "controlPlaneService": {"CodeBucketName": os.environ["BUCKET"], "CodeObjectKey": os.environ["CONTROL_KEY"], "CodeObjectVersion": os.environ["CONTROL_VERSION"]},
+  },
 }
 print(json.dumps(manifest, indent=2, sort_keys=True))
 PY
 mv "$manifest_tmp" "$output"
-
 printf 'Release manifest: %s\n' "$output"
 printf 'AgentCore Runtime: s3://%s/%s?versionId=%s\n' "$bucket" "$runtime_key" "$runtime_version"
 printf 'Control plane: s3://%s/%s?versionId=%s\n' "$bucket" "$control_plane_key" "$control_plane_version"
