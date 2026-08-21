@@ -1,13 +1,15 @@
-import type { CaptureEvent, CaptureSemanticTarget } from "@automation/contracts";
+import type { CaptureEvent, CaptureSemanticTarget, VerificationSpec } from "@automation/contracts";
 import type {
   CaptureCollectionEventSource,
   CaptureCollectionSourceRequest,
 } from "@automation/core";
 import { chromium, type Page } from "playwright-core";
 import type { AgentCoreBrowserConnectionSigner } from "./browser-session.js";
+import { captureSafePageStateFingerprint } from "./capture-verification-state.js";
 
 const DEFAULT_CONTROL_POLL_MS = 250;
 const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
+const DEFAULT_EFFECT_SETTLE_MS = 400;
 const MAX_TARGET_FIELD_LENGTH = 512;
 
 const CAPTURE_INSTALLER = `(() => {
@@ -54,9 +56,16 @@ interface BrowserCapturePayload {
   inputType?: string;
 }
 
+interface ReservedEventIdentity {
+  eventId: string;
+  sequence: number;
+  occurredAt: string;
+}
+
 export interface AgentCorePlaywrightCaptureEventSourceOptions {
   controlPollMs?: number;
   connectTimeoutMs?: number;
+  effectSettleMs?: number;
   now?: () => Date;
 }
 
@@ -110,9 +119,19 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function inputVerification(): VerificationSpec {
+  return {
+    description: "Captured input target remains populated after typing",
+    mode: "CUSTOM",
+    expected: "capture:input-filled",
+    timeoutMs: 5_000,
+  };
+}
+
 export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionEventSource {
   private readonly controlPollMs: number;
   private readonly connectTimeoutMs: number;
+  private readonly effectSettleMs: number;
   private readonly now: () => Date;
 
   constructor(
@@ -123,6 +142,7 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
     if (!browserIdentifier.trim()) throw new Error("browserIdentifier is required");
     this.controlPollMs = positiveInteger(options.controlPollMs ?? DEFAULT_CONTROL_POLL_MS, "capture control poll interval");
     this.connectTimeoutMs = positiveInteger(options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS, "capture connection timeout");
+    this.effectSettleMs = positiveInteger(options.effectSettleMs ?? DEFAULT_EFFECT_SETTLE_MS, "capture effect settle interval");
     this.now = options.now ?? (() => new Date());
   }
 
@@ -148,6 +168,7 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
     if (!context) throw new Error("AgentCore capture browser has no Playwright context");
 
     const events: CaptureEvent[] = [];
+    const pendingEffects = new Set<Promise<void>>();
     let sequence = 0;
     let lastTimestamp = new Date(request.session.startedAt).getTime();
 
@@ -156,18 +177,26 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
       lastTimestamp = next;
       return new Date(next).toISOString();
     };
-    const append = (event: Omit<CaptureEvent, "eventId" | "sequence" | "occurredAt" | "purpose">): void => {
+    const reserve = (): ReservedEventIdentity => {
       sequence += 1;
-      events.push({
-        ...event,
+      return {
         eventId: `${request.session.captureSessionId}-event-${sequence}`,
         sequence,
         occurredAt: timestamp(),
+      };
+    };
+    const append = (
+      identity: ReservedEventIdentity,
+      event: Omit<CaptureEvent, "eventId" | "sequence" | "occurredAt" | "purpose">,
+    ): void => {
+      events.push({
+        ...event,
+        ...identity,
         purpose: "WORKFLOW",
       });
     };
 
-    await context.exposeBinding("__automationCaptureEvent", async (_source, payload: unknown) => {
+    await context.exposeBinding("__automationCaptureEvent", async (source, payload: unknown) => {
       if (!isBrowserPayload(payload)) return;
       const pageValue = (payload as unknown as { page?: unknown }).page;
       if (!pageValue || typeof pageValue !== "object" || Array.isArray(pageValue)) return;
@@ -176,21 +205,53 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
       if (!url) return;
       const title = safeString(pageRecord.title);
       const target = normalizeTarget((payload as unknown as { target?: unknown }).target);
-      append({
-        kind: payload.kind,
-        page: { url, ...(title ? { title } : {}) },
-        target,
-        ...(payload.kind === "INPUT"
-          ? {
-              input: {
-                kind: "RUNTIME_VARIABLE" as const,
-                variableName: `capture_input_${sequence + 1}`,
-                sensitive: true,
-              },
-            }
-          : {}),
-        artifactRefs: [],
-      });
+      const identity = reserve();
+
+      if (payload.kind === "INPUT") {
+        append(identity, {
+          kind: payload.kind,
+          page: { url, ...(title ? { title } : {}) },
+          target,
+          input: {
+            kind: "RUNTIME_VARIABLE",
+            variableName: `capture_input_${identity.sequence}`,
+            sensitive: true,
+          },
+          expectedEffect: inputVerification(),
+          artifactRefs: [],
+        });
+        return;
+      }
+
+      const task = (async () => {
+        let expectedEffect: VerificationSpec | undefined;
+        try {
+          await source.page.waitForTimeout(this.effectSettleMs);
+          expectedEffect = {
+            description: "Browser structure matches the demonstrated post-action state",
+            mode: "CUSTOM",
+            expected: await captureSafePageStateFingerprint(source.page),
+            timeoutMs: 10_000,
+          };
+        } catch {
+          // Never invent verification evidence. The compiler will reject this event
+          // if a trustworthy post-effect state could not be captured.
+          expectedEffect = undefined;
+        }
+        append(identity, {
+          kind: payload.kind,
+          page: { url, ...(title ? { title } : {}) },
+          target,
+          ...(expectedEffect ? { expectedEffect } : {}),
+          artifactRefs: [],
+        });
+      })();
+      pendingEffects.add(task);
+      try {
+        await task;
+      } finally {
+        pendingEffects.delete(task);
+      }
     });
     await context.addInitScript({ content: CAPTURE_INSTALLER });
 
@@ -211,7 +272,7 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
         } catch {
           title = undefined;
         }
-        append({
+        append(reserve(), {
           kind: "NAVIGATION",
           page: { url, ...(title ? { title } : {}) },
           navigationUrl: url,
@@ -235,6 +296,7 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
       await delay(this.controlPollMs);
     }
 
-    return events;
+    await Promise.all([...pendingEffects]);
+    return events.sort((left, right) => left.sequence - right.sequence);
   }
 }

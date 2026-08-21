@@ -22,6 +22,7 @@ import type {
   RunRecord,
   WorkflowNode,
 } from "@automation/contracts";
+import { captureSafePageStateFingerprint } from "./capture-verification-state.js";
 import {
   scopedResourceIdentity,
   stableResourceToken,
@@ -358,6 +359,46 @@ async function locatorVisible(
     if (isClosed(error)) throw error;
     return false;
   }
+}
+
+async function verifyCaptureCustomState(
+  page: Page,
+  node: WorkflowNode,
+  expected: string | undefined,
+  timeoutMs: number,
+): Promise<{ verified: boolean; detail: string }> {
+  if (expected === "capture:input-filled") {
+    const deadlineMs = Date.now() + timeoutMs;
+    const locator = await resolveNodeLocator(page, node, deadlineMs);
+    if (!locator) {
+      return { verified: false, detail: "captured input verification target was not found" };
+    }
+    const value = await locator.inputValue({ timeout: remainingMs(deadlineMs) });
+    return value.length > 0
+      ? { verified: true, detail: "captured input verification passed" }
+      : { verified: false, detail: "captured input verification failed" };
+  }
+
+  if (expected?.startsWith("capture:state:")) {
+    const deadlineMs = Date.now() + timeoutMs;
+    while (true) {
+      if ((await captureSafePageStateFingerprint(page)) === expected) {
+        return { verified: true, detail: "captured structural-state verification passed" };
+      }
+      const remaining = deadlineMs - Date.now();
+      if (remaining <= 0) {
+        return { verified: false, detail: "captured structural-state verification failed" };
+      }
+      await page.waitForTimeout(Math.min(100, remaining));
+    }
+  }
+
+  throw classifiedFailure(
+    "NOT_CONFIGURED",
+    "CUSTOM verification requires a supported explicit verifier contract",
+    node.id,
+    false,
+  );
 }
 
 export class AgentCorePlaywrightBrowserExecutor implements BrowserExecutor {
@@ -777,11 +818,21 @@ export class AgentCorePlaywrightVerificationEngine
             ? "DOM verification passed"
             : "DOM verification failed";
           break;
+        case "CUSTOM": {
+          const result = await verifyCaptureCustomState(
+            this.page,
+            context.node,
+            expected,
+            context.verification.timeoutMs,
+          );
+          verified = result.verified;
+          detail = result.detail;
+          break;
+        }
         case "MODEL":
-        case "CUSTOM":
           throw classifiedFailure(
             "NOT_CONFIGURED",
-            `${context.verification.mode} verification requires an explicit verifier adapter`,
+            "MODEL verification requires an explicit verifier adapter",
             context.node.id,
             false,
           );
@@ -791,7 +842,7 @@ export class AgentCorePlaywrightVerificationEngine
         this.page,
         context.node,
         verified ? "verify-passed" : "verify-failed",
-        true,
+        context.node.kind !== "TYPE",
       );
       return {
         verified,

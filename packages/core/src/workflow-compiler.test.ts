@@ -36,6 +36,39 @@ describe("compileCaptureTrace", () => {
     expect(JSON.stringify(graph)).not.toContain("auth.email");
   });
 
+  it("preserves capture-generated CUSTOM effect verification instead of weakening side-effect gates", () => {
+    const trace = fixture();
+    const events = trace.events.map((event) => {
+      if (event.eventId === "note") {
+        return {
+          ...event,
+          input: { kind: "RUNTIME_VARIABLE" as const, variableName: "runtime.note", sensitive: true },
+          expectedEffect: {
+            description: "Captured input target remains populated after typing",
+            mode: "CUSTOM" as const,
+            expected: "capture:input-filled",
+            timeoutMs: 5_000,
+          },
+        };
+      }
+      if (event.eventId === "save") {
+        return {
+          ...event,
+          expectedEffect: {
+            description: "Browser structure matches the demonstrated post-action state",
+            mode: "CUSTOM" as const,
+            expected: "capture:state:abc123",
+            timeoutMs: 10_000,
+          },
+        };
+      }
+      return event;
+    });
+    const graph = compileCaptureTrace({ trace: { ...trace, events }, workflowId: "workflow-capture-custom", version: 1, createdAt: "2026-08-19T11:00:00Z" });
+    expect(graph.nodes["capture-4-note"]?.verification).toMatchObject({ mode: "CUSTOM", expected: "capture:input-filled" });
+    expect(graph.nodes["capture-5-save"]?.verification).toMatchObject({ mode: "CUSTOM", expected: "capture:state:abc123" });
+  });
+
   it("synthesizes fresh-run navigation when workflow capture begins on an existing page", () => {
     const trace = fixture();
     const events = trace.events.filter((event) => event.eventId !== "open-customers").map((event, index) => ({ ...event, sequence: index + 1 }));

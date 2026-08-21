@@ -17,8 +17,35 @@ sign in -> dashboard -> create -> cloud capture -> persisted Browser Profile + t
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head `c541d95b394bdb039602a164a5e5ec7b34002807` (`Deploy Next.js web control plane on AWS`) is green on CI #198.
+- Incoming head `e8cf0051be1178d7990b53f816aa748fbb0fbc4c` (`Fix AWS smoke test fixture`) is green on CI #200.
 - GitHub Actions on the exact new head remains authoritative; no new pass is claimed before it exists.
+
+## 2026-08-21 — live capture effect-verification bridge
+
+The vertical-slice audit found a concrete product blocker before live deployment: the production AgentCore/Playwright capture collector emitted `CLICK`, `INPUT`, and `SUBMIT` events without `expectedEffect`, while the provider-neutral compiler correctly refuses to compile side-effecting events that do not have an explicit verification contract. A real Live View teaching session could therefore complete and persist successfully but still be impossible to compile.
+
+This slice closes that seam without weakening `assertWorkflowGraph` or inventing a new provider-neutral verification mode. Capture-generated effects use the existing `CUSTOM` boundary with a tightly namespaced AWS contract. Input events receive `capture:input-filled`; the runtime resolves the same immutable node target after typing and verifies that the field is non-empty without persisting the value. Click/submit events wait a bounded settle interval and record a `capture:state:*` digest derived from the post-action URL origin/path plus bounded structural DOM markers. The runtime recomputes that same redacted structural digest after replay and verifies equality.
+
+If post-action state cannot be observed during capture, the collector deliberately omits `expectedEffect`; compilation then continues to fail closed rather than manufacturing verification. Capture-event sequence identities are reserved at observation time and asynchronous post-effect probes are drained before the final trace is returned, so delayed verification capture cannot reorder workflow events.
+
+### Security / tenancy / idempotency / concurrency / retry / timeout / cost / observability / recovery
+
+- The structural digest excludes page text, form values, query strings, URL fragments, cookies, storage, and raw DOM. Structural identifiers exist only transiently inside the capture worker and only the stable digest is persisted as verification evidence.
+- Raw typed values remain excluded from the capture trace and continue to become sensitive runtime-variable placeholders. `capture:input-filled` checks only non-empty state and never serializes the entered value.
+- TYPE execution already suppressed its action screenshot; this slice also suppresses the subsequent verification screenshot for TYPE nodes, closing the adjacent path that could otherwise persist user-entered secrets after a successful fill.
+- The custom verifier recognizes only the two `capture:*` contracts above. Unknown `CUSTOM` verification remains `NOT_CONFIGURED`; MODEL verification remains separate and fail-closed.
+- Tenant/user authority is unchanged. Verification operates only inside the already-scoped AgentCore browser runtime and adds no repository, IAM, cross-tenant lookup, BYOK access, or user-controlled cloud identity.
+- The settle delay and verification polling are bounded by explicit millisecond limits and existing node verification timeouts. No new workflow retry layer or duplicate browser-action dispatch is added.
+- Cost impact is bounded to one small structural DOM observation after captured click/submit actions and bounded structural comparisons during verification. No screenshot is added for typed values.
+- A mismatch remains an ordinary `EFFECT_NOT_VERIFIED` path, preserving existing retry/human-attention behavior rather than introducing another recovery subsystem.
+
+### Validation added
+
+- Capture tests prove live INPUT events receive a compilable explicit verification contract while raw typed values remain absent.
+- Capture tests prove click events receive a redacted structural digest and reject invalid settle configuration before browser work.
+- Compiler regression coverage proves the capture-generated `CUSTOM` contracts survive compilation without weakening the side-effect verification gate.
+- Playwright verification tests prove non-empty input verification, structural-state verification, rejection of unknown CUSTOM contracts, and no verification screenshot for TYPE nodes.
+- Exact-head GitHub Actions after publication is authoritative.
 
 ## 2026-08-21 — live AWS deployment smoke gate
 
@@ -68,8 +95,8 @@ The release manifest now contains a third immutable, versioned S3 artifact for t
 
 ## Next product milestones
 
-1. Run the protected deployment workflow and require the new live smoke gate to pass against the real AWS environment.
-2. Execute the controlled interactive vertical demo from `outputs.webOrigin`: Cognito sign-in -> BYOK -> capture -> compile -> fresh test -> publish -> scheduled execution -> verification/history/email -> target-auth takeover/resume.
+1. Run the protected deployment workflow and require the live smoke gate to pass against the real AWS environment.
+2. Execute the controlled interactive vertical demo from `outputs.webOrigin`: Cognito sign-in -> BYOK -> Live View capture -> compile -> fresh test -> publish -> scheduled execution -> verification/history/email -> target-auth takeover/resume. The capture-to-compile path must now prove the new effect-verification bridge on a real page before broader targets are attempted.
 3. Fix only concrete defects exposed by that environment; do not return to recovery micro-hardening without a demonstrated need.
 4. If the vertical slice is repeatable, add a minimal authenticated live-cloud smoke using a dedicated test identity and short-lived credentials without retaining secret-bearing Actions artifacts.
 5. Add Google federation/adapters only after the AWS vertical slice is demonstrated.
@@ -78,6 +105,7 @@ The release manifest now contains a third immutable, versioned S3 artifact for t
 
 - Live OpenAI/SES/Cognito/AgentCore behavior still requires real AWS validation; deterministic CI is not live-cloud proof.
 - The new anonymous deployment smoke validates reachability/configuration/auth boundaries, not an authenticated user lifecycle or AgentCore Browser/model execution.
+- Capture structural verification is intentionally coarse and content-redacted. Dynamic pages whose post-action structure is unstable may fail verification and require a recapture or a future explicit user-authored effect assertion; do not silently weaken verification for them.
 - Sensitive target-site runtime values still need a dedicated secret-resolution contract if a workflow needs secrets beyond the persisted Browser Profile.
 - DynamoDB automation state and EventBridge Scheduler state cannot be atomically committed; current ordering fails closed.
 - Capture-task duplicate suppression remains process-local while capture completion is globally durable; harden only if live Runtime replacement demonstrates a defect.

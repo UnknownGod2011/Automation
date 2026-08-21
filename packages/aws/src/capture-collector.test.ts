@@ -58,20 +58,25 @@ describe("AgentCorePlaywrightCaptureEventSource", () => {
   beforeEach(() => playwright.connectOverCDP.mockReset());
 
   it("starts in durable WORKFLOW phase and observes input without retaining the typed value", async () => {
-    let binding: ((source: unknown, payload: unknown) => Promise<void>) | undefined;
+    let binding: ((source: { page: unknown }, payload: unknown) => Promise<void>) | undefined;
     const page = {
-      evaluate: vi.fn(async () => {
-        await binding?.({}, {
-          kind: "INPUT",
-          page: { url: "https://example.com/app", title: "App" },
-          target: { testId: "note", css: "textarea" },
-          inputType: "textarea",
-          value: "must-never-be-captured",
-        });
+      evaluate: vi.fn(async (script: unknown) => {
+        if (typeof script === "string") {
+          await binding?.({ page }, {
+            kind: "INPUT",
+            page: { url: "https://example.com/app", title: "App" },
+            target: { testId: "note", css: "textarea" },
+            inputType: "textarea",
+            value: "must-never-be-captured",
+          });
+        }
+        return [];
       }),
       on: vi.fn(),
       mainFrame: vi.fn(),
       title: vi.fn(async () => "App"),
+      url: vi.fn(() => "https://example.com/app?private=1"),
+      waitForTimeout: vi.fn(async () => undefined),
     };
     const context = {
       exposeBinding: vi.fn(async (_name: string, callback: typeof binding) => { binding = callback; }),
@@ -97,8 +102,59 @@ describe("AgentCorePlaywrightCaptureEventSource", () => {
       purpose: "WORKFLOW",
       page: { url: "https://example.com/app" },
       input: { kind: "RUNTIME_VARIABLE", sensitive: true },
+      expectedEffect: {
+        mode: "CUSTOM",
+        expected: "capture:input-filled",
+      },
     });
     expect(JSON.stringify(events)).not.toContain("must-never-be-captured");
+  });
+
+  it("records a redacted post-action structural digest for click verification", async () => {
+    let binding: ((source: { page: unknown }, payload: unknown) => Promise<void>) | undefined;
+    const page = {
+      evaluate: vi.fn(async (script: unknown) => {
+        if (typeof script === "string") {
+          await binding?.({ page }, {
+            kind: "CLICK",
+            page: { url: "https://example.com/app?private=query", title: "Private customer name" },
+            target: { testId: "save", role: "button", text: "Save private note", css: "button" },
+          });
+          return undefined;
+        }
+        return [
+          { tag: "button", testId: "save", ariaDisabled: "true" },
+          { tag: "form", id: "editor" },
+        ];
+      }),
+      on: vi.fn(),
+      mainFrame: vi.fn(),
+      title: vi.fn(async () => "Private customer name"),
+      url: vi.fn(() => "https://example.com/app?private=query#secret"),
+      waitForTimeout: vi.fn(async () => undefined),
+    };
+    const context = {
+      exposeBinding: vi.fn(async (_name: string, callback: typeof binding) => { binding = callback; }),
+      addInitScript: vi.fn(async () => undefined),
+      pages: vi.fn(() => [page]),
+      on: vi.fn(),
+    };
+    playwright.connectOverCDP.mockResolvedValue({ contexts: () => [context] });
+
+    const source = new AgentCorePlaywrightCaptureEventSource(signer(), "aws.browser.v1", {
+      now: () => new Date("2026-08-21T00:01:00.000Z"),
+      controlPollMs: 1,
+      effectSettleMs: 1,
+    });
+    const events = await source.collect(request());
+
+    expect(events).toHaveLength(1);
+    const expected = events[0]?.expectedEffect?.expected;
+    expect(events[0]?.expectedEffect?.mode).toBe("CUSTOM");
+    expect(expected).toMatch(/^capture:state:[0-9a-f]+$/);
+    expect(expected).not.toContain("private=query");
+    expect(expected).not.toContain("Private customer name");
+    expect(expected).not.toContain("Save private note");
   });
 
   it("does not allocate automation-stream work if finish was already durable", async () => {
@@ -118,8 +174,9 @@ describe("AgentCorePlaywrightCaptureEventSource", () => {
     expect(playwright.connectOverCDP).not.toHaveBeenCalled();
   });
 
-  it("rejects invalid polling configuration before connecting to browser compute", () => {
+  it("rejects invalid polling and effect-settle configuration before connecting to browser compute", () => {
     expect(() => new AgentCorePlaywrightCaptureEventSource(signer(), "aws.browser.v1", { controlPollMs: 0 })).toThrow(/poll interval/);
+    expect(() => new AgentCorePlaywrightCaptureEventSource(signer(), "aws.browser.v1", { effectSettleMs: 0 })).toThrow(/effect settle interval/);
     expect(playwright.connectOverCDP).not.toHaveBeenCalled();
   });
 });

@@ -5,6 +5,7 @@ import {
   AgentCorePlaywrightBrowserExecutor,
   AgentCorePlaywrightVerificationEngine,
 } from "./index.js";
+import { captureSafePageStateFingerprint } from "./capture-verification-state.js";
 
 class FakeLocator {
   clicks = 0;
@@ -31,6 +32,10 @@ class FakeLocator {
     this.fills.push(value);
   }
 
+  async inputValue() {
+    return this.fills.at(-1) ?? this.text;
+  }
+
   async textContent() {
     return this.text;
   }
@@ -43,6 +48,7 @@ class FakePage {
   waits: number[] = [];
   screenshotCalls = 0;
   gotoStatus = 200;
+  structuralMarkers: unknown[] = [];
   roleLocators = new Map<string, FakeLocator>();
   textLocators = new Map<string, FakeLocator>();
   testIdLocators = new Map<string, FakeLocator>();
@@ -54,6 +60,10 @@ class FakePage {
 
   async title() {
     return this.titleValue;
+  }
+
+  async evaluate() {
+    return structuredClone(this.structuralMarkers);
   }
 
   async goto(url: string) {
@@ -359,6 +369,92 @@ describe("AgentCorePlaywrightVerificationEngine", () => {
         evidenceRefs: [],
       }),
     ).resolves.toMatchObject({ verified: true });
+  });
+
+  it("verifies capture-generated input state without persisting a screenshot", async () => {
+    const page = new FakePage();
+    const evidence = new FakeEvidence();
+    const input = new FakeLocator(true, "runtime-secret-value");
+    page.testIdLocators.set("note", input);
+    const verifier = new AgentCorePlaywrightVerificationEngine(
+      page as unknown as Page,
+      evidence as never,
+    );
+
+    await expect(
+      verifier.verify({
+        scope,
+        runId: "run-1",
+        node: node({ kind: "TYPE", deterministicStrategies: [{ kind: "TEST_ID", value: "note" }] }),
+        verification: {
+          description: "input was populated",
+          mode: "CUSTOM",
+          expected: "capture:input-filled",
+          timeoutMs: 1_000,
+        },
+        outputs: {},
+        evidenceRefs: [],
+      }),
+    ).resolves.toMatchObject({ verified: true });
+    expect(evidence.calls.at(-1)).toEqual({ kind: "verify-passed", includeScreenshot: false });
+  });
+
+  it("verifies capture-generated structural state using only the redacted digest", async () => {
+    const page = new FakePage();
+    page.currentUrl = "https://example.com/app?private=query#token";
+    page.structuralMarkers = [
+      { tag: "button", testId: "save", ariaDisabled: "true" },
+      { tag: "form", id: "editor" },
+    ];
+    const expected = await captureSafePageStateFingerprint(page as unknown as Page);
+    const verifier = new AgentCorePlaywrightVerificationEngine(
+      page as unknown as Page,
+      new FakeEvidence() as never,
+    );
+
+    await expect(
+      verifier.verify({
+        scope,
+        runId: "run-1",
+        node: node({ kind: "CLICK" }),
+        verification: {
+          description: "captured post-action state",
+          mode: "CUSTOM",
+          expected,
+          timeoutMs: 1_000,
+        },
+        outputs: {},
+        evidenceRefs: [],
+      }),
+    ).resolves.toMatchObject({ verified: true });
+    expect(expected).toMatch(/^capture:state:[0-9a-f]+$/);
+    expect(expected).not.toContain("private=query");
+  });
+
+  it("rejects unknown CUSTOM verification rather than guessing semantics", async () => {
+    const page = new FakePage();
+    const verifier = new AgentCorePlaywrightVerificationEngine(
+      page as unknown as Page,
+      new FakeEvidence() as never,
+    );
+
+    await expect(
+      verifier.verify({
+        scope,
+        runId: "run-1",
+        node: node({ kind: "VERIFY" }),
+        verification: {
+          description: "unsupported custom check",
+          mode: "CUSTOM",
+          expected: "vendor:unknown",
+          timeoutMs: 1_000,
+        },
+        outputs: {},
+        evidenceRefs: [],
+      }),
+    ).rejects.toMatchObject({
+      failure: { code: "NOT_CONFIGURED" },
+    });
   });
 
   it("requires an explicit adapter for model verification", async () => {
