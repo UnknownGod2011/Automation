@@ -20,6 +20,8 @@ import {
   RunDetailControlPlaneHttpHandler,
   RunDetailService,
   TrustedCaptureCompletionHandler,
+  WorkflowInspectionControlPlaneHttpHandler,
+  WorkflowInspectionService,
   type ControlPlaneCapabilities,
 } from "@automation/core";
 import {
@@ -314,12 +316,16 @@ export function createAwsControlPlaneBootstrap(
       humanResumeService,
     ),
   );
+  const workflowInspectionHttp = new WorkflowInspectionControlPlaneHttpHandler(
+    takeoverHttp,
+    new WorkflowInspectionService(automations, workflows),
+  );
   const captureRecording = new CaptureRecordingControlPlaneService(
     captureState,
     captureControl,
     captureTaskStarter,
   );
-  const http = new CaptureAwareControlPlaneHttpHandler(takeoverHttp, captureRecording);
+  const http = new CaptureAwareControlPlaneHttpHandler(workflowInspectionHttp, captureRecording);
   const lambda = createAwsControlPlaneLambdaHandler(options.env, http);
   if (lambda.kind !== "CONFIGURED") {
     return { kind: "NOT_CONFIGURED", missing: lambda.missing };

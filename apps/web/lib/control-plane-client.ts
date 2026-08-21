@@ -8,6 +8,7 @@ import type {
   ProviderCredentialSummary,
   RunDetailView,
   RunSummaryView,
+  WorkflowInspectionView,
 } from "@automation/core";
 
 export interface WebControlPlaneConfig {
@@ -89,6 +90,14 @@ export class WebControlPlaneClient {
 
   async automation(automationId: string): Promise<AutomationSummaryView> {
     return this.request(`/v1/automations/${encodeURIComponent(automationId)}`, { method: "GET" });
+  }
+
+  async workflow(automationId: string): Promise<WorkflowInspectionView | null> {
+    const result = await this.request<{ workflow: WorkflowInspectionView | null }>(
+      `/v1/automations/${encodeURIComponent(automationId)}/workflow`,
+      { method: "GET" },
+    );
+    return result.workflow;
   }
 
   async runs(automationId: string): Promise<readonly RunSummaryView[]> {
