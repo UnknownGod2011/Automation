@@ -183,6 +183,41 @@ describe("AutomationControlPlaneService", () => {
     expect(JSON.stringify(dashboard)).not.toContain("profile-secret-server-ref");
   });
 
+  it("classifies fresh tests separately from scheduled runs without exposing occurrence keys", async () => {
+    const { runs, service } = await setup();
+    const freshOccurrence = "auto-1:test:test-123";
+    await runs.createIfAbsent({
+      tenantId: owner.tenantId,
+      userId: owner.userId,
+      runId: "test-123",
+      automationId: "auto-1",
+      workflowVersion: 2,
+      occurrenceKey: freshOccurrence,
+      status: "FAILED",
+      scheduledAt: "2026-08-19T12:06:00.000Z",
+    });
+
+    const freshDashboard = await service.dashboard(owner);
+    expect(freshDashboard.automations[0]?.lastRun?.runKind).toBe("FRESH_TEST");
+    expect(JSON.stringify(freshDashboard)).not.toContain(freshOccurrence);
+
+    const scheduledOccurrence = "auto-1:2026-08-19T12:07:00.000Z";
+    await runs.createIfAbsent({
+      tenantId: owner.tenantId,
+      userId: owner.userId,
+      runId: "scheduled-1",
+      automationId: "auto-1",
+      workflowVersion: 2,
+      occurrenceKey: scheduledOccurrence,
+      status: "SUCCEEDED",
+      scheduledAt: "2026-08-19T12:07:00.000Z",
+    });
+
+    const scheduledDashboard = await service.dashboard(owner);
+    expect(scheduledDashboard.automations[0]?.lastRun?.runKind).toBe("SCHEDULED");
+    expect(JSON.stringify(scheduledDashboard)).not.toContain(scheduledOccurrence);
+  });
+
   it("surfaces only safe latest-completed capture metadata for compile readiness", async () => {
     const { captureState, service } = await setup();
     await captureState.putStarted({

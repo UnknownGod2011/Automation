@@ -65,6 +65,7 @@ export interface RunSummaryView {
   finishedAt?: string;
   currentNodeId?: string;
   failureCode?: NonNullable<RunRecord["failure"]>["code"];
+  runKind?: "FRESH_TEST" | "SCHEDULED";
 }
 
 export interface DashboardView {
@@ -192,6 +193,10 @@ function requireToken(value: string, name: string): string {
   return trimmed;
 }
 
+function classifyRunKind(run: RunRecord): NonNullable<RunSummaryView["runKind"]> {
+  return run.occurrenceKey === `${run.automationId}:test:${run.runId}` ? "FRESH_TEST" : "SCHEDULED";
+}
+
 function toRunSummary(run: RunRecord): RunSummaryView {
   return {
     runId: run.runId,
@@ -203,6 +208,7 @@ function toRunSummary(run: RunRecord): RunSummaryView {
     ...(run.finishedAt ? { finishedAt: run.finishedAt } : {}),
     ...(run.currentNodeId ? { currentNodeId: run.currentNodeId } : {}),
     ...(run.failure ? { failureCode: run.failure.code } : {}),
+    runKind: classifyRunKind(run),
   };
 }
 

@@ -4,7 +4,7 @@ Read `END_GOAL.md`, `ARCHITECTURE.md`, and `QUALITY_GATES.md` before material ch
 
 ## Product target
 
-sign in -> dashboard -> create -> cloud capture -> persisted Browser Profile + trace -> compile semantic WorkflowGraph -> fresh cloud test -> approve -> recurrence/timezone -> publish -> scheduled cloud run -> deterministic/reasoned browser execution -> verification -> history/email -> bounded failure -> human takeover/resume.
+sign in -> dashboard -> create -> cloud capture -> persisted Browser Profile + trace -> compile semantic WorkflowGraph -> fresh cloud test -> inspect/correct -> approve -> recurrence/timezone -> publish -> scheduled cloud run -> deterministic/reasoned browser execution -> verification -> history/email -> bounded failure -> human takeover/resume.
 
 ## Completed foundation
 
@@ -17,8 +17,32 @@ sign in -> dashboard -> create -> cloud capture -> persisted Browser Profile + t
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head `e0c5c156265756f37964a400a3b2eaf23b5312e4` (`Refresh deterministic pnpm lock snapshot`) is green on CI #203.
+- Incoming head `e61388ff7711723821966ea9de4c590652d80c0e` (`Make publish workflow selection server-owned`) is green on CI #204.
 - GitHub Actions on the exact new head remains authoritative; no new pass is claimed before it exists.
+
+## 2026-08-21 — explicit fresh-test correction loop
+
+The end-goal user journey promises a fresh test followed by human approval or correction, but the sanitized control-plane run summaries previously made fresh tests indistinguishable from scheduled runs. The automation page therefore showed a flat history with no reliable way to tell whether a failure belonged to the pre-publish test loop or to an already-published scheduled occurrence.
+
+This slice adds a bounded server-derived `runKind` discriminator (`FRESH_TEST` or `SCHEDULED`) to sanitized run summaries. It is derived from the existing durable fresh-test occurrence namespace and does not expose the raw occurrence key. The Next.js automation page now labels those run classes separately and surfaces the latest fresh-test outcome directly inside the Teach and verify flow. Failed/canceled/skipped tests point the user to the exact sanitized diagnostics and then back to Capture Workflow to record a correction, compile a new immutable version, and retest. A `WAITING_FOR_HUMAN` fresh test instead directs the user to resolve the paused run rather than automatically assuming the workflow needs recapture.
+
+### Security / tenancy / idempotency / concurrency / retry / timeout / cost / observability / recovery
+
+- `runKind` is derived entirely from server-owned durable run state. The browser cannot submit or override it, and tenant/user authorization remains unchanged.
+- Raw occurrence/idempotency keys are still excluded from `AutomationSummaryView` and `RunSummaryView`; regression coverage asserts that the exact fresh/scheduled occurrence strings do not appear in dashboard JSON.
+- The discriminator is presentation/observability metadata only. It does not create runs, change workflow versions, alter retry budgets, acquire locks, dispatch Browser/model work, or grant recovery authority.
+- Fresh-test feedback is selected only from runs explicitly classified as `FRESH_TEST`; a newer scheduled failure cannot overwrite the test/correction guidance.
+- Failed, canceled, or skipped fresh tests are shown as correction candidates, while human-paused tests remain on the existing bounded human-attention path. No recovery subsystem is extended.
+- The fresh-test form is shown only while the automation is `READY_TO_TEST` or `READY_TO_PUBLISH`, matching the existing lifecycle gate and avoiding knowingly invalid control-plane mutations from unrelated automation states.
+- Cost impact is effectively zero: no additional API read, DynamoDB read, Browser session, model call, metric, queue message, or cloud resource is introduced. The UI reuses the run history already loaded for the page.
+- Run diagnostics remain the existing sanitized view; no raw provider/browser errors, checkpoint variables, cookies, Browser Profile identifiers, BYOK material, workload tokens, or model chain-of-thought are added.
+
+### Validation added
+
+- Core control-plane coverage proves fresh-test versus scheduled-run classification from durable run state and explicitly proves the underlying occurrence keys remain absent from serialized dashboard data.
+- Web view-model coverage proves scheduled runs cannot displace the latest fresh-test feedback, and verifies passed, running, human-attention, and correction states.
+- Next.js production build remains the integration gate for the new in-flow diagnostics/correction guidance and run-history labels.
+- Exact-head GitHub Actions after publication is authoritative.
 
 ## 2026-08-21 — server-owned publish workflow selection
 
@@ -138,7 +162,7 @@ The release manifest now contains a third immutable, versioned S3 artifact for t
 ## Next product milestones
 
 1. Run the protected deployment workflow and require the live smoke gate to pass against the real AWS environment.
-2. Execute the controlled interactive vertical demo from `outputs.webOrigin`: Cognito sign-in -> BYOK -> Live View capture -> compile -> fresh test -> publish -> scheduled execution -> verification/history/email -> target-auth takeover/resume. The browser no longer asks for workflow, trace, run, or publish-version identifiers; the capture-to-compile path must prove the effect-verification bridge on a real page before broader targets are attempted.
+2. Execute the controlled interactive vertical demo from `outputs.webOrigin`: Cognito sign-in -> BYOK -> Live View capture -> compile -> fresh test -> inspect/correct if needed -> publish -> scheduled execution -> verification/history/email -> target-auth takeover/resume. The browser no longer asks for workflow, trace, run, or publish-version identifiers; the capture-to-compile path must prove the effect-verification bridge on a real page before broader targets are attempted.
 3. Fix only concrete defects exposed by that environment; do not return to recovery micro-hardening without a demonstrated need.
 4. If the vertical slice is repeatable, add a minimal authenticated live-cloud smoke using a dedicated test identity and short-lived credentials without retaining secret-bearing Actions artifacts.
 5. Add Google federation/adapters only after the AWS vertical slice is demonstrated.
