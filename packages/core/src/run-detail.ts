@@ -6,7 +6,12 @@ import type {
   ControlPlaneHttpResponse,
 } from "./control-plane-http.js";
 import type { ControlPlaneHttpHandlerPort } from "./capture-recording.js";
-import type { CheckpointRepository, OwnershipScope, RunRepository } from "./index.js";
+import type {
+  CheckpointRepository,
+  OwnershipScope,
+  RunRepository,
+  WorkflowVersionRepository,
+} from "./index.js";
 
 export interface RunFailureView {
   code: RunFailure["code"];
@@ -37,6 +42,8 @@ export interface RunDetailView {
   failure?: RunFailureView;
   checkpoint?: RunCheckpointView;
   needsHumanAttention: boolean;
+  /** Read-only UX hint. Runtime validation remains the execution authority. */
+  humanResumeEligible: boolean;
 }
 
 const MAX_REFERENCE_COUNT = 100;
@@ -95,6 +102,7 @@ export class RunDetailService {
   constructor(
     private readonly runs: RunRepository,
     private readonly checkpoints: CheckpointRepository,
+    private readonly workflows?: WorkflowVersionRepository,
   ) {}
 
   async get(
@@ -119,6 +127,31 @@ export class RunDetailService {
       throw new ControlPlaneError("CONFLICT", "run checkpoint identity is invalid");
     }
 
+    let humanResumeEligible = false;
+    const nodeStateMatches = !run.currentNodeId || run.currentNodeId === checkpoint?.currentNodeId;
+    if (
+      run.status === "WAITING_FOR_HUMAN" &&
+      checkpoint &&
+      nodeStateMatches &&
+      this.workflows
+    ) {
+      try {
+        const graph = await this.workflows.get(scope, run.automationId, run.workflowVersion);
+        if (graph && graph.automationId === run.automationId && graph.version === run.workflowVersion) {
+          const node = graph.nodes[checkpoint.currentNodeId];
+          const successors = node?.next ?? [];
+          humanResumeEligible =
+            node?.kind === "HUMAN" &&
+            successors.length === 1 &&
+            Boolean(successors[0] && graph.nodes[successors[0]]);
+        }
+      } catch {
+        // Diagnostics remain useful during workflow-store outages. The Runtime
+        // revalidates the immutable graph before any resume side effect.
+        humanResumeEligible = false;
+      }
+    }
+
     return {
       runId: run.runId,
       automationId: run.automationId,
@@ -131,6 +164,7 @@ export class RunDetailService {
       ...(run.failure ? { failure: failureView(run.failure) } : {}),
       ...(checkpoint ? { checkpoint: checkpointView(checkpoint) } : {}),
       needsHumanAttention: run.status === "WAITING_FOR_HUMAN",
+      humanResumeEligible,
     };
   }
 }

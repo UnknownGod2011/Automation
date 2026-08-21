@@ -59,6 +59,7 @@ export * from "./credential-pool.js";
 export * from "./dispatch.js";
 export * from "./errors.js";
 export * from "./execution.js";
+export * from "./human-intervention.js";
 export * from "./human-resolution.js";
 export * from "./human-resume-audit.js";
 export * from "./human-resume-effect.js";

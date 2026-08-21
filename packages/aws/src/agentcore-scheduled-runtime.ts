@@ -1,6 +1,7 @@
 import type {
   CompleteCaptureResult,
   FreshTestRunResult,
+  HumanResumeSubmissionResult,
   ScheduledRunWorkerResult,
 } from "@automation/core";
 import {
@@ -20,6 +21,10 @@ import {
   isAwsAgentCoreCaptureCollectionPayload,
   type AwsCaptureCollectionRuntimeHandler,
 } from "./capture-runtime.js";
+import {
+  isAwsAgentCoreHumanResumePayload,
+  type AwsHumanResumeRunHandler,
+} from "./human-resume-runtime.js";
 
 const TENANT_ID_ENV = "AUTOMATION_TENANT_ID";
 const MAX_RUNTIME_USER_ID_LENGTH = 128;
@@ -95,7 +100,8 @@ function validateRuntimeUserId(value: string): string {
 export type AwsAgentCoreRuntimeExecutionResult =
   | ScheduledRunWorkerResult
   | FreshTestRunResult
-  | CompleteCaptureResult;
+  | CompleteCaptureResult
+  | HumanResumeSubmissionResult;
 
 export class AwsAgentCoreScheduledRuntimeEntrypoint {
   constructor(
@@ -106,6 +112,7 @@ export class AwsAgentCoreScheduledRuntimeEntrypoint {
     private readonly handler: Pick<AwsScheduledRunHandler, "handle">,
     private readonly freshTestHandler?: Pick<AwsFreshTestRunHandler, "handle">,
     private readonly captureCollectionHandler?: Pick<AwsCaptureCollectionRuntimeHandler, "handle">,
+    private readonly humanResumeHandler?: Pick<AwsHumanResumeRunHandler, "handle">,
   ) {}
 
   async handle(
@@ -125,6 +132,12 @@ export class AwsAgentCoreScheduledRuntimeEntrypoint {
         throw new Error("AgentCore capture collection is not configured");
       }
       return this.captureCollectionHandler.handle(trustedInvocation);
+    }
+    if (isAwsAgentCoreHumanResumePayload(invocation.payload)) {
+      if (!this.humanResumeHandler) {
+        throw new Error("AgentCore human-resume execution is not configured");
+      }
+      return this.humanResumeHandler.handle(trustedInvocation);
     }
     if (isAwsAgentCoreFreshTestPayload(invocation.payload)) {
       if (!this.freshTestHandler) {
@@ -169,6 +182,7 @@ export function createAwsAgentCoreScheduledRuntime(
       bootstrap.handler,
       bootstrap.freshTestHandler,
       bootstrap.captureCollectionHandler,
+      bootstrap.humanResumeHandler,
     ),
     bootstrap,
   };

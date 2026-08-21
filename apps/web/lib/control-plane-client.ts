@@ -3,6 +3,7 @@ import type {
   CaptureRecordingView,
   CaptureStartResult,
   DashboardView,
+  HumanResumeSubmissionResult,
   ProviderCredentialSummary,
   RunDetailView,
   RunSummaryView,
@@ -101,6 +102,20 @@ export class WebControlPlaneClient {
     return this.request(
       `/v1/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}`,
       { method: "GET" },
+    );
+  }
+
+  async resumeRun(
+    automationId: string,
+    runId: string,
+    expectedNodeId: string,
+  ): Promise<HumanResumeSubmissionResult> {
+    return this.request(
+      `/v1/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}/resume`,
+      {
+        method: "POST",
+        body: JSON.stringify({ expectedNodeId }),
+      },
     );
   }
 

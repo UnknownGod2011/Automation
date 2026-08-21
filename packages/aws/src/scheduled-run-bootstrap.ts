@@ -28,9 +28,7 @@ import {
 import { AgentCorePlaywrightCaptureEventSource } from "./capture-collector.js";
 import { AwsDynamoCaptureCollectionControlStore } from "./capture-control.js";
 import { AwsCaptureCollectionRuntimeHandler } from "./capture-runtime.js";
-import {
-  AgentCoreCaptureSessionFinalizer,
-} from "./capture-session.js";
+import { AgentCoreCaptureSessionFinalizer } from "./capture-session.js";
 import { AwsDynamoCaptureSessionStore } from "./capture-session-store.js";
 import { AwsCaptureTraceRepository } from "./capture-trace-store.js";
 import { loadAwsAdapterConfig } from "./config.js";
@@ -45,6 +43,11 @@ import {
   type DynamoDocumentClientLike,
 } from "./dynamodb-state.js";
 import { AwsFreshTestRunHandler } from "./fresh-test-runtime.js";
+import { AwsDynamoHumanResolutionClaimStore } from "./human-resolution.js";
+import { AwsDynamoHumanResumeAuditStore } from "./human-resume-audit.js";
+import { AwsDynamoHumanResumeEffectReconciliationStore } from "./human-resume-effect.js";
+import { AwsDynamoHumanResumeExecutionLeaseStore } from "./human-resume-lease.js";
+import { AwsHumanResumeRunHandler } from "./human-resume-runtime.js";
 import {
   AgentCoreIdentityCredentialVault,
   AwsSdkAgentCoreApiKeyControlApi,
@@ -106,6 +109,7 @@ export type AwsScheduledRunBootstrapResult =
       kind: "CONFIGURED";
       handler: AwsScheduledRunHandler;
       freshTestHandler: AwsFreshTestRunHandler;
+      humanResumeHandler: AwsHumanResumeRunHandler;
       captureCollectionHandler: AwsCaptureCollectionRuntimeHandler;
       notifications: AwsScheduledReportingNotificationState;
       configuration: {
@@ -180,6 +184,7 @@ export function createAwsScheduledRunBootstrap(
   const credentialControl = overrides?.credentialControl ?? new AwsSdkAgentCoreApiKeyControlApi({ region });
   const credentialData = overrides?.credentialData ?? new AwsSdkAgentCoreApiKeyDataApi({ region });
   const credentialVault = new AgentCoreIdentityCredentialVault(credentialControl, credentialData);
+  const credentialPolicy = options.credentialPolicy ?? DEFAULT_CREDENTIAL_POLICY;
 
   const reporting = createAwsScheduledRunReporting({
     env: options.env,
@@ -203,7 +208,7 @@ export function createAwsScheduledRunBootstrap(
   const credentials = {
     metadata: credentialMetadata,
     vault: credentialVault,
-    policy: options.credentialPolicy ?? DEFAULT_CREDENTIAL_POLICY,
+    policy: credentialPolicy,
   };
 
   const handler = new AwsScheduledRunHandler(handlerConfiguration, {
@@ -219,6 +224,24 @@ export function createAwsScheduledRunBootstrap(
     worker,
     credentials,
     ...(overrides?.freshTestRunner ? { runner: overrides.freshTestRunner } : {}),
+    ...(overrides?.openAiFetch ? { openAiFetch: overrides.openAiFetch } : {}),
+  });
+  const humanResumeHandler = new AwsHumanResumeRunHandler({
+    automations: automationRepository,
+    workflows: workflowRepository,
+    runs: runRepository,
+    checkpoints: checkpointRepository,
+    sessions,
+    runtimeFactory,
+    claims: new AwsDynamoHumanResolutionClaimStore(documentClient, dynamo.config),
+    leases: new AwsDynamoHumanResumeExecutionLeaseStore(documentClient, dynamo.config),
+    effects: new AwsDynamoHumanResumeEffectReconciliationStore(documentClient, dynamo.config),
+    audit: new AwsDynamoHumanResumeAuditStore(documentClient, dynamo.config),
+    credentialMetadata,
+    credentialVault,
+    credentialPolicy,
+    openAiModel: handlerConfiguration.openAiModel,
+    browserSessionTimeoutSeconds: adapter.config.browserSessionTimeoutSeconds,
     ...(overrides?.openAiFetch ? { openAiFetch: overrides.openAiFetch } : {}),
   });
 
@@ -267,6 +290,7 @@ export function createAwsScheduledRunBootstrap(
     kind: "CONFIGURED",
     handler,
     freshTestHandler,
+    humanResumeHandler,
     captureCollectionHandler,
     notifications: reporting.notifications,
     configuration: {

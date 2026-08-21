@@ -26,6 +26,7 @@ export * from "./human-resume-effect.js";
 export * from "./human-resume-lease.js";
 export * from "./human-resume-reconciliation-runtime.js";
 export * from "./human-resume-reconciliation-verifier.js";
+export * from "./human-resume-runtime.js";
 export * from "./human-resume-transition.js";
 export * from "./identity-vault.js";
 export * from "./openai-byok-reasoning.js";

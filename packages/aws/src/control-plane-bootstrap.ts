@@ -12,6 +12,8 @@ import {
   CaptureCollectionControlService,
   CaptureCompletionService,
   CaptureRecordingControlPlaneService,
+  HumanResumeControlPlaneHttpHandler,
+  HumanResumeControlPlaneService,
   ProviderCredentialManagementService,
   RunDetailControlPlaneHttpHandler,
   RunDetailService,
@@ -63,6 +65,7 @@ import {
   readAwsAgentCoreFreshTestConfiguration,
   type AgentCoreFreshTestInvokeApi,
 } from "./fresh-test-runtime.js";
+import { AwsAgentCoreHumanResumeExecutionPort } from "./human-resume-runtime.js";
 import {
   AgentCoreIdentityCredentialVault,
   AwsSdkAgentCoreApiKeyControlApi,
@@ -258,6 +261,10 @@ export function createAwsControlPlaneBootstrap(
     freshTest,
     options.overrides?.freshTestInvoke,
   );
+  const humanResume = new AwsAgentCoreHumanResumeExecutionPort(
+    freshTest,
+    options.overrides?.freshTestInvoke,
+  );
   const captureTaskStarter = new AwsAgentCoreCaptureCollectionTaskStarter(
     freshTest,
     options.overrides?.captureCollectionInvoke,
@@ -283,14 +290,18 @@ export function createAwsControlPlaneBootstrap(
   const baseHttp = new AutomationControlPlaneHttpHandler(service);
   const runDetailHttp = new RunDetailControlPlaneHttpHandler(
     baseHttp,
-    new RunDetailService(runs, checkpoints),
+    new RunDetailService(runs, checkpoints, workflows),
+  );
+  const humanResumeHttp = new HumanResumeControlPlaneHttpHandler(
+    runDetailHttp,
+    new HumanResumeControlPlaneService(runs, checkpoints, humanResume),
   );
   const captureRecording = new CaptureRecordingControlPlaneService(
     captureState,
     captureControl,
     captureTaskStarter,
   );
-  const http = new CaptureAwareControlPlaneHttpHandler(runDetailHttp, captureRecording);
+  const http = new CaptureAwareControlPlaneHttpHandler(humanResumeHttp, captureRecording);
   const lambda = createAwsControlPlaneLambdaHandler(options.env, http);
   if (lambda.kind !== "CONFIGURED") {
     return { kind: "NOT_CONFIGURED", missing: lambda.missing };

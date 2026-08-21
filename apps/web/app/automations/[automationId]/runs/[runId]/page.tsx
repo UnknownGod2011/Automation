@@ -7,10 +7,13 @@ export const dynamic = "force-dynamic";
 
 export default async function RunDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ automationId: string; runId: string }>;
+  searchParams: Promise<{ notice?: string }>;
 }) {
   const { automationId, runId } = await params;
+  const { notice } = await searchParams;
   let run;
   try {
     const client = await createAuthenticatedWebControlPlaneClient();
@@ -26,6 +29,8 @@ export default async function RunDetailPage({
     return <section className="card stack"><h1>Run unavailable</h1><p>The request failed safely. Provider, browser, and credential error text is intentionally hidden.</p><Link className="button" href={`/automations/${encodeURIComponent(automationId)}`}>Back to automation</Link></section>;
   }
 
+  const pausedNodeId = run.checkpoint?.currentNodeId ?? run.currentNodeId;
+
   return (
     <>
       <section className="hero">
@@ -37,18 +42,32 @@ export default async function RunDetailPage({
         </div>
         <div className="card subtle stack">
           <div className="row"><span>Status</span><span className={`badge ${runTone(run.status)}`}>{run.status}</span></div>
-          <div className="row"><span>Current node</span><strong>{run.currentNodeId ?? run.checkpoint?.currentNodeId ?? "—"}</strong></div>
+          <div className="row"><span>Current node</span><strong>{pausedNodeId ?? "—"}</strong></div>
           <div className="row"><span>Started</span><span className="muted">{run.startedAt ?? "—"}</span></div>
           <div className="row"><span>Finished</span><span className="muted">{run.finishedAt ?? "—"}</span></div>
         </div>
       </section>
 
+      {notice === "resume-submitted" ? <section className="card" style={{ marginBottom: 18 }}><p>Resume command submitted. Refresh this run to see the latest durable state.</p></section> : null}
+      {notice === "resume-failed" ? <section className="card" style={{ marginBottom: 18 }}><p>The resume command was not accepted. The run remains protected by its durable pause boundary.</p></section> : null}
+
       {run.needsHumanAttention ? (
         <section className="card stack" style={{ marginBottom: 18 }}>
           <div className="eyebrow">Human attention required</div>
           <h2>This run is safely paused.</h2>
-          <p>The platform will not automatically replay the blocked action. Inspect the failure and checkpoint below before using the human takeover/resume flow.</p>
-          <p className="muted">The current deployment exposes diagnostic state here; action-capable recovery remains isolated from this read-only page.</p>
+          <p>The platform will not automatically replay the blocked action. Inspect the failure and checkpoint below before continuing.</p>
+          {run.humanResumeEligible && pausedNodeId ? (
+            <>
+              <p>This is an explicit workflow human step with exactly one declared successor. After completing or approving the requested manual step, continue the same durable run.</p>
+              <form action={`/api/ui/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}/resume`} method="post">
+                <input type="hidden" name="expectedNodeId" value={pausedNodeId} />
+                <button className="button" type="submit">Continue workflow</button>
+              </form>
+              <p className="muted">Duplicate submissions reuse a server-owned resolution identity at the run/node boundary. The UI cannot choose another branch, claim ID, or execution credential.</p>
+            </>
+          ) : (
+            <p className="muted">This pause is not an explicit resumable HUMAN node. Browser takeover for authentication or repair remains a separate protected recovery path and is not exposed by this button.</p>
+          )}
         </section>
       ) : null}
 
