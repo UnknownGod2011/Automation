@@ -1,6 +1,7 @@
 import type { AutomationRecord } from "@automation/contracts";
 import type {
   BrowserViewport,
+  CaptureCollectionControlStore,
   CaptureSessionFinalizer,
   CaptureSessionRecord,
   CaptureSessionStarter,
@@ -8,6 +9,7 @@ import type {
   CaptureStartResult,
   OwnershipScope,
 } from "@automation/core";
+import { initialCaptureCollectionControlRecord } from "@automation/core";
 import { Browser } from "bedrock-agentcore/browser";
 import { parseProfileRef } from "./browser-profile.js";
 import { MAX_BROWSER_SESSION_TIMEOUT_SECONDS } from "./config.js";
@@ -23,6 +25,7 @@ export interface AgentCoreBrowserLiveViewSigner {
 
 export interface AgentCoreCaptureSessionStarterOptions {
   sessionStore?: CaptureSessionStore;
+  controlStore?: CaptureCollectionControlStore;
   sessionTimeoutSeconds?: number;
   liveViewTtlSeconds?: number;
   viewport?: BrowserViewport;
@@ -80,6 +83,7 @@ export class AwsAgentCoreBrowserLiveViewSigner implements AgentCoreBrowserLiveVi
 
 export class AgentCoreCaptureSessionStarter implements CaptureSessionStarter {
   private readonly sessionStore: CaptureSessionStore | undefined;
+  private readonly controlStore: CaptureCollectionControlStore | undefined;
   private readonly sessionTimeoutSeconds: number;
   private readonly liveViewTtlSeconds: number;
   private readonly viewport: BrowserViewport | undefined;
@@ -94,6 +98,7 @@ export class AgentCoreCaptureSessionStarter implements CaptureSessionStarter {
   ) {
     if (!browserIdentifier.trim()) throw new Error("browserIdentifier is required");
     this.sessionStore = options.sessionStore;
+    this.controlStore = options.controlStore;
     this.sessionTimeoutSeconds = options.sessionTimeoutSeconds ?? DEFAULT_CAPTURE_TIMEOUT_SECONDS;
     this.liveViewTtlSeconds = options.liveViewTtlSeconds ?? DEFAULT_LIVE_VIEW_TTL_SECONDS;
     validatePositiveInteger(this.sessionTimeoutSeconds, "capture session timeout", MAX_BROWSER_SESSION_TIMEOUT_SECONDS);
@@ -147,6 +152,14 @@ export class AgentCoreCaptureSessionStarter implements CaptureSessionStarter {
         expiresAt: new Date(startedAt.getTime() + this.sessionTimeoutSeconds * 1_000).toISOString(),
         status: "STARTED",
       });
+      if (this.controlStore) {
+        await this.controlStore.putInitial(initialCaptureCollectionControlRecord({
+          scope,
+          automationId: automation.automationId,
+          captureSessionId,
+          updatedAt: startedAt.toISOString(),
+        }));
+      }
       return {
         kind: "READY",
         captureSessionId,

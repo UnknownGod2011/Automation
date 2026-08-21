@@ -24,38 +24,39 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 ## Authoritative incoming validation
 
 - PR #1 is the open draft development PR on `agent/bootstrap-platform`.
-- Incoming head `601cdcf6b26dd3e999739c1e159852da154fbf91` is green on GitHub Actions CI #185.
+- Incoming head `208750215802690fb431ed5dd4cd4cd877a1b801` is green on GitHub Actions CI #186.
 - GitHub Actions on the exact head created by each run remains authoritative. Never claim a new slice green until deterministic lock verification, frozen install, `pnpm check`, deployment-package smoke tests, release/deployment contract tests, Next.js build/type validation, and the complete test suite succeed.
 
-## 2026-08-21 — capture observation collector foundation
+## 2026-08-21 — durable capture recording control
 
 ### Product slice
 
-A provider-neutral `CaptureCollectionService` now owns the boundary that turns an active, durable capture session plus observed browser events into a validated `CaptureTrace`. It revalidates tenant/user/automation ownership, Browser Profile identity, STARTED session state, session timestamps, and the final trace contract before any trace can be accepted downstream.
+The capture collector now has a provider-neutral durable control contract for the user-visible teaching phases: `AUTH_SETUP`, `WORKFLOW`, and a one-way finish request. `CaptureCollectionControlService` validates the durable capture session, tenant/user/automation ownership, active STARTED state, and expiry before accepting Start Workflow or Finish commands. Repeated identical commands are idempotent replays; invalid backwards transitions fail closed.
 
-The new AWS `AgentCorePlaywrightCaptureEventSource` attaches to the existing AgentCore Browser automation stream over Playwright/CDP while the user remains interactive through the separate Live View stream. It instruments current and future documents for click, form-submit, input-change, and top-level navigation observations. A durable/control-plane signal abstraction supplies the explicit `AUTH_SETUP` versus `WORKFLOW` phase and the finish request; the collector itself does not guess where authentication ends.
+`AwsDynamoCaptureCollectionControlStore` persists control state separately from browser/session metadata in the existing tenant-scoped DynamoDB table. Initial state is create-only, phase/finish transitions use conditional updates, and contention is classified only after a strongly consistent read. DynamoDB throttling/transport uncertainty propagates instead of being converted into a false replay.
 
-Typed values are deliberately never captured as raw text. Every observed input is represented as an unresolved sensitive `RUNTIME_VARIABLE`, so passwords, tokens, private form text, and other target-site inputs cannot leak into the capture trace merely because the user typed them during Live View. Authentication events can therefore be retained as capture context while remaining excluded by the existing compiler. The collector also does not invent `expectedEffect` verification when browser evidence cannot prove one; side-effecting events without a valid effect contract must still be corrected/enriched before compilation can safely succeed.
+`AgentCoreCaptureSessionStarter` now has an explicit control-store hook and initializes `AUTH_SETUP` state at capture startup when that durable store is composed. This keeps authentication interaction separate from recorded workflow actions and gives the long-running collector a durable signal source rather than process memory.
 
 ### Security / tenancy / idempotency / concurrency / retry / timeout / cost / observability review
 
-- The collection service rejects cross-tenant/cross-user/cross-automation sessions before opening the browser observation source.
-- Raw input values are not sent across the Playwright binding or persisted in capture events. Semantic target metadata remains bounded and lives only in the protected capture trace/evidence path.
-- Live View and the automation stream are separate AgentCore Browser channels; collection observes the same session rather than starting a second browser. This avoids duplicate browser-session cost and preserves the server-owned Browser Profile.
-- The source uses a bounded CDP connection timeout and bounded control polling. Session expiry fails closed instead of silently persisting a partial successful capture.
-- Collection does not perform website actions, model reasoning, retries, schedule delivery, or human-recovery transitions. It is an observation boundary only.
-- The explicit phase/finish control is intentionally an interface in this slice. The next deployment slice must persist that control durably and drive it from authenticated UX/runtime commands rather than process memory.
+- Control keys remain tenant/user scoped and embedded ownership is revalidated on read.
+- The command service verifies the capture belongs to the authenticated automation before any phase mutation.
+- Finish is allowed only after `WORKFLOW`; an AUTH_SETUP-only session cannot accidentally be accepted as a workflow demonstration.
+- Duplicate UI delivery is safe through conditional/idempotent transitions. Competing or backwards transitions are rejected rather than guessed.
+- The control record contains no cookies, typed values, Browser Profile contents, BYOK material, workload tokens, or Live View credentials.
+- Strongly consistent polling is intentionally a small control-plane cost; the runtime integration should use a sensible polling interval and terminate immediately after finish/expiry rather than increasing browser lifetime.
+- This slice does not add browser actions, model calls, retries, notification paths, or recovery machinery.
 
 ### Tests / validation
 
-- Core tests cover successful trace construction, tenant isolation before event-source work, completed-session rejection, and expiry rejection.
-- AWS tests cover CDP connection configuration, event observation, and the guarantee that a browser-supplied raw typed value is absent from emitted capture events.
+- Core tests cover AUTH_SETUP -> WORKFLOW -> finish, idempotent duplicate commands, cross-tenant rejection, finish-before-recording rejection, and expiry rejection.
+- AWS tests cover create-only persistence, strongly consistent reads, concurrent replay classification, illegal finish ordering, and propagation of DynamoDB uncertainty.
 - This section does not claim the new head green until GitHub Actions completes on the exact published SHA.
 
 ## Next product milestones
 
-1. Persist capture collector control state (`AUTH_SETUP` / `WORKFLOW` / finish) and run the collector as a long-running AgentCore Runtime task attached to the capture browser session; finishing capture must feed the resulting trace into the existing IAM-only trusted completion boundary automatically.
-2. Add authenticated Next.js capture controls for “Start recording workflow” and “Finish capture”, plus readiness polling so the user never copies internal capture IDs.
+1. Compose the durable capture-control store into the production control-plane bootstrap and long-running AgentCore capture worker, then route collector completion into the existing IAM-only trusted completion handler automatically.
+2. Add authenticated control-plane/Next.js controls for “Start recording workflow” and “Finish capture”, plus readiness polling so the user never copies internal capture IDs.
 3. Add a deployment workflow/example using GitHub OIDC/short-lived AWS credentials that runs release + deploy without retaining ZIP artifacts in GitHub Actions storage.
 4. Perform one controlled real AWS demonstration: sign in -> BYOK -> capture -> compile/test -> publish -> schedule -> AgentCore browser/OpenAI execution -> verification/history/email, plus one bounded human takeover/resume path.
 5. Add Google federation/adapters only after the AWS vertical slice is demonstrably complete.
@@ -66,7 +67,7 @@ Typed values are deliberately never captured as raw text. Every observed input i
 - Sensitive target-site runtime values still need a dedicated secret-resolution contract; passwords, cookies, provider keys, and equivalent secrets must never enter workflow/runtime-variable metadata.
 - Public HTTP command idempotency is incomplete outside operations that already have durable domain idempotency; add explicit command keys where live UX can produce duplicate mutations.
 - Automation status and EventBridge Scheduler state cannot be atomically committed across DynamoDB/Scheduler; lifecycle ordering fails closed, but a future reconciliation/status-repair path should make partial drift visible and repairable.
-- Capture completion is IAM-only and durable, but collector phase/finish state is not yet persisted or wired into the Runtime/UX; this run establishes the observation primitive rather than pretending the remaining control channel exists.
+- The durable capture-control adapter exists, but production bootstrap/runtime/UX composition remains the next outward seam; no claim is made that a real capture worker is launched by these commands yet.
 - Release upload is deliberately not transactional across both S3 objects. Partial upload produces no manifest/deployment authority but may leave an orphan object version until cleanup.
 - Live OpenAI/SES/Cognito/AgentCore validation still requires the controlled AWS environment; deterministic CI is not represented as live-cloud proof.
 - AgentCore Runtime/browser networking is PUBLIC for the arbitrary-web MVP and should be revisited where VPC egress can preserve target-site access.
