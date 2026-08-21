@@ -22,9 +22,10 @@ sign in -> dashboard -> create -> cloud capture -> persisted Browser Profile + t
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head `04d32afaf3636c0df9e58e4f9164dc79c679f084` (`Refresh capture-identity lock snapshot`) is green on GitHub Actions CI #212.
-- CI #212 is the authoritative baseline: deterministic lock verification, frozen installation, strict checks/builds, production packaging/deployment contracts, and the full test suite succeeded.
-- GitHub Actions on the exact new head remains authoritative. No pass is claimed for the current slice until that exact-head run completes successfully.
+- Incoming head before this slice was `04d32afaf3636c0df9e58e4f9164dc79c679f084` (`Refresh capture-identity lock snapshot`), green on GitHub Actions CI #212.
+- Product commit `7b58194d128e0c210d3c26ea88ea63af7feacb92` (`Keep Live View open during capture recording`) triggered CI #213.
+- CI #213 stopped only at the deterministic pnpm lock-snapshot gate before install/type-check/tests. No package manifest changed. pnpm 10.15.0 resolved 376 packages and produced snapshot SHA-256 `cc944aae73f2f4aee20674a8156274abbdc6d63b6fb55a2dca46d434aecd4ec7` instead of the previously reviewed `88d75541e6b949325278dadfecef1400c82b0fe921ef0ea3edf8b8606f5eecda`.
+- The existing AWS DynamoDB peer-alignment assertions remain intact. The corrective commit authenticates exactly the CI-generated graph; GitHub Actions on that exact corrective head is authoritative and no pass is claimed until it completes successfully.
 
 ## 2026-08-22 — keep Live View available while starting workflow recording
 
