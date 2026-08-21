@@ -39,9 +39,9 @@ The live smoke uses only public/anonymous requests. It verifies that the deploye
 ### Validation added
 
 - `scripts/test-smoke-aws-deployment.sh` uses a fake `curl` implementation, requiring no cloud credentials. It proves the healthy public boundary, rejection of non-S256 OAuth redirects, and rejection of insecure deployment origins.
-- CI now runs that no-cloud smoke contract before the full test suite.
+- CI #199 passed deterministic lock verification, frozen installation, strict `pnpm check`, all three production package builds, web hosting, release, deployment-ordering, and web-demo environment contracts before failing only in the new smoke fixture. The fake `curl` wrote the expected product HTML and then incorrectly truncated its own output file, causing the product-shell assertion to fail. Production smoke behavior was not implicated.
+- The corrective change removes only that fixture truncation; no production code or validation condition is weakened. Exact-head GitHub Actions after publication remains authoritative.
 - The protected deployment workflow runs the real smoke only after the immutable release and ordered stack deployment have succeeded.
-- Exact-head GitHub Actions after publication is authoritative.
 
 ## 2026-08-21 — AWS-hosted Next.js web deployment
 

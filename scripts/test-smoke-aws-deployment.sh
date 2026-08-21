@@ -54,7 +54,6 @@ elif [[ "$url" == "https://api.example.com/v1/automations" ]]; then
 elif [[ "$url" == "https://capture.example.com/capture/complete" && "$method" == "POST" ]]; then
   code=403
 fi
-[[ "$out" == /dev/null || -z "$out" ]] || : >"$out"
 if [[ "$write" == *'%{http_code}'* ]]; then printf '%s' "$code"; fi
 SH
 chmod +x "$tmp/bin/curl"
