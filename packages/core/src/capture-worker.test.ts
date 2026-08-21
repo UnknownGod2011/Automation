@@ -12,9 +12,10 @@ const automation: AutomationRecord = {
   name: "Demo",
   websiteUrl: "https://example.test/app",
   prompt: "Save a note",
-  consentAcknowledged: true,
   browserProfileRef: "profile-1",
   status: "DRAFT",
+  notifyOnSuccess: false,
+  notifyOnFailure: true,
   createdAt: "2026-08-21T00:00:00.000Z",
   updatedAt: "2026-08-21T00:00:00.000Z",
 };

@@ -4,6 +4,7 @@ import {
   AwsCaptureCollectionRuntimeHandler,
   captureCollectionTaskKey,
   isAwsAgentCoreCaptureCollectionPayload,
+  type AgentCoreCaptureCollectionInvokeRequest,
 } from "./capture-runtime.js";
 
 const scope = { tenantId: "tenant-1", userId: "user-1" };
@@ -15,7 +16,7 @@ const configuration = {
 
 describe("AwsAgentCoreCaptureCollectionTaskStarter", () => {
   it("invokes AgentCore with trusted user identity and no tenant/workload secret in JSON", async () => {
-    const invoke = vi.fn(async (request: { payload: string }) => {
+    const invoke = vi.fn(async (request: AgentCoreCaptureCollectionInvokeRequest) => {
       const parsed = JSON.parse(request.payload) as { captureSessionId: string };
       return JSON.stringify({
         kind: "CAPTURE_COLLECTION_STARTED",
@@ -38,7 +39,7 @@ describe("AwsAgentCoreCaptureCollectionTaskStarter", () => {
   });
 
   it("rejects cross-tenant launch before invoking AgentCore", async () => {
-    const invoke = vi.fn(async () => "{}");
+    const invoke = vi.fn(async (_request: AgentCoreCaptureCollectionInvokeRequest) => "{}");
     const starter = new AwsAgentCoreCaptureCollectionTaskStarter(configuration, { invoke });
 
     await expect(starter.start({
