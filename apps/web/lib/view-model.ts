@@ -1,5 +1,5 @@
 import type { AutomationSummaryView, ControlPlaneCapabilities, RunSummaryView } from "@automation/core";
-import { humanScheduleLabel } from "./schedule-form.js";
+import { humanScheduleLabel } from "./schedule-form";
 
 export function formatCapability(label: string, state: ControlPlaneCapabilities[keyof ControlPlaneCapabilities]): string {
   return `${label}: ${state === "NOT_CONFIGURED" ? "Not configured" : state === "LOCAL_MOCK" ? "Local mock" : "Configured"}`;
