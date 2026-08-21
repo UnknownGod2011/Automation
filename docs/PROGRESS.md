@@ -20,9 +20,31 @@ sign in -> dashboard -> create -> cloud capture -> persisted Browser Profile + t
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming product head `00178e000bab11ef4ee9b0e3b6b4565e54f57ee3` (`Fix Next.js schedule module resolution`) was green on GitHub Actions CI #208 before this slice.
-- Product commit `1a1e8a0bfe140b92d9820169c61f5d981505fff5` (`Require fresh-test provenance for publish`) triggered CI #209. CI #209 failed only at the deterministic pnpm lock-snapshot gate before install/type-check/tests: expected `cb70fc8f25a801c5bf42295ce9e73b48a6262ed6843a473b2e5018e256e71c2c`, actual `8625718ffa4ad21010a4da1601095b866b14cd4bf6ef1a614865ec34b0b1faff`.
-- No package manifest changed. The corrective commit authenticates exactly that CI-generated graph and retains the explicit AWS DynamoDB peer-alignment assertions. GitHub Actions on the exact corrective head remains authoritative; no pass is claimed until it completes successfully.
+- Incoming head `4543955c218d649fd8575607e070df9f8213d80d` (`Refresh publish-gate lock snapshot`) is green on GitHub Actions CI #210.
+- CI #210 is the authoritative validation for the incoming state: deterministic lock verification, frozen installation, strict checks/builds, deployment/release contracts, and the full test suite succeeded.
+- GitHub Actions on the exact new head remains authoritative. No pass is claimed for the current slice until that exact-head run completes successfully.
+
+## 2026-08-22 — make active capture identity server-owned in the web product
+
+The vertical-path audit found one remaining internal-identity seam in the authenticated capture UX. Start/Finish capture forms carried the opaque `captureSessionId` from rendered page state back to the Next.js mutation route. The provider-neutral control plane already revalidated that ID against the current tenant/user/automation session, so this was not an ownership bypass, but the browser did not need to choose the identifier at all.
+
+The Next.js mutation route now reloads the current authenticated capture-recording state and resolves the active capture session server-side before issuing Start/Finish. Browser-submitted capture IDs are no longer execution authority. The rendered Start/Finish forms no longer contain the capture-session ID. Start remains replay-safe if the durable capture is already in `WORKFLOW`; it is suppressed after finish has been requested. Finish is rejected before `WORKFLOW` so authentication setup cannot accidentally be treated as the demonstrated workflow, while exact finish replay remains allowed.
+
+### Security / tenancy / idempotency / concurrency / retry / verification / cost / observability / recovery
+
+- Tenant/user ownership is still derived from the authenticated control-plane request and independently revalidated by the core capture service. The web server only narrows authority further by resolving the current session rather than trusting a form field.
+- Browser/Profile/provider identifiers remain server-side. The opaque capture-session ID is no longer rendered in Start/Finish forms.
+- Duplicate Start/Finish delivery keeps the existing durable idempotency semantics; no new capture task, retry loop, lease, recovery record, or browser/model execution path was introduced.
+- The extra operation is one authenticated read of current capture state per Start/Finish mutation. This is control-plane-only cost and occurs only during interactive capture.
+- Effect verification, trace persistence, Browser Profile save ordering, and capture-completion authority are unchanged.
+- User recovery is unchanged: refresh the automation page if the active capture state has moved or expired.
+
+### Validation added
+
+- Web tests cover no-active-capture rejection, trusted AUTH_SETUP start, finish-before-WORKFLOW rejection, replay-safe Start/Finish behavior, finish-requested suppression of Start, and malformed server capture IDs.
+- The mutation route consumes the helper and no longer reads `captureSessionId` from form data.
+- The automation page removes the hidden capture-session fields from Start/Finish forms.
+- Exact-head GitHub Actions after publication is authoritative.
 
 ## 2026-08-22 — require fresh-test provenance at the publish boundary
 
@@ -45,8 +67,8 @@ The vertical-path audit found that the server-owned publish-version resolver sel
 - A numerically higher successful `SCHEDULED` run cannot displace that fresh-test result.
 - Successful runs with missing/unknown provenance do not authorize publication.
 - `READY_TO_TEST` and failed fresh-test states still produce no publish candidate.
-- CI #209 root cause was dependency-snapshot drift, not code/type/test behavior; the corrective commit updates only the reviewed lock fingerprint plus this progress record.
-- Exact-head GitHub Actions after the corrective commit is authoritative.
+- CI #209 root cause was dependency-snapshot drift, not code/type/test behavior; the corrective commit updated only the reviewed lock fingerprint plus this progress record.
+- CI #210 passed on the exact corrective head.
 
 ## 2026-08-22 — normalize product schedules before AWS publish
 

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { serverResolvedCaptureSessionId } from "../../../../../../lib/capture-command-state";
 import { WebControlPlaneError } from "../../../../../../lib/control-plane-client";
 import { isSameOriginMutation } from "../../../../../../lib/mutation-security";
 import {
@@ -43,7 +44,8 @@ export async function POST(request: Request, context: { params: Promise<{ automa
     }
 
     if (command === "record-workflow" || command === "finish-capture") {
-      const captureSessionId = String(form.get("captureSessionId") ?? "").trim();
+      const recording = await client.captureRecording(automationId);
+      const captureSessionId = serverResolvedCaptureSessionId(recording, command);
       if (!captureSessionId) return redirectBack(request, automationId, "invalid-input");
       if (command === "record-workflow") {
         await client.startCaptureRecording(automationId, captureSessionId);
