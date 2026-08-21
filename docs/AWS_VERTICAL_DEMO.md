@@ -1,74 +1,32 @@
 # AWS Vertical Demo Runbook
 
-This runbook is for the first controlled production-like AWS demonstration. It does not replace CI: GitHub Actions validates source/build contracts; this runbook validates the deployed cloud boundary with real Cognito, AgentCore, OpenAI BYOK, Scheduler, SES, and Browser resources.
+Use a permitted test site/account. CAPTCHA, MFA, security challenges, and anti-bot controls remain human-operated and must never be bypassed. Configure a verified SES sender when testing email and add OpenAI BYOK only through the product UI.
 
-## Preconditions
+## Deploy
 
-- Deploy a green exact-head release with `.github/workflows/deploy-aws.yml` or the immutable release/deploy scripts.
-- Use short-lived AWS credentials or GitHub OIDC. Do not place AWS access keys in repo files, shell history, or web environment files.
-- Use a permitted test website/account where automation is authorized. CAPTCHA, MFA, security challenges, and anti-bot controls remain human-operated and must never be bypassed.
-- Configure a verified SES sender if email validation is part of the demo.
-- Configure one OpenAI BYOK credential through the product UI; do not inject it into deployment environment JSON.
+Deploy a green exact-head release through `.github/workflows/deploy-aws.yml` or the immutable release/deploy scripts. The deployment result includes `outputs.webOrigin`; the Next.js control plane is provisioned automatically as a bounded public Lambda Function URL and finalized with the exact Cognito/control-plane coordinates. No separate web host is required for the first AWS demo.
 
-## Configure the Next.js web app from deployed outputs
-
-The deployment command emits `dist/aws-deployment-<releaseId>.json`. Generate the non-secret server environment and verify the deployed Cognito app client matches the exact web origin:
-
-```bash
-bash scripts/prepare-web-demo-env.sh \
-  --deployment dist/aws-deployment-<releaseId>.json \
-  --origin https://your-web-origin.example \
-  --output apps/web/.env.local
-```
-
-The generated file contains only:
-
-- `AUTOMATION_CONTROL_PLANE_URL`
-- `AUTOMATION_COGNITO_DOMAIN`
-- `AWS_COGNITO_APP_CLIENT_ID`
-- `AUTOMATION_WEB_ORIGIN`
-
-The script queries the deployed Cognito app client and fails before writing the file unless authorization-code flow is enabled, `openid email profile` scopes are present, and the exact callback/logout URLs match the requested origin. It never writes AWS credentials, Cognito tokens, provider keys, workload tokens, browser sessions, or Browser Profile references.
+For local debugging only, `scripts/prepare-web-demo-env.sh` may still generate a non-secret `.env.local` from deployment outputs and a chosen Cognito-compatible origin.
 
 ## Controlled success path
 
-1. Open the deployed web origin and sign in through Cognito.
-2. Open **Credentials** and add one OpenAI BYOK key. Confirm the UI returns only masked/sanitized metadata.
-3. Create an automation with a permitted HTTPS website URL, a narrow objective, consent acknowledgement, and notification preferences.
-4. Start **Cloud capture**. In Live View, sign in to the target site yourself.
-5. Select **Start recording workflow**, demonstrate the reusable workflow, then **Finish capture**.
-6. Confirm capture automatically reaches Compile-ready state; no trace/session/profile identifier should need manual copying.
-7. Compile the latest capture and run a fresh cloud test. Confirm the fresh test executes through AgentCore Runtime and the Browser Profile is reused.
-8. Inspect the run result and only then approve/publish with a near-future recurrence and the intended IANA timezone.
-9. Close the user browser/device before the scheduled occurrence.
-10. Confirm the scheduled occurrence traverses Scheduler -> SQS -> Step Functions -> AgentCore Runtime and reaches a terminal verified run state.
-11. Confirm run history is visible and sanitized. If success notifications are enabled and SES is configured, confirm receipt of one success email.
-12. Confirm CloudWatch/EMF correlation uses stable run identifiers without raw browser/provider errors or secrets.
+1. Open `outputs.webOrigin` and sign in through Cognito.
+2. Add one OpenAI BYOK credential; confirm only masked metadata returns.
+3. Create an authorized automation with HTTPS site URL, objective, consent, and notification preference.
+4. Start cloud capture; sign in to the target site yourself in Live View.
+5. Start workflow recording, demonstrate the reusable flow, and finish capture.
+6. Confirm capture becomes Compile-ready without copying internal identifiers.
+7. Compile and run a fresh AgentCore test; approve only after verification succeeds.
+8. Publish with a near-future recurrence/timezone, then close the user browser/device.
+9. Confirm Scheduler -> SQS -> Step Functions -> AgentCore Runtime reaches a verified terminal run.
+10. Confirm sanitized run history, optional SES success email, and low-cardinality CloudWatch/EMF telemetry.
 
 ## Controlled human-recovery path
 
-1. Deliberately invalidate only the target-site authentication for the same permitted test account (for example, sign out of that target account). Do not trigger or bypass a security control.
-2. Run or wait for the next occurrence and confirm it reaches `WAITING_FOR_HUMAN` with `TARGET_AUTH_REQUIRED` rather than looping.
-3. Open the run diagnostics and choose **Open secure repair browser**.
-4. Complete target login/MFA manually in Live View.
-5. Choose **Save repaired session & resume**.
-6. Confirm the repaired Browser Profile is persisted before resume, the run resumes through the existing idempotent human-resolution boundary, and the workflow reaches a verified terminal state.
-7. Confirm the post-resume SES/CloudWatch outcome is emitted once; duplicate clicks/delivery must not intentionally create another website action or completion email.
+Deliberately invalidate only target-site authentication, allow the next run to reach `WAITING_FOR_HUMAN / TARGET_AUTH_REQUIRED`, open the secure repair Live View, complete login/MFA manually, save the repaired session, and resume. Confirm Browser Profile persistence precedes resume and the post-resume terminal email/metric appears once.
 
-## Evidence to retain
+## Stop conditions and evidence
 
-Retain the deployment result JSON, CloudFormation stack events/outputs, selected CloudWatch log excerpts, sanitized run IDs/statuses, and screenshots/video needed for the demo narrative. Do not retain or publish cookies, access/refresh tokens, BYOK keys, workload tokens, Browser Profile contents, Live View credentials, raw secret-bearing DOM/input values, or hidden model reasoning.
+Stop and treat the result as a product defect if tenant/user/profile/credential scope can be chosen by a request, a consequential action advances without verification, duplicate delivery repeats an external effect, a target security challenge is bypassed, secrets appear in UI/email/logs, or retry does not terminate in a bounded state.
 
-## Stop conditions
-
-Stop the demo and treat it as a product defect if any of the following occurs:
-
-- OAuth callback/logout configuration does not match the deployed web origin.
-- A request can choose another tenant/user, Browser Profile, credential reference, or notification recipient.
-- A consequential browser action advances without its declared verification succeeding.
-- Duplicate schedule/resume delivery causes a second external action.
-- A target security challenge is bypassed instead of surfaced to the user.
-- Provider/browser errors expose secrets in UI, email, telemetry, or logs.
-- A run continues indefinitely instead of exhausting bounded retry/human-attention policy.
-
-Fix defects exposed by this controlled deployment before adding narrower recovery machinery.
+Retain only deployment outputs, sanitized run IDs/statuses, selected secret-free logs, and demo screenshots/video. Never retain cookies, OAuth tokens, BYOK keys, workload tokens, Browser Profile contents, Live View credentials, secret-bearing DOM/input values, or hidden model reasoning.

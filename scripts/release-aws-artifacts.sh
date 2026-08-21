@@ -1,128 +1,50 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-usage() {
-  cat <<'EOF'
-Usage: release-aws-artifacts.sh --bucket BUCKET --release-id ID [options]
-
-Packages (unless prebuilt ZIPs are supplied), validates, and uploads the AgentCore
-Runtime and control-plane Lambda as create-only objects in a versioned S3 bucket.
-A manifest containing exact object VersionIds and CloudFormation parameters is
-written only after both uploads succeed.
-
-Required:
-  --bucket BUCKET                 Versioned S3 release bucket
-  --release-id ID                 Unique release identifier (for example a git SHA)
-
-Optional:
-  --prefix PREFIX                 S3 prefix (default: automation/releases)
-  --region REGION                 AWS region passed to the AWS CLI
-  --kms-key-id KEY                KMS key for artifact encryption; otherwise AES256
-  --runtime-zip PATH              Use a prebuilt AgentCore Runtime ZIP
-  --control-plane-zip PATH        Use a prebuilt control-plane Lambda ZIP
-  --output PATH                   Manifest path (default: dist/aws-release-<ID>.json)
-  -h, --help                      Show this help
-
-Credentials are intentionally not accepted by this script. The AWS CLI uses its
-standard credential provider chain (for CI, prefer short-lived OIDC credentials).
-EOF
-}
-
-bucket=""; release_id=""; prefix="automation/releases"; region=""; kms_key_id=""; runtime_zip=""; control_plane_zip=""; output=""
-while (($#)); do
-  case "$1" in
-    --bucket) bucket="${2:-}"; shift 2 ;;
-    --release-id) release_id="${2:-}"; shift 2 ;;
-    --prefix) prefix="${2:-}"; shift 2 ;;
-    --region) region="${2:-}"; shift 2 ;;
-    --kms-key-id) kms_key_id="${2:-}"; shift 2 ;;
-    --runtime-zip) runtime_zip="${2:-}"; shift 2 ;;
-    --control-plane-zip) control_plane_zip="${2:-}"; shift 2 ;;
-    --output) output="${2:-}"; shift 2 ;;
-    -h|--help) usage; exit 0 ;;
-    *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
-  esac
-done
-
-[[ -n "$bucket" ]] || { echo "--bucket is required" >&2; exit 2; }
-[[ -n "$release_id" ]] || { echo "--release-id is required" >&2; exit 2; }
-[[ "$bucket" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || { echo "invalid S3 bucket name" >&2; exit 2; }
-[[ "$release_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "invalid release id" >&2; exit 2; }
-prefix="${prefix#/}"; prefix="${prefix%/}"
-[[ -n "$prefix" ]] || { echo "release prefix must not be empty" >&2; exit 2; }
-[[ "$prefix" != *".."* ]] || { echo "release prefix must not contain '..'" >&2; exit 2; }
-command -v aws >/dev/null || { echo "aws CLI is required" >&2; exit 2; }
-command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 2; }
-
+usage(){ echo 'Usage: release-aws-artifacts.sh --bucket BUCKET --release-id ID [--prefix PREFIX] [--region REGION] [--kms-key-id KEY] [--runtime-zip PATH] [--control-plane-zip PATH] [--web-zip PATH] [--output PATH]'; }
+bucket=""; release_id=""; prefix="automation/releases"; region=""; kms_key_id=""; runtime_zip=""; control_plane_zip=""; web_zip=""; output=""
+while (($#)); do case "$1" in --bucket) bucket="${2:-}";shift 2;; --release-id) release_id="${2:-}";shift 2;; --prefix) prefix="${2:-}";shift 2;; --region) region="${2:-}";shift 2;; --kms-key-id) kms_key_id="${2:-}";shift 2;; --runtime-zip) runtime_zip="${2:-}";shift 2;; --control-plane-zip) control_plane_zip="${2:-}";shift 2;; --web-zip) web_zip="${2:-}";shift 2;; --output) output="${2:-}";shift 2;; -h|--help) usage;exit 0;; *) echo "Unknown argument: $1" >&2;exit 2;; esac; done
+[[ "$bucket" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || { echo "valid --bucket is required" >&2; exit 2; }
+[[ "$release_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "valid --release-id is required" >&2; exit 2; }
+prefix="${prefix#/}"; prefix="${prefix%/}"; [[ -n "$prefix" && "$prefix" != *'..'* ]] || exit 2
+command -v aws >/dev/null; command -v python3 >/dev/null; export AWS_PAGER=""
 aws_args=(); [[ -z "$region" ]] || aws_args+=(--region "$region")
-export AWS_PAGER=""
-versioning_status="$(aws "${aws_args[@]}" s3api get-bucket-versioning --bucket "$bucket" --query Status --output text)"
-[[ "$versioning_status" == "Enabled" ]] || { echo "release bucket must have S3 Versioning enabled; got '${versioning_status:-unset}'" >&2; exit 3; }
-
-work_dir="$(mktemp -d)"; trap 'rm -rf "$work_dir"' EXIT
-if [[ -z "$runtime_zip" ]]; then runtime_zip="$work_dir/automation-agentcore-runtime.zip"; bash "$ROOT_DIR/scripts/package-agentcore-runtime.sh" "$runtime_zip"; fi
-if [[ -z "$control_plane_zip" ]]; then control_plane_zip="$work_dir/automation-control-plane.zip"; bash "$ROOT_DIR/scripts/package-control-plane-lambda.sh" "$control_plane_zip"; fi
-
-validate_zip() {
-  local path="$1"; shift
-  [[ -f "$path" ]] || { echo "artifact not found: $path" >&2; exit 4; }
-  python3 - "$path" "$@" <<'PY'
-import sys, zipfile
-path = sys.argv[1]; required = set(sys.argv[2:])
-try:
-    with zipfile.ZipFile(path) as archive:
-        names = set(archive.namelist()); bad = archive.testzip()
-except (OSError, zipfile.BadZipFile) as exc:
-    raise SystemExit(f"invalid zip {path}: {exc}")
-if bad: raise SystemExit(f"corrupt zip member in {path}: {bad}")
-missing = sorted(required - names)
-if missing: raise SystemExit(f"artifact {path} missing required entries: {', '.join(missing)}")
+status="$(aws "${aws_args[@]}" s3api get-bucket-versioning --bucket "$bucket" --query Status --output text)"; [[ "$status" == Enabled ]] || { echo "release bucket must have S3 Versioning enabled" >&2; exit 3; }
+work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+[[ -n "$runtime_zip" ]] || { runtime_zip="$work/runtime.zip"; bash "$ROOT_DIR/scripts/package-agentcore-runtime.sh" "$runtime_zip"; }
+[[ -n "$control_plane_zip" ]] || { control_plane_zip="$work/control.zip"; bash "$ROOT_DIR/scripts/package-control-plane-lambda.sh" "$control_plane_zip"; }
+[[ -n "$web_zip" ]] || { web_zip="$work/web.zip"; bash "$ROOT_DIR/scripts/package-web-lambda.sh" "$web_zip" >/dev/null; }
+python3 - "$runtime_zip" "$control_plane_zip" "$web_zip" <<'PY'
+import sys,zipfile
+req=[{"runtime-http.mjs","dist/index.js","package.json"},{"control-plane-lambda.mjs","capture-completion-lambda.mjs","dispatcher-lambda.mjs","dist/index.js","package.json"},{"run.sh"}]
+for p,r in zip(sys.argv[1:],req):
+  with zipfile.ZipFile(p) as z:
+    names=set(z.namelist()); bad=z.testzip()
+    if bad: raise SystemExit(f"corrupt zip member: {bad}")
+    miss=r-names
+    if miss: raise SystemExit(f"artifact {p} missing: {', '.join(sorted(miss))}")
+    if p==sys.argv[3] and not ({"server.js","apps/web/server.js"}&names): raise SystemExit("web artifact missing server.js")
+PY
+sha(){ python3 - "$1" <<'PY'
+import hashlib,sys
+print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())
 PY
 }
-validate_zip "$runtime_zip" runtime-http.mjs dist/index.js package.json
-validate_zip "$control_plane_zip" control-plane-lambda.mjs capture-completion-lambda.mjs dispatcher-lambda.mjs dist/index.js package.json
-
-sha256_file() { python3 - "$1" <<'PY'
-import hashlib, sys
-from pathlib import Path
-print(hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest())
+upload(){ local p="$1" k="$2" s="$3" a="$4"; local enc=(--server-side-encryption AES256); [[ -z "$kms_key_id" ]] || enc=(--server-side-encryption aws:kms --ssekms-key-id "$kms_key_id"); aws "${aws_args[@]}" s3api put-object --bucket "$bucket" --key "$k" --body "$p" --if-none-match '*' "${enc[@]}" --metadata "sha256=$s,release-id=$release_id,artifact=$a" --query VersionId --output text; }
+r_sha="$(sha "$runtime_zip")"; c_sha="$(sha "$control_plane_zip")"; w_sha="$(sha "$web_zip")"
+r_key="$prefix/$release_id/agentcore-runtime.zip"; c_key="$prefix/$release_id/control-plane-lambda.zip"; w_key="$prefix/$release_id/web-lambda.zip"
+r_ver="$(upload "$runtime_zip" "$r_key" "$r_sha" agentcore-runtime)"; c_ver="$(upload "$control_plane_zip" "$c_key" "$c_sha" control-plane-lambda)"; w_ver="$(upload "$web_zip" "$w_key" "$w_sha" web-lambda)"
+for v in "$r_ver" "$c_ver" "$w_ver"; do [[ -n "$v" && "$v" != None && "$v" != null ]] || { echo "S3 did not return VersionId" >&2; exit 5; }; done
+[[ -n "$output" ]] || output="$ROOT_DIR/dist/aws-release-$release_id.json"; mkdir -p "$(dirname "$output")"; tmp="$output.tmp"
+BUCKET="$bucket" RELEASE_ID="$release_id" REGION="$region" R_KEY="$r_key" R_VER="$r_ver" R_SHA="$r_sha" C_KEY="$c_key" C_VER="$c_ver" C_SHA="$c_sha" W_KEY="$w_key" W_VER="$w_ver" W_SHA="$w_sha" python3 >"$tmp" <<'PY'
+import json,os
+b=os.environ['BUCKET']
+print(json.dumps({'schemaVersion':1,'releaseId':os.environ['RELEASE_ID'],'region':os.environ['REGION'] or None,'bucket':b,'artifacts':{
+'agentCoreRuntime':{'key':os.environ['R_KEY'],'versionId':os.environ['R_VER'],'sha256':os.environ['R_SHA']},
+'controlPlaneLambda':{'key':os.environ['C_KEY'],'versionId':os.environ['C_VER'],'sha256':os.environ['C_SHA']},
+'webLambda':{'key':os.environ['W_KEY'],'versionId':os.environ['W_VER'],'sha256':os.environ['W_SHA']}},'cloudFormationParameters':{
+'agentCoreRuntime':{'RuntimeCodeBucket':b,'RuntimeCodePrefix':os.environ['R_KEY'],'RuntimeCodeVersionId':os.environ['R_VER']},
+'controlPlaneService':{'CodeBucketName':b,'CodeObjectKey':os.environ['C_KEY'],'CodeObjectVersion':os.environ['C_VER']},
+'webApp':{'WebCodeBucket':b,'WebCodeObjectKey':os.environ['W_KEY'],'WebCodeObjectVersion':os.environ['W_VER']}}},indent=2,sort_keys=True))
 PY
-}
-runtime_sha="$(sha256_file "$runtime_zip")"; control_plane_sha="$(sha256_file "$control_plane_zip")"
-runtime_key="$prefix/$release_id/agentcore-runtime.zip"; control_plane_key="$prefix/$release_id/control-plane-lambda.zip"
-
-upload_versioned() {
-  local path="$1" key="$2" sha="$3" artifact="$4"
-  local encryption_args=(--server-side-encryption AES256)
-  [[ -z "$kms_key_id" ]] || encryption_args=(--server-side-encryption aws:kms --ssekms-key-id "$kms_key_id")
-  local version_id
-  version_id="$(aws "${aws_args[@]}" s3api put-object --bucket "$bucket" --key "$key" --body "$path" --if-none-match '*' "${encryption_args[@]}" --metadata "sha256=$sha,release-id=$release_id,artifact=$artifact" --query VersionId --output text)"
-  [[ -n "$version_id" && "$version_id" != "None" && "$version_id" != "null" ]] || { echo "S3 did not return an immutable VersionId for $key" >&2; exit 5; }
-  printf '%s' "$version_id"
-}
-runtime_version="$(upload_versioned "$runtime_zip" "$runtime_key" "$runtime_sha" agentcore-runtime)"
-control_plane_version="$(upload_versioned "$control_plane_zip" "$control_plane_key" "$control_plane_sha" control-plane-lambda)"
-
-[[ -n "$output" ]] || output="$ROOT_DIR/dist/aws-release-$release_id.json"
-mkdir -p "$(dirname "$output")"; manifest_tmp="$output.tmp"
-BUCKET="$bucket" RELEASE_ID="$release_id" REGION="$region" RUNTIME_KEY="$runtime_key" RUNTIME_VERSION="$runtime_version" RUNTIME_SHA="$runtime_sha" CONTROL_KEY="$control_plane_key" CONTROL_VERSION="$control_plane_version" CONTROL_SHA="$control_plane_sha" python3 >"$manifest_tmp" <<'PY'
-import json, os
-manifest = {
-  "schemaVersion": 1, "releaseId": os.environ["RELEASE_ID"], "region": os.environ["REGION"] or None, "bucket": os.environ["BUCKET"],
-  "artifacts": {
-    "agentCoreRuntime": {"key": os.environ["RUNTIME_KEY"], "versionId": os.environ["RUNTIME_VERSION"], "sha256": os.environ["RUNTIME_SHA"]},
-    "controlPlaneLambda": {"key": os.environ["CONTROL_KEY"], "versionId": os.environ["CONTROL_VERSION"], "sha256": os.environ["CONTROL_SHA"]},
-  },
-  "cloudFormationParameters": {
-    "agentCoreRuntime": {"RuntimeCodeBucket": os.environ["BUCKET"], "RuntimeCodePrefix": os.environ["RUNTIME_KEY"], "RuntimeCodeVersionId": os.environ["RUNTIME_VERSION"]},
-    "controlPlaneService": {"CodeBucketName": os.environ["BUCKET"], "CodeObjectKey": os.environ["CONTROL_KEY"], "CodeObjectVersion": os.environ["CONTROL_VERSION"]},
-  },
-}
-print(json.dumps(manifest, indent=2, sort_keys=True))
-PY
-mv "$manifest_tmp" "$output"
-printf 'Release manifest: %s\n' "$output"
-printf 'AgentCore Runtime: s3://%s/%s?versionId=%s\n' "$bucket" "$runtime_key" "$runtime_version"
-printf 'Control plane: s3://%s/%s?versionId=%s\n' "$bucket" "$control_plane_key" "$control_plane_version"
+mv "$tmp" "$output"; printf 'Release manifest: %s\n' "$output"

@@ -1,0 +1,125 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Public Next.js control-plane web application on Lambda Function URL.
+
+Parameters:
+  WebCodeBucket:
+    Type: String
+  WebCodeObjectKey:
+    Type: String
+  WebCodeObjectVersion:
+    Type: String
+  ControlPlaneUrl:
+    Type: String
+    Default: ''
+  CognitoDomain:
+    Type: String
+    Default: ''
+  CognitoAppClientId:
+    Type: String
+    Default: ''
+  WebOrigin:
+    Type: String
+    Default: ''
+  ReservedConcurrency:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 100
+  MemorySize:
+    Type: Number
+    Default: 1024
+    MinValue: 512
+    MaxValue: 4096
+
+Conditions:
+  HasRuntimeConfig: !And
+    - !Not [!Equals [!Ref ControlPlaneUrl, '']]
+    - !Not [!Equals [!Ref CognitoDomain, '']]
+    - !Not [!Equals [!Ref CognitoAppClientId, '']]
+    - !Not [!Equals [!Ref WebOrigin, '']]
+
+Resources:
+  WebLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30
+
+  WebExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub '${WebLogGroup.Arn}:*'
+
+  WebFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs22.x
+      Architectures: [x86_64]
+      Handler: run.sh
+      Role: !GetAtt WebExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref WebCodeBucket
+        S3Key: !Ref WebCodeObjectKey
+        S3ObjectVersion: !Ref WebCodeObjectVersion
+      MemorySize: !Ref MemorySize
+      Timeout: 30
+      ReservedConcurrentExecutions: !Ref ReservedConcurrency
+      LoggingConfig:
+        LogGroup: !Ref WebLogGroup
+        LogFormat: JSON
+      Layers:
+        - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:28'
+      Environment:
+        Variables:
+          AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
+          AWS_LWA_PORT: '8080'
+          AWS_LWA_READINESS_CHECK_PATH: '/'
+          AWS_LWA_READINESS_CHECK_HEALTHY_STATUS: '100-499'
+          PORT: '8080'
+          AUTOMATION_CONTROL_PLANE_URL: !If [HasRuntimeConfig, !Ref ControlPlaneUrl, '']
+          AUTOMATION_COGNITO_DOMAIN: !If [HasRuntimeConfig, !Ref CognitoDomain, '']
+          AWS_COGNITO_APP_CLIENT_ID: !If [HasRuntimeConfig, !Ref CognitoAppClientId, '']
+          AUTOMATION_WEB_ORIGIN: !If [HasRuntimeConfig, !Ref WebOrigin, '']
+
+  WebFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt WebFunction.Arn
+      AuthType: NONE
+      InvokeMode: BUFFERED
+
+  AllowPublicFunctionUrl:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WebFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  AllowPublicInvokeViaFunctionUrl:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WebFunction
+      Action: lambda:InvokeFunction
+      Principal: '*'
+      InvokedViaFunctionUrl: true
+
+Outputs:
+  WebOrigin:
+    Value: !GetAtt WebFunctionUrl.FunctionUrl
+  WebFunctionArn:
+    Value: !GetAtt WebFunction.Arn
+  RuntimeConfigured:
+    Value: !If [HasRuntimeConfig, 'true', 'false']

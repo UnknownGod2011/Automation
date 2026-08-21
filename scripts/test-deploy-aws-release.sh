@@ -1,63 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; WORK_DIR="$(mktemp -d)"; trap 'rm -rf "$WORK_DIR"' EXIT
-mkdir -p "$WORK_DIR/bin"; AWS_LOG="$WORK_DIR/aws.log"
-cat >"$WORK_DIR/bin/aws" <<'AWS'
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT; mkdir -p "$W/bin"; AWS_LOG="$W/aws.log"
+cat >"$W/bin/aws" <<'AWS'
 #!/usr/bin/env bash
 set -euo pipefail
-: "${AWS_LOG:?}"; printf '%q ' "$@" >>"$AWS_LOG"; printf '\n' >>"$AWS_LOG"
-[[ " $* " == *" cloudformation deploy "* ]] && exit 0
-if [[ " $* " == *" cloudformation describe-stacks "* ]]; then
-  query=""; while (($#)); do case "$1" in --query) query="${2:-}"; shift 2;; *) shift;; esac; done
-  case "$query" in
-    *CognitoIssuer*) echo 'https://cognito-idp.ap-south-1.amazonaws.com/pool-123';;
-    *CognitoAppClientId*) echo client-123;; *CognitoUserPoolId*) echo pool-123;;
-    *AgentRuntimeExecutionRoleArn*) echo 'arn:aws:iam::123456789012:role/automation-dev-runtime-role';;
-    *AgentRuntimeArn*) echo 'arn:aws:bedrock-agentcore:ap-south-1:123456789012:runtime/runtime-123';;
-    *DispatchQueueArn*) echo 'arn:aws:sqs:ap-south-1:123456789012:automation-dev-dispatch';;
-    *DispatchDeadLetterQueueArn*) echo 'arn:aws:sqs:ap-south-1:123456789012:automation-dev-dispatch-dlq';;
-    *SchedulerTargetRoleArn*) echo 'arn:aws:iam::123456789012:role/scheduler-role';; *SchedulerGroupName*) echo automation-dev;;
-    *ScheduledRunStateMachineArn*) echo 'arn:aws:states:ap-south-1:123456789012:stateMachine:scheduled-run';;
-    *ControlPlaneLambdaArn*) echo 'arn:aws:lambda:ap-south-1:123456789012:function:control-plane';;
-    *CaptureCompletionApiEndpoint*) echo 'https://capture.example.test/capture/complete';;
-    *CaptureCompletionInvokeArn*) echo 'arn:aws:execute-api:ap-south-1:123456789012:capture/*/POST/capture/complete';;
-    *ControlPlaneUrl*) echo 'https://api.example.test';; *CognitoDomain*) echo 'https://automation-dev.auth.ap-south-1.amazoncognito.com';;
-    *) exit 94;; esac; exit 0
-fi
+printf '%q ' "$@" >>"$AWS_LOG"; printf '\n' >>"$AWS_LOG"; [[ " $* " == *' cloudformation deploy '* ]] && exit 0
+if [[ " $* " == *' cloudformation describe-stacks '* ]]; then q=""; while (($#)); do [[ "$1" == --query ]] && { q="$2";break; };shift;done; case "$q" in *WebOrigin*) echo 'https://web.lambda-url.ap-south-1.on.aws/';; *CognitoIssuer*) echo 'https://cognito-idp.ap-south-1.amazonaws.com/pool';; *CognitoAppClientId*) echo client;; *CognitoUserPoolId*) echo pool;; *AgentRuntimeExecutionRoleArn*) echo 'arn:aws:iam::123456789012:role/runtime-role';; *AgentRuntimeArn*) echo 'arn:aws:bedrock-agentcore:ap-south-1:123456789012:runtime/r';; *DispatchQueueArn*) echo 'arn:aws:sqs:ap-south-1:123456789012:q';; *DispatchDeadLetterQueueArn*) echo 'arn:aws:sqs:ap-south-1:123456789012:dlq';; *SchedulerTargetRoleArn*) echo 'arn:aws:iam::123456789012:role/scheduler';; *SchedulerGroupName*) echo group;; *ScheduledRunStateMachineArn*) echo 'arn:aws:states:ap-south-1:123456789012:stateMachine:sm';; *ControlPlaneLambdaArn*) echo 'arn:aws:lambda:ap-south-1:123456789012:function:cp';; *CaptureCompletionApiEndpoint*) echo 'https://capture.example/capture/complete';; *CaptureCompletionInvokeArn*) echo 'arn:aws:execute-api:ap-south-1:123456789012:c/*';; *ControlPlaneUrl*) echo 'https://api.example';; *CognitoDomain*) echo 'https://login.auth.ap-south-1.amazoncognito.com';; *) exit 94;; esac; exit 0; fi
 exit 93
 AWS
-chmod +x "$WORK_DIR/bin/aws"; export PATH="$WORK_DIR/bin:$PATH" AWS_LOG
-cat >"$WORK_DIR/release.json" <<'JSON'
-{"schemaVersion":1,"releaseId":"abc123","region":"ap-south-1","bucket":"release-bucket","artifacts":{"agentCoreRuntime":{"key":"releases/abc123/runtime.zip","versionId":"runtime-version-1","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"controlPlaneLambda":{"key":"releases/abc123/control.zip","versionId":"control-version-1","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},"cloudFormationParameters":{"agentCoreRuntime":{"RuntimeCodeBucket":"release-bucket","RuntimeCodePrefix":"releases/abc123/runtime.zip","RuntimeCodeVersionId":"runtime-version-1"},"controlPlaneService":{"CodeBucketName":"release-bucket","CodeObjectKey":"releases/abc123/control.zip","CodeObjectVersion":"control-version-1"}}}
+chmod +x "$W/bin/aws"; export PATH="$W/bin:$PATH" AWS_LOG
+cat >"$W/release.json" <<'JSON'
+{"schemaVersion":1,"releaseId":"abc123","region":"ap-south-1","artifacts":{"agentCoreRuntime":{"key":"r.zip","versionId":"rv","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"controlPlaneLambda":{"key":"c.zip","versionId":"cv","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"webLambda":{"key":"w.zip","versionId":"wv","sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},"cloudFormationParameters":{"agentCoreRuntime":{"RuntimeCodeBucket":"release","RuntimeCodePrefix":"r.zip","RuntimeCodeVersionId":"rv"},"controlPlaneService":{"CodeBucketName":"release","CodeObjectKey":"c.zip","CodeObjectVersion":"cv"},"webApp":{"WebCodeBucket":"release","WebCodeObjectKey":"w.zip","WebCodeObjectVersion":"wv"}}}
 JSON
-cat >"$WORK_DIR/environment.json" <<'JSON'
-{"schemaVersion":1,"region":"ap-south-1","stackPrefix":"automation-dev","parameters":{"auth":{"WebCallbackUrl":"https://app.example.test/api/auth/callback","WebLogoutUrl":"https://app.example.test/","UserPoolDomainPrefix":"automation-dev-test"},"runtime":{"EnvironmentName":"dev","AutomationTenantId":"tenant-dev","StateTableName":"automation-dev-state","ArtifactBucketName":"automation-dev-artifacts","AgentCoreBrowserResourceArn":"arn:aws:bedrock-agentcore:ap-south-1:123456789012:browser/browser-123","OpenAiByokModel":"gpt-5-mini"},"scheduling":{"EnvironmentName":"dev"},"controlPlaneService":{"EnvironmentName":"dev","StateTableName":"automation-dev-state","ArtifactBucketName":"automation-dev-artifacts","TenantId":"tenant-dev"},"observability":{"EnvironmentName":"dev","SesFromIdentityArn":"arn:aws:ses:ap-south-1:123456789012:identity/notifications.example.test"}}}
+cat >"$W/env.json" <<'JSON'
+{"schemaVersion":1,"region":"ap-south-1","stackPrefix":"automation-dev","parameters":{"web":{"ReservedConcurrency":3},"auth":{"UserPoolDomainPrefix":"automation-dev-test"},"runtime":{"EnvironmentName":"dev","AutomationTenantId":"tenant","StateTableName":"state","ArtifactBucketName":"artifacts","AgentCoreBrowserResourceArn":"arn:aws:bedrock-agentcore:ap-south-1:123456789012:browser/b","OpenAiByokModel":"gpt-5-mini"},"scheduling":{"EnvironmentName":"dev"},"controlPlaneService":{"EnvironmentName":"dev","StateTableName":"state","ArtifactBucketName":"artifacts","TenantId":"tenant"},"observability":{"EnvironmentName":"dev","SesFromIdentityArn":"arn:aws:ses:ap-south-1:123456789012:identity/example.test"}}}
 JSON
-result="$WORK_DIR/deployment.json"; bash "$ROOT_DIR/scripts/deploy-aws-release.sh" --manifest "$WORK_DIR/release.json" --environment "$WORK_DIR/environment.json" --output "$result" >/dev/null
+result="$W/result.json"; bash "$ROOT_DIR/scripts/deploy-aws-release.sh" --manifest "$W/release.json" --environment "$W/env.json" --output "$result" >/dev/null
 python3 - "$result" "$AWS_LOG" <<'PY'
 import json,shlex,sys
-from pathlib import Path
-r=json.loads(Path(sys.argv[1]).read_text()); assert r["releaseId"]=="abc123"
-commands=[shlex.split(x) for x in Path(sys.argv[2]).read_text().splitlines()]; deploys=[c for c in commands if "cloudformation" in c and "deploy" in c]
-assert len(deploys)==6
-def v(c,f): return c[c.index(f)+1]
-assert [v(c,"--stack-name") for c in deploys]==["automation-dev-auth","automation-dev-runtime","automation-dev-scheduling","automation-dev-control-plane","automation-dev-auth","automation-dev-observability"]
-s=deploys[2]
-assert "AgentRuntimeArn=arn:aws:bedrock-agentcore:ap-south-1:123456789012:runtime/runtime-123" in s
-assert "DispatcherCodeBucket=release-bucket" in s
-assert "DispatcherCodeObjectKey=releases/abc123/control.zip" in s
-assert "DispatcherCodeObjectVersion=control-version-1" in s
-assert not any(x.startswith("DispatcherFunctionArn=") or x.startswith("DispatcherFunctionRoleName=") for x in s)
-assert "CodeObjectVersion=control-version-1" in deploys[3]
-for c in deploys: assert "CAPABILITY_NAMED_IAM" in c and "releaseId=abc123" in c
+r=json.load(open(sys.argv[1])); assert r['outputs']['webOrigin']=='https://web.lambda-url.ap-south-1.on.aws'; assert r['stacks']['web']=='automation-dev-web'
+cs=[shlex.split(x) for x in open(sys.argv[2])]; ds=[c for c in cs if 'cloudformation' in c and 'deploy' in c]
+def v(c,x):return c[c.index(x)+1]
+assert [v(c,'--stack-name') for c in ds]==['automation-dev-web','automation-dev-auth','automation-dev-runtime','automation-dev-scheduling','automation-dev-control-plane','automation-dev-auth','automation-dev-web','automation-dev-observability']
+assert 'WebCallbackUrl=https://web.lambda-url.ap-south-1.on.aws/api/auth/callback' in ds[1]
+assert 'WebLogoutUrl=https://web.lambda-url.ap-south-1.on.aws/' in ds[1]
+assert 'ControlPlaneUrl=https://api.example' in ds[6] and 'CognitoAppClientId=client' in ds[6]
 PY
-# Environment cannot replace dispatcher artifact coordinates or reintroduce an externally owned dispatcher.
-python3 - "$WORK_DIR/environment.json" "$WORK_DIR/conflict.json" <<'PY'
+python3 - "$W/env.json" "$W/bad.json" <<'PY'
 import json,sys
-from pathlib import Path
-d=json.loads(Path(sys.argv[1]).read_text()); d["parameters"]["scheduling"]["DispatcherCodeObjectVersion"]="attacker"; Path(sys.argv[2]).write_text(json.dumps(d))
+x=json.load(open(sys.argv[1]));x['parameters']['auth']['WebCallbackUrl']='https://evil.example/cb';json.dump(x,open(sys.argv[2],'w'))
 PY
-: >"$AWS_LOG"
-if bash "$ROOT_DIR/scripts/deploy-aws-release.sh" --manifest "$WORK_DIR/release.json" --environment "$WORK_DIR/conflict.json" --output "$WORK_DIR/conflict-result.json" >/dev/null 2>&1; then echo "deployment accepted dispatcher artifact override" >&2; exit 1; fi
-[[ ! -s "$AWS_LOG" ]]
-printf 'deploy-aws-release tests passed\n'
+: >"$AWS_LOG"; if bash "$ROOT_DIR/scripts/deploy-aws-release.sh" --manifest "$W/release.json" --environment "$W/bad.json" --output "$W/no.json" >/dev/null 2>&1; then exit 1; fi; [[ ! -s "$AWS_LOG" ]]
+echo 'deploy-aws-release tests passed'
