@@ -43,4 +43,7 @@ jobs:
       - name: Verify AWS deployment ordering contract
         shell: bash
         run: bash scripts/test-deploy-aws-release.sh
+      - name: Verify GitHub OIDC deployment workflow contract
+        shell: bash
+        run: bash scripts/test-github-oidc-deploy-workflow.sh
       - run: pnpm test

@@ -13,51 +13,51 @@ Core orchestration remains provider-neutral. AWS is the first production adapter
 - Strict TypeScript/pnpm monorepo with pinned Node/pnpm, deterministic reviewed lock materialization, frozen installs, and the AWS SDK peer mismatch resolved rather than suppressed.
 - Provider-neutral workflow/run/failure contracts, bounded retries, explicit side-effect verification, checkpointing, occurrence idempotency, tenant ownership, and deterministic in-memory adapters.
 - Deep execution/human-recovery substrate already exists: human-resolution claims, execution leases, heartbeat fencing, redacted audit history, read-only effect reconciliation, and atomic already-applied recovery primitives. Narrower recovery work remains parked.
-- Versioned capture trace contracts plus `compileCaptureTrace` produce semantic `WorkflowGraph` definitions with deterministic selectors first, verification for side effects, bounded retries, fresh-session navigation, and safe initial variables.
-- `AutomationProductLifecycleService` proves the local/mock create -> capture -> compile -> fresh test -> publish -> schedule -> execute -> history lifecycle without cloud credentials.
-- Provider-neutral control-plane HTTP contracts plus the Next.js app provide dashboard/create/capture/compile/test/publish/history, authenticated credential settings, and schedule update/pause/resume/disable controls.
-- Cognito managed login, API Gateway JWT authorization, AgentCore Live View/Profile capture, durable capture completion, immutable S3 capture/workflow documents, AgentCore Identity BYOK, OpenAI Responses reasoning, production fresh tests, SES notifications, CloudWatch telemetry, and tenant-scoped DynamoDB state are composed behind AWS adapters.
-- Scheduled execution is EventBridge Scheduler -> SQS -> dispatcher -> Step Functions Standard -> AgentCore Runtime. Occurrence-derived durable idempotency, automation locking, bounded retries, explicit verification, and DLQ/backpressure remain authoritative.
-- AgentCore Runtime and the control-plane/capture/dispatcher Lambda artifact are deterministic Node 22 ZIP packages. Immutable release objects are create-only in versioned S3 and recorded with exact VersionIds.
-- `scripts/deploy-aws-release.sh` deploys Cognito bootstrap -> AgentCore Runtime -> scheduling -> control plane/capture completion -> Cognito route finalization -> optional observability using short-lived AWS CLI credentials and immutable artifact coordinates.
-- Long-running capture collection now runs inside AgentCore Runtime after the durable `AUTH_SETUP -> WORKFLOW` transition. The Playwright collector observes workflow activity only, excludes raw typed values, polls durable finish state, and hands the completed trace to the existing Browser Profile + immutable trace completion authority.
+- Versioned capture contracts plus `compileCaptureTrace` produce semantic `WorkflowGraph` definitions; the local/mock product lifecycle proves create -> capture -> compile -> test -> publish -> schedule -> execute -> history without cloud credentials.
+- Next.js + Cognito/API Gateway control plane provides dashboard/create/capture/compile/test/publish/history, BYOK credential settings, recurrence editing, pause/resume/disable, and bounded capture-readiness polling.
+- AWS production composition includes tenant-scoped DynamoDB/S3 state, AgentCore Browser/Profile + Live View capture, long-running Runtime capture collection, AgentCore Identity BYOK, OpenAI reasoning, cloud fresh tests, SES notifications, CloudWatch telemetry, and the trusted IAM-only capture-completion boundary.
+- Scheduled execution is EventBridge Scheduler -> SQS -> dispatcher Lambda -> Step Functions Standard -> AgentCore Runtime with occurrence idempotency, automation locking, bounded retries, explicit verification, and DLQ/backpressure.
+- Runtime and Lambda artifacts are deterministic Node 22 ZIP packages. `release-aws-artifacts.sh` uploads create-only objects to versioned S3 and records exact VersionIds; `deploy-aws-release.sh` deploys Cognito bootstrap -> Runtime -> scheduling -> control plane/capture -> Cognito route finalization -> optional observability.
 
 ## Authoritative incoming validation
 
 - PR #1 is the open draft development PR on `agent/bootstrap-platform`.
-- Last confirmed green head before the current capture-worker changes was `c761ff4aac60bde8ae4248423edbe194dd7e4fd7` on GitHub Actions CI #188.
-- Incoming head `96e6ec5f9bf00f2dddfe17438e6a1223ababf031` is red on CI #190. Deterministic lock verification and frozen install passed; contracts/core/web type checking passed; AWS type checking failed at `packages/aws/src/control-plane-bootstrap.ts` because the narrow capture-session DynamoDB test seam was incorrectly passed to the wider capture-control store.
+- Incoming head `1d2f48c79e75a0d07954d69d9781d45e1bb69781` is green on GitHub Actions CI #191.
 - GitHub Actions on the exact head created by each run remains authoritative. Never claim a new slice green until deterministic lock verification, frozen install, `pnpm check`, deployment-package smoke tests, release/deployment contract tests, Next.js build/type validation, and the complete test suite succeed.
 
-## 2026-08-21 — capture composition repair + automatic readiness UX
+## 2026-08-21 — GitHub OIDC deployment workflow
 
 ### Product slice
 
-The AWS control-plane composition now scopes `captureDynamo` only to `AwsDynamoCaptureSessionStore`, whose command contract it was designed to fake. `AwsDynamoCaptureCollectionControlStore` uses the main `DynamoDocumentClientLike`, which supports the required Get/Put/Update command set. This is the root-cause repair for CI #190; TypeScript strictness is not weakened and the production client remains unchanged.
+A new manual `.github/workflows/deploy-aws.yml` turns the existing immutable release + ordered deployment scripts into an operable production deployment path. The workflow accepts only a protected GitHub Environment name, runs only from `main`, validates deterministic dependencies and the complete source test suite, and requests AWS credentials only after validation succeeds.
 
-The authenticated automation page now performs bounded automatic readiness polling after **Finish capture**. A small client component calls `router.refresh()` every two seconds for at most 60 attempts while durable capture state says Finish was requested and no `latestCompletedCapture` is visible yet. Once the trusted completion path exposes the completed trace, the refreshed server view stops polling and renders **Compile latest capture** automatically. A manual refresh link remains available after the two-minute polling window.
+AWS authentication uses GitHub OIDC through `aws-actions/configure-aws-credentials` with `id-token: write`, an environment-owned `AWS_DEPLOY_ROLE_ARN`, exact `AWS_ACCOUNT_ID` allow-listing, and an explicit STS identity check. The workflow has no static AWS-key inputs/secrets. Environment-specific CloudFormation parameters live in `AUTOMATION_AWS_ENVIRONMENT_JSON`; immutable artifact coordinates remain owned by `release-aws-artifacts.sh` and cannot be supplied through that JSON.
 
-The client polling contract receives only a boolean `enabled` flag. It does not receive the AgentCore browser-session ID, Browser Profile reference, capture-session ID, trace ID, Live View URL, tenant/user identity, provider credentials, or workload token. The trace ID continues to appear only in the server-rendered compile form after trusted completion has made that trace authoritative.
+Each release identity binds the source SHA plus workflow run/attempt so a retried deployment never mutates an existing release object. The existing release script still requires S3 Versioning and create-only writes. Release/deployment manifests live only in `$RUNNER_TEMP`, are consumed inside the same job, and are never uploaded with `actions/upload-artifact`, avoiding GitHub Actions artifact-storage growth.
+
+`docs/AWS_OIDC_DEPLOYMENT.md` documents protected-environment variables, exact-subject OIDC trust guidance, a non-secret environment JSON shape, and the residual orphaned-S3-version behavior after partial releases. A new CI contract test protects the workflow against reintroducing static AWS credentials, Actions artifact uploads, deployment from non-main refs, pre-validation role assumption, or bypass of the deterministic release/deploy scripts.
 
 ### Security / tenancy / idempotency / concurrency / retry / timeout / cost / observability review
 
-- Polling is read-only and request-scoped through the existing authenticated server page; it cannot mutate capture state or broaden ownership authority.
-- Polling is bounded to one refresh every two seconds for at most two minutes, preventing an unbounded browser refresh loop or persistent control-plane request amplification.
-- Capture completion remains authoritative and idempotent; polling never treats elapsed time or a successful refresh request as proof of completion.
-- No new browser/model operation, external side effect, retry layer, AWS permission, cloud resource, or dependency was added.
-- If completion is slow or a background collector fails, automatic polling stops and the existing manual refresh/retry/expiry behavior remains visible instead of manufacturing a successful capture.
+- GitHub Environment approval/branch protection plus the IAM OIDC trust condition form the deployment authorization boundary. Production trust should match the exact repository/environment `sub`, never a broad repository wildcard.
+- Tenant scope remains deployment-owned in the environment JSON and downstream CloudFormation; GitHub workflow inputs cannot inject tenant/user authority.
+- The deploy job has one environment-scoped concurrency group with `cancel-in-progress: false`, preventing a newer manual click from canceling a deployment halfway through stack updates.
+- Source validation happens before AWS role assumption, reducing credential lifetime and preventing known-red source from reaching CloudFormation through this workflow.
+- The role session is bounded to one hour; the job has a 45-minute timeout. Runtime/browser/model execution permissions are not granted by the workflow itself; they remain on the deployed service roles.
+- No new runtime package dependency, cloud resource, retry layer, browser/model invocation, or user-data store was added. GitHub artifact retention remains zero for this deployment path; durable release storage remains versioned S3 where lifecycle policy can manage old/orphaned versions.
+- CloudFormation, S3 VersionIds, GitHub run identity, and the generated runner-local deployment result provide release correlation without logging credentials or BYOK material.
 
 ### Tests / validation
 
-- Web unit coverage proves polling starts only after Finish is requested and before a completed capture exists, and that the interval/window remain bounded.
-- The existing AWS bootstrap/type boundary now compiles against the correct DynamoDB client capability rather than widening or casting the narrow capture-session seam.
+- `scripts/test-github-oidc-deploy-workflow.sh` verifies manual/environment-scoped deployment, `main` restriction, OIDC-only AWS auth, account allow-listing, deterministic install/check/test before role assumption, immutable release/deploy script usage, runner-local manifests, unique source-bound release identity, and absence of Actions artifact upload/static-key patterns.
+- CI now runs that deployment-workflow contract alongside existing package/release/deployment tests.
 - This section does not claim the new head green until GitHub Actions completes successfully on the exact published SHA.
 
 ## Next product milestones
 
-1. Add a deployment workflow/example using GitHub OIDC/short-lived AWS credentials that runs immutable release + ordered deploy without retaining ZIP artifacts in GitHub Actions storage.
-2. Perform one controlled real AWS demonstration: sign in -> BYOK -> Live View capture -> compile -> fresh test -> approve/publish -> scheduled AgentCore browser/OpenAI execution -> verification/history/email, plus one bounded human takeover/resume path.
-3. Close only defects exposed by that vertical demo, including collector replacement-worker recovery only if the live demo proves it necessary; do not return to speculative recovery micro-hardening.
+1. Perform one controlled real AWS demonstration: sign in -> BYOK -> Live View capture -> compile -> fresh test -> approve/publish -> scheduled AgentCore browser/OpenAI execution -> verification/history/email, plus one bounded human takeover/resume path.
+2. Close only defects exposed by that vertical demo. Add collector replacement-worker recovery or richer capture failure status only if the live demo proves it necessary.
+3. Add deployment-environment bootstrap/IAM convenience only where the real deployment shows operational friction; do not replace the short-lived OIDC boundary with static credentials.
 4. Add Google federation/adapters only after the AWS vertical slice is demonstrably complete.
 
 ## Known parked limitations
@@ -65,10 +65,10 @@ The client polling contract receives only a boolean `enabled` flag. It does not 
 - Recovery continuation consumption remains parked until a production cloud worker integration specifically requires it.
 - Sensitive target-site runtime values still need a dedicated secret-resolution contract; passwords, cookies, provider keys, and equivalent secrets must never enter workflow/runtime-variable metadata.
 - Public HTTP command idempotency is incomplete outside operations that already have durable domain idempotency; add explicit command keys where live UX can produce duplicate mutations.
-- Automation status and EventBridge Scheduler state cannot be atomically committed across DynamoDB/Scheduler; lifecycle ordering fails closed, but a future reconciliation/status-repair path should make partial drift visible and repairable.
-- Capture-task duplicate suppression is process-local while the durable completed-session boundary is global. If a Runtime process is replaced mid-recording, the controlled AWS demo should determine whether a small durable collector claim is required.
-- A background collector failure currently leaves WORKFLOW/finish state durable for user-visible retry/expiry rather than manufacturing a trace. The new bounded readiness polling makes that state visible without polling forever; a richer failure-status surface should be added only if the real demo shows it is needed.
-- Release upload is deliberately not transactional across both S3 objects. Partial upload produces no manifest/deployment authority but may leave an orphan object version until cleanup.
-- Live OpenAI/SES/Cognito/AgentCore validation still requires the controlled AWS environment; deterministic CI is not represented as live-cloud proof.
+- DynamoDB automation status and EventBridge Scheduler state cannot be atomically committed; lifecycle ordering fails closed, but a future reconciliation/status-repair path should make partial drift visible if the live demo exposes it.
+- Capture-task duplicate suppression is process-local while the durable completed-session boundary is global. Add a durable collector claim only if Runtime replacement during the controlled demo demonstrates the need.
+- Background capture failure currently remains visible as durable WORKFLOW/finish state and bounded polling eventually stops; richer failure UI is deferred until live evidence requires it.
+- Release upload is not transactional across both S3 objects. Partial upload produces no deployment manifest/authority but can leave an orphan object version for lifecycle cleanup.
+- Live OpenAI/SES/Cognito/AgentCore validation still requires the controlled AWS environment; deterministic CI is not live-cloud proof.
 - AgentCore Runtime/browser networking is PUBLIC for the arbitrary-web MVP and should be revisited where VPC egress can preserve target-site access.
-- Notification delivery remains best-effort by design and does not become execution authority.
+- Notification delivery remains best-effort by design and never becomes execution authority.
