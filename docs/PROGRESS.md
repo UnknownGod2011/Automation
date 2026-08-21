@@ -22,35 +22,32 @@ sign in -> dashboard -> create -> cloud capture -> persisted Browser Profile + t
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head before this slice was `04d32afaf3636c0df9e58e4f9164dc79c679f084` (`Refresh capture-identity lock snapshot`), green on GitHub Actions CI #212.
-- Product commit `7b58194d128e0c210d3c26ea88ea63af7feacb92` (`Keep Live View open during capture recording`) triggered CI #213.
-- CI #213 stopped only at the deterministic pnpm lock-snapshot gate before install/type-check/tests. No package manifest changed. pnpm 10.15.0 resolved 376 packages and produced snapshot SHA-256 `cc944aae73f2f4aee20674a8156274abbdc6d63b6fb55a2dca46d434aecd4ec7` instead of the previously reviewed `88d75541e6b949325278dadfecef1400c82b0fe921ef0ea3edf8b8606f5eecda`.
-- The existing AWS DynamoDB peer-alignment assertions remain intact. The corrective commit authenticates exactly the CI-generated graph; GitHub Actions on that exact corrective head is authoritative and no pass is claimed until it completes successfully.
+- Incoming head `e08eed9986c72de3faf85d2e9737f8785fb409aa` (`Refresh Live View handoff lock snapshot`) is green on GitHub Actions CI #214.
+- CI #214 is the authoritative baseline: deterministic lock verification, frozen installation, strict checks/builds, production packaging/deployment contracts, and the full test suite succeeded.
+- GitHub Actions on the exact new head remains authoritative. No pass is claimed for the current slice until that exact-head run completes successfully.
 
-## 2026-08-22 — keep Live View available while starting workflow recording
+## 2026-08-22 — keep recurrence kind and provider expression consistent
 
-The vertical-path audit found a concrete capture UX blocker. `Open cloud capture` previously redirected the authenticated product tab directly to the AgentCore Live View capability. The user then had to navigate back to the automation page to press `Start recording workflow`; that new navigation could discard the forward-history Live View page, leaving no reliable browser surface in which to demonstrate the workflow after recording began.
+The vertical-path audit found a scheduling correctness hole at the web mutation boundary. Product recurrence metadata (`DAILY` / `WEEKLY`) and the normalized EventBridge expression were parsed separately. The parser previously accepted **any** existing `cron(...)` expression for either a daily or weekly form submission. A stale management form could therefore be changed from one recurrence kind to another without changing its expression and create contradictory durable state such as `kind = WEEKLY` with a daily cron.
 
-Capture startup now returns an ephemeral handoff document instead of redirecting the product tab into Live View. The handoff requires an explicit user click to open Live View in a **separate tab**, while the product/control-plane tab remains available for `Start recording workflow` and `Finish capture`. After recording starts, the user switches back to the still-open Live View tab and demonstrates the reusable workflow.
-
-The Live View URL remains capability material. It is present only in the one-time handoff response body required for the user's browser to open it. It is not placed in the product URL, redirect `Location`, cookie, local storage, DynamoDB, workflow metadata, or application logs. The handoff is `no-store`, uses `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, a restrictive CSP, disabled browser permissions, and `rel="noopener noreferrer"` for the cross-origin Live View tab. Only HTTPS URLs without embedded userinfo are accepted, and URL length is bounded.
+The product boundary now accepts an already-normalized cron for `DAILY` only when it has the canonical daily shape, and for `WEEKLY` only when it has the canonical weekly weekday shape. Human-friendly `HH:MM` and `DAY HH:MM` inputs still normalize exactly as before. Custom cron remains the explicit escape hatch for advanced cron syntax.
 
 ### Review: security, tenancy, idempotency, concurrency, retry, verification, cost, observability, recovery
 
-- Tenant/user and automation ownership still come from the authenticated control plane; this change only alters how an already-authorized Live View capability is presented to that user's browser.
-- Capture session, Browser Profile, provider, BYOK, workload, and durable trace identifiers remain server-owned.
-- Starting the underlying capture session remains governed by the existing control-plane/capture idempotency and ownership checks; no new retry loop or background worker was introduced.
-- Browser/model execution, effect verification, trace persistence, Browser Profile save-before-completion, and human recovery semantics are unchanged.
-- The extra cost is only one small non-cacheable HTML response during interactive capture. No additional AWS resource or API call is added.
-- If the Live View URL is malformed/unsafe, capture fails closed back to the existing sanitized `request-failed` notice.
+- This is a server-side form-validation change only; authenticated tenant/user ownership, automation lifecycle state, and Scheduler IAM boundaries are unchanged.
+- Invalid or internally inconsistent recurrence submissions now fail closed before EventBridge Scheduler mutation, reducing the chance that user-facing recurrence metadata diverges from actual cloud delivery semantics.
+- Existing exact resubmission of a valid normalized daily/weekly expression remains idempotent.
+- No new retry loop, concurrency primitive, browser/model execution, queue, database, cloud resource, or recovery state was introduced.
+- Cost is unchanged because rejected inconsistent submissions stop before a Scheduler API call.
+- Observability remains the existing sanitized `invalid-input` UX; provider internals are not surfaced.
+- Human recovery semantics are unrelated and remain parked.
 
 ### Validation added
 
-- Web tests prove the handoff is an ordinary `200` response, not a redirect, and does not set cookies.
-- Tests require `no-store`, `no-referrer`, `nosniff`, and restrictive CSP headers.
-- Tests prove the capability appears only in the escaped response body, never in headers, and that the Live View link opens in a separate `noopener noreferrer` tab.
-- Tests reject HTTP, embedded URL credentials, oversized capability URLs, and missing automation identity.
-- Exact-head GitHub Actions must still prove strict TypeScript/Next.js builds, packaging/deployment contracts, and the full suite.
+- Web schedule tests prove a weekly cron cannot be accepted under `DAILY`.
+- Web schedule tests prove a daily cron cannot be accepted under `WEEKLY`.
+- Existing tests continue covering default daily normalization, weekly local-time normalization, custom cron, bounded form input, and user-facing labels.
+- Exact-head GitHub Actions must prove strict TypeScript/Next.js builds, packaging/deployment contracts, and the full suite.
 
 ## Current release/deployment state
 

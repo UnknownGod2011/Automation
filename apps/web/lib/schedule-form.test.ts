@@ -54,6 +54,19 @@ describe("schedule form normalization", () => {
     expect(scheduleFromFormData(form({ kind: "WEEKLY", expression: "09:00", timezone: "UTC" }))).toBeNull();
   });
 
+  it("rejects normalized cron expressions whose shape conflicts with the selected recurrence kind", () => {
+    expect(scheduleFromFormData(form({
+      kind: "DAILY",
+      expression: "cron(30 18 ? * FRI *)",
+      timezone: "UTC",
+    }))).toBeNull();
+    expect(scheduleFromFormData(form({
+      kind: "WEEKLY",
+      expression: "cron(0 9 * * ? *)",
+      timezone: "UTC",
+    }))).toBeNull();
+  });
+
   it("bounds untrusted form values before creating a schedule", () => {
     expect(scheduleFromFormData(form({
       kind: "DAILY",

@@ -8,6 +8,8 @@ export interface WebSchedule {
 
 const DAILY_TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const WEEKLY_TIME = /^(SUN|MON|TUE|WED|THU|FRI|SAT)\s+(?:[01]\d|2[0-3]):[0-5]\d$/i;
+const DAILY_CRON = /^cron\(([0-5]?\d) ([01]?\d|2[0-3]) \* \* \? \*\)$/;
+const WEEKLY_CRON = /^cron\(([0-5]?\d) ([01]?\d|2[0-3]) \? \* (SUN|MON|TUE|WED|THU|FRI|SAT) \*\)$/;
 const AWS_CRON = /^cron\(.+\)$/;
 
 function bounded(value: FormDataEntryValue | null, maxLength = 160): string {
@@ -24,13 +26,13 @@ function clockParts(value: string): { hour: number; minute: number } | null {
 }
 
 function dailyExpression(value: string): string | null {
-  if (AWS_CRON.test(value)) return value;
+  if (DAILY_CRON.test(value)) return value;
   const time = clockParts(value);
   return time ? `cron(${time.minute} ${time.hour} * * ? *)` : null;
 }
 
 function weeklyExpression(value: string): string | null {
-  if (AWS_CRON.test(value)) return value;
+  if (WEEKLY_CRON.test(value)) return value;
   if (!WEEKLY_TIME.test(value)) return null;
   const [day, timeValue] = value.split(/\s+/, 2);
   if (!day || !timeValue) return null;
@@ -58,14 +60,14 @@ export function humanScheduleLabel(schedule: WebSchedule): string {
     return `hourly · ${schedule.timezone}`;
   }
 
-  const daily = /^cron\(([0-5]?\d) ([01]?\d|2[0-3]) \* \* \? \*\)$/.exec(schedule.expression);
+  const daily = DAILY_CRON.exec(schedule.expression);
   if (schedule.kind === "DAILY" && daily?.[1] && daily[2]) {
     const minute = daily[1].padStart(2, "0");
     const hour = daily[2].padStart(2, "0");
     return `daily at ${hour}:${minute} · ${schedule.timezone}`;
   }
 
-  const weekly = /^cron\(([0-5]?\d) ([01]?\d|2[0-3]) \? \* (SUN|MON|TUE|WED|THU|FRI|SAT) \*\)$/.exec(schedule.expression);
+  const weekly = WEEKLY_CRON.exec(schedule.expression);
   if (schedule.kind === "WEEKLY" && weekly?.[1] && weekly[2] && weekly[3]) {
     const minute = weekly[1].padStart(2, "0");
     const hour = weekly[2].padStart(2, "0");
