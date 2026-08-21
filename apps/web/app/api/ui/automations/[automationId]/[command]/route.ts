@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { serverResolvedCaptureSessionId } from "../../../../../../lib/capture-command-state";
+import { createCaptureLiveViewHandoff } from "../../../../../../lib/capture-live-view-handoff";
 import { WebControlPlaneError } from "../../../../../../lib/control-plane-client";
 import { isSameOriginMutation } from "../../../../../../lib/mutation-security";
 import {
@@ -27,7 +28,7 @@ const COMMANDS = [
   "disable",
 ] as const;
 
-export async function POST(request: Request, context: { params: Promise<{ automationId: string; command: string }> }): Promise<NextResponse> {
+export async function POST(request: Request, context: { params: Promise<{ automationId: string; command: string }> }): Promise<Response> {
   if (!isSameOriginMutation(request.url, request.headers)) return new NextResponse("Forbidden", { status: 403 });
   const { automationId, command } = await context.params;
   if (!automationId || !COMMANDS.includes(command as (typeof COMMANDS)[number])) return new NextResponse("Not found", { status: 404 });
@@ -38,9 +39,11 @@ export async function POST(request: Request, context: { params: Promise<{ automa
     if (command === "capture") {
       const result = await client.capture(automationId);
       if (result.kind === "NOT_CONFIGURED") return redirectBack(request, automationId, "not-configured");
-      const liveView = new URL(result.liveViewUrl);
-      if (liveView.protocol !== "https:") return redirectBack(request, automationId, "request-failed");
-      return NextResponse.redirect(liveView, 303);
+      try {
+        return createCaptureLiveViewHandoff(automationId, result.liveViewUrl);
+      } catch {
+        return redirectBack(request, automationId, "request-failed");
+      }
     }
 
     if (command === "record-workflow" || command === "finish-capture") {

@@ -13,7 +13,7 @@ sign in -> dashboard -> create -> cloud capture -> persisted Browser Profile + t
 - Next.js/Cognito control plane with create/capture/compile/inspect/fresh-test/publish UX, BYOK management, schedule controls, sanitized run diagnostics, explicit HUMAN continuation, target-auth takeover, and post-resume reporting.
 - AWS DynamoDB/S3 persistence, AgentCore Browser/Profile/Live View capture, long-running capture collection, AgentCore Identity BYOK, OpenAI reasoning, fresh/scheduled AgentCore execution, EventBridge Scheduler/SQS/Step Functions, SES/CloudWatch, immutable release packaging, ordered deployment, hosted Next.js Lambda, and GitHub OIDC deployment.
 - Live capture emits explicit effect-verification contracts so captured side effects remain compilable without weakening verification-before-success.
-- Server-owned workflow/trace/fresh-test/publish identities remove internal durable IDs from ordinary user input.
+- Server-owned workflow/trace/fresh-test/publish/capture identities remove internal durable IDs from ordinary user input.
 - Fresh-test results are distinguished from scheduled runs and feed an explicit inspect/correct/retest loop.
 - Publishing requires a successful `FRESH_TEST` for the latest immutable workflow version; successful scheduled/legacy runs do not authorize publication.
 - Product-facing recurrence input is normalized into validated EventBridge `rate(...)` / `cron(...)` expressions before Scheduler mutation.
@@ -22,32 +22,34 @@ sign in -> dashboard -> create -> cloud capture -> persisted Browser Profile + t
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head before this slice was `4543955c218d649fd8575607e070df9f8213d80d` (`Refresh publish-gate lock snapshot`), green on GitHub Actions CI #210.
-- Product commit `5b0a11d993900cef50c032dbeedf43adc54ef940` (`Keep capture session identity server-owned`) triggered CI #211.
-- CI #211 stopped only at the deterministic pnpm lock-snapshot gate before install/type-check/tests. No package manifest changed. pnpm 10.15.0 resolved 376 packages and produced snapshot SHA-256 `88d75541e6b949325278dadfecef1400c82b0fe921ef0ea3edf8b8606f5eecda` instead of the previously reviewed `8625718ffa4ad21010a4da1601095b866b14cd4bf6ef1a614865ec34b0b1faff`.
-- The existing AWS DynamoDB peer-alignment assertions remain intact. The corrective commit authenticates exactly the CI-generated graph; GitHub Actions on that exact corrective head is authoritative and no pass is claimed until it completes successfully.
+- Incoming head `04d32afaf3636c0df9e58e4f9164dc79c679f084` (`Refresh capture-identity lock snapshot`) is green on GitHub Actions CI #212.
+- CI #212 is the authoritative baseline: deterministic lock verification, frozen installation, strict checks/builds, production packaging/deployment contracts, and the full test suite succeeded.
+- GitHub Actions on the exact new head remains authoritative. No pass is claimed for the current slice until that exact-head run completes successfully.
 
-## 2026-08-22 — make active capture identity server-owned in the web product
+## 2026-08-22 — keep Live View available while starting workflow recording
 
-The vertical-path audit found one remaining internal-identity seam in the authenticated capture UX. Start/Finish capture forms carried the opaque `captureSessionId` from rendered page state back to the Next.js mutation route. The provider-neutral control plane already revalidated that ID against the current tenant/user/automation session, so this was not an ownership bypass, but the browser did not need to choose the identifier at all.
+The vertical-path audit found a concrete capture UX blocker. `Open cloud capture` previously redirected the authenticated product tab directly to the AgentCore Live View capability. The user then had to navigate back to the automation page to press `Start recording workflow`; that new navigation could discard the forward-history Live View page, leaving no reliable browser surface in which to demonstrate the workflow after recording began.
 
-The Next.js mutation route now reloads current authenticated capture-recording state and resolves the active capture session server-side before issuing Start/Finish. Browser-submitted capture IDs are no longer execution authority and the rendered forms no longer contain the capture-session ID. Start remains replay-safe if the durable capture is already in `WORKFLOW`, but is suppressed after finish is requested. Finish is rejected before `WORKFLOW` so authentication setup cannot accidentally become the demonstrated workflow; exact finish replay remains allowed.
+Capture startup now returns an ephemeral handoff document instead of redirecting the product tab into Live View. The handoff requires an explicit user click to open Live View in a **separate tab**, while the product/control-plane tab remains available for `Start recording workflow` and `Finish capture`. After recording starts, the user switches back to the still-open Live View tab and demonstrates the reusable workflow.
+
+The Live View URL remains capability material. It is present only in the one-time handoff response body required for the user's browser to open it. It is not placed in the product URL, redirect `Location`, cookie, local storage, DynamoDB, workflow metadata, or application logs. The handoff is `no-store`, uses `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, a restrictive CSP, disabled browser permissions, and `rel="noopener noreferrer"` for the cross-origin Live View tab. Only HTTPS URLs without embedded userinfo are accepted, and URL length is bounded.
 
 ### Review: security, tenancy, idempotency, concurrency, retry, verification, cost, observability, recovery
 
-- Tenant/user ownership remains derived from authenticated control-plane context and is independently revalidated by the core capture service.
-- Capture-session, Browser Profile, browser-session, provider, BYOK, and workload identifiers remain server-side.
-- Duplicate Start/Finish delivery retains the existing durable idempotency semantics; no capture worker, retry loop, lease, recovery record, browser/model behavior, or cloud resource changed.
-- The only added runtime cost is one authenticated current-capture read per interactive Start/Finish mutation.
-- Effect verification, trace persistence, Browser Profile save-before-completion ordering, and trusted capture-completion authority are unchanged.
-- User recovery remains refresh/retry against the currently active durable capture state.
+- Tenant/user and automation ownership still come from the authenticated control plane; this change only alters how an already-authorized Live View capability is presented to that user's browser.
+- Capture session, Browser Profile, provider, BYOK, workload, and durable trace identifiers remain server-owned.
+- Starting the underlying capture session remains governed by the existing control-plane/capture idempotency and ownership checks; no new retry loop or background worker was introduced.
+- Browser/model execution, effect verification, trace persistence, Browser Profile save-before-completion, and human recovery semantics are unchanged.
+- The extra cost is only one small non-cacheable HTML response during interactive capture. No additional AWS resource or API call is added.
+- If the Live View URL is malformed/unsafe, capture fails closed back to the existing sanitized `request-failed` notice.
 
 ### Validation added
 
-- Web tests cover no-active-capture rejection, trusted AUTH_SETUP start, finish-before-WORKFLOW rejection, replay-safe Start/Finish behavior, finish-requested suppression of Start, and malformed server capture identities.
-- The mutation route no longer reads `captureSessionId` from form data.
-- The automation page no longer renders hidden capture-session inputs for Start/Finish.
-- CI #211 did not exercise these tests because dependency verification failed first; the corrective exact-head run must prove frozen install, strict checks/builds, packaging/deployment contracts, and the full test suite.
+- Web tests prove the handoff is an ordinary `200` response, not a redirect, and does not set cookies.
+- Tests require `no-store`, `no-referrer`, `nosniff`, and restrictive CSP headers.
+- Tests prove the capability appears only in the escaped response body, never in headers, and that the Live View link opens in a separate `noopener noreferrer` tab.
+- Tests reject HTTP, embedded URL credentials, oversized capability URLs, and missing automation identity.
+- Exact-head GitHub Actions must still prove strict TypeScript/Next.js builds, packaging/deployment contracts, and the full suite.
 
 ## Current release/deployment state
 
@@ -58,7 +60,7 @@ The intended production AWS path is: Cognito sign-in -> BYOK -> Live View captur
 ## Next product milestones
 
 1. Run the protected deployment workflow and require the live public/auth smoke gate to pass against the real AWS environment.
-2. Execute the controlled interactive vertical demo from `outputs.webOrigin`: Cognito sign-in -> BYOK -> Live View capture -> compile/inspect -> fresh test -> inspect/correct if needed -> publish -> scheduled execution -> verification/history/email -> target-auth takeover/resume.
+2. Execute the controlled interactive vertical demo from `outputs.webOrigin`: Cognito sign-in -> BYOK -> Live View capture in a separate tab -> start recording from the product tab -> compile/inspect -> fresh test -> inspect/correct if needed -> publish -> scheduled execution -> verification/history/email -> target-auth takeover/resume.
 3. Fix concrete defects exposed by that live environment before adding more infrastructure or recovery depth.
 4. If the vertical slice is repeatable, add a minimal authenticated live-cloud smoke using a dedicated test identity and short-lived credentials without retaining secret-bearing Actions artifacts.
 5. Add Google federation/adapters only after the AWS vertical slice is demonstrated.
