@@ -39,14 +39,14 @@ describe("web view model", () => {
     expect(automationPhase({ ...automation, status: "NEEDS_ATTENTION", needsAttention: true })).toBe("Needs attention");
   });
 
-  it("formats schedules without guessing a next occurrence", () => {
+  it("formats normalized schedules without exposing provider syntax when it is recognized", () => {
     expect(formatSchedule(automation)).toBe("Not published");
     expect(
       formatSchedule({
         ...automation,
-        schedule: { kind: "DAILY", expression: "09:00", timezone: "Asia/Kolkata" },
+        schedule: { kind: "DAILY", expression: "cron(0 9 * * ? *)", timezone: "Asia/Kolkata" },
       }),
-    ).toBe("daily · 09:00 · Asia/Kolkata");
+    ).toBe("daily at 09:00 · Asia/Kolkata");
   });
 
   it("maps run statuses to stable presentation tones", () => {

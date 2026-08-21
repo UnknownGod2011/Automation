@@ -20,8 +20,32 @@ sign in -> dashboard -> create -> cloud capture -> persisted Browser Profile + t
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head `177f9436cb7da0e93652b6c6c7a2a39a428ec35f` (`Expose fresh test correction feedback`) is green on GitHub Actions CI #205.
+- Incoming head `823a584cc4e12f26a748ada2a639ac480143d9a7` (`Add sanitized workflow inspection`) is green on GitHub Actions CI #206.
 - GitHub Actions on the exact new head remains authoritative. This entry records intended validation for the current slice but does not claim a pass before that run exists.
+
+## 2026-08-22 — normalize product schedules before AWS publish
+
+The real vertical-path audit found a concrete publish blocker that mock flows did not expose. The authenticated Next.js page defaults a new publish to `DAILY` with the human time `09:00`, while the production `AwsEventBridgeSchedulerAdapter` intentionally accepts only EventBridge Scheduler expressions using `rate(...)` or `cron(...)`. A user following the default UI could therefore complete capture, compile, fresh-test, and approval successfully only to fail at the final publish call.
+
+This slice fixes that product seam at the server-owned web mutation boundary. `scheduleFromFormData` translates bounded human recurrence input into the existing production scheduler contract before the control-plane request is issued: hourly becomes `rate(1 hour)`, daily `HH:MM` becomes an EventBridge cron expression, and weekly accepts an explicit `DAY HH:MM` shorthand. Custom schedules remain explicit `cron(...)` expressions and malformed values fail closed as `invalid-input`. Existing valid cron expressions remain accepted for daily/weekly edits, so already-published AWS schedules can be updated without lossy conversion.
+
+The dashboard/detail schedule label now reverses recognized normalized daily/weekly/hourly expressions into human-readable recurrence text instead of displaying provider syntax. This is a presentation-only projection; durable scheduling authority remains the existing automation record plus Scheduler adapter.
+
+### Security / tenancy / idempotency / concurrency / retry / timeout / side-effect verification / cost / observability / recovery
+
+- Schedule normalization occurs after same-origin mutation enforcement and before the authenticated control-plane command. It does not accept tenant/user identity or any execution capability from form fields.
+- Form values are bounded before parsing. Invalid recurrence/time input fails before Scheduler calls, so malformed input cannot create a partial schedule mutation.
+- The existing lifecycle ordering and EventBridge upsert semantics remain unchanged; this slice adds no retry loop, queue, browser/model execution, workflow mutation, or human-recovery behavior.
+- Side-effect verification and workflow execution are unaffected. This fixes only the schedule-control-plane representation passed to the existing production scheduler.
+- Cost impact is zero outside the existing HTTP request. No additional DynamoDB/S3/Scheduler reads or writes are introduced.
+- Custom cron remains an advanced escape hatch. It is not auto-rewritten beyond basic bounded-shape validation; the production Scheduler API remains authoritative for full AWS cron semantics.
+
+### Validation added
+
+- Web tests prove the actual default `DAILY + 09:00` submission becomes `cron(0 9 * * ? *)`, closing the discovered live publish blocker.
+- Tests cover hourly normalization, explicit weekly day/time, existing cron preservation, malformed custom/weekly input rejection, oversized form values, and human-readable schedule rendering.
+- The Next.js production build remains the integration gate for the route import and browser/server module graph.
+- Exact-head GitHub Actions after publication is authoritative.
 
 ## 2026-08-21 — sanitized compiled-workflow inspection
 
@@ -61,7 +85,7 @@ The production AWS path is therefore intended to support: Cognito sign-in -> BYO
 ## Next product milestones
 
 1. Run the protected deployment workflow and require the live public/auth smoke gate to pass against the real AWS environment.
-2. Execute the controlled interactive vertical demo from `outputs.webOrigin`: Cognito sign-in -> BYOK -> Live View capture -> compile **and inspect the sanitized semantic plan** -> fresh test -> inspect/correct if needed -> publish -> scheduled execution -> verification/history/email -> target-auth takeover/resume.
+2. Execute the controlled interactive vertical demo from `outputs.webOrigin`: Cognito sign-in -> BYOK -> Live View capture -> compile **and inspect the sanitized semantic plan** -> fresh test -> inspect/correct if needed -> publish using normalized recurrence/timezone -> scheduled execution -> verification/history/email -> target-auth takeover/resume.
 3. Fix concrete defects exposed by that live environment before adding more infrastructure or recovery depth.
 4. If the vertical slice is repeatable, add a minimal authenticated live-cloud smoke using a dedicated test identity and short-lived credentials without retaining secret-bearing Actions artifacts.
 5. Add Google federation/adapters only after the AWS vertical slice is demonstrated.

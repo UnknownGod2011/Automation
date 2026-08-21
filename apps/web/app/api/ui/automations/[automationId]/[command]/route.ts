@@ -6,18 +6,11 @@ import {
   serverResolvedPublishWorkflowVersion,
   workflowIdForAutomation,
 } from "../../../../../../lib/product-flow-identities";
+import { scheduleFromFormData } from "../../../../../../lib/schedule-form";
 import { createAuthenticatedWebControlPlaneClient, WebAuthError } from "../../../../../../lib/server-auth";
 
 function redirectBack(request: Request, automationId: string, notice: string): NextResponse {
   return NextResponse.redirect(new URL(`/automations/${encodeURIComponent(automationId)}?notice=${encodeURIComponent(notice)}`, request.url), 303);
-}
-
-function scheduleFromForm(form: FormData): { kind: "HOURLY" | "DAILY" | "WEEKLY" | "CRON"; expression: string; timezone: string } | null {
-  const kind = String(form.get("kind") ?? "");
-  const expression = String(form.get("expression") ?? "").trim();
-  const timezone = String(form.get("timezone") ?? "").trim();
-  if (!["HOURLY", "DAILY", "WEEKLY", "CRON"].includes(kind) || !expression || !timezone) return null;
-  return { kind: kind as "HOURLY" | "DAILY" | "WEEKLY" | "CRON", expression, timezone };
 }
 
 const COMMANDS = [
@@ -91,7 +84,7 @@ export async function POST(request: Request, context: { params: Promise<{ automa
       return redirectBack(request, automationId, command === "pause" ? "paused" : command === "resume" ? "resumed" : "disabled");
     }
 
-    const schedule = scheduleFromForm(form);
+    const schedule = scheduleFromFormData(form);
     if (!schedule) return redirectBack(request, automationId, "invalid-input");
 
     if (command === "schedule") {

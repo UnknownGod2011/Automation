@@ -1,4 +1,5 @@
 import type { AutomationSummaryView, ControlPlaneCapabilities, RunSummaryView } from "@automation/core";
+import { humanScheduleLabel } from "./schedule-form.js";
 
 export function formatCapability(label: string, state: ControlPlaneCapabilities[keyof ControlPlaneCapabilities]): string {
   return `${label}: ${state === "NOT_CONFIGURED" ? "Not configured" : state === "LOCAL_MOCK" ? "Local mock" : "Configured"}`;
@@ -7,7 +8,7 @@ export function formatCapability(label: string, state: ControlPlaneCapabilities[
 export function formatSchedule(automation: AutomationSummaryView): string {
   const schedule = automation.schedule;
   if (!schedule) return "Not published";
-  return `${schedule.kind.toLowerCase()} · ${schedule.expression} · ${schedule.timezone}`;
+  return humanScheduleLabel(schedule);
 }
 
 export function runTone(status: RunSummaryView["status"]): "success" | "warning" | "danger" | "neutral" {
