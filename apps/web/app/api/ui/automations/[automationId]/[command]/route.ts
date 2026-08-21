@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { WebControlPlaneError } from "../../../../../../lib/control-plane-client";
 import { isSameOriginMutation } from "../../../../../../lib/mutation-security";
+import { freshTestRunId, workflowIdForAutomation } from "../../../../../../lib/product-flow-identities";
 import { createAuthenticatedWebControlPlaneClient, WebAuthError } from "../../../../../../lib/server-auth";
 
 function redirectBack(request: Request, automationId: string, notice: string): NextResponse {
@@ -61,16 +62,17 @@ export async function POST(request: Request, context: { params: Promise<{ automa
     }
 
     if (command === "compile") {
-      const traceId = String(form.get("traceId") ?? "").trim();
-      const workflowId = String(form.get("workflowId") ?? "").trim();
-      if (!traceId || !workflowId) return redirectBack(request, automationId, "invalid-input");
-      await client.command(automationId, "compile", { traceId, workflowId });
+      const automation = await client.automation(automationId);
+      const traceId = automation.latestCompletedCapture?.traceId;
+      if (!traceId) return redirectBack(request, automationId, "invalid-input");
+      await client.command(automationId, "compile", {
+        traceId,
+        workflowId: workflowIdForAutomation(automationId),
+      });
       return redirectBack(request, automationId, "compiled");
     }
 
     if (command === "test") {
-      const runId = String(form.get("runId") ?? "").trim();
-      if (!runId) return redirectBack(request, automationId, "invalid-input");
       const rawVariables = String(form.get("runtimeVariables") ?? "").trim();
       let runtimeVariables: Record<string, unknown> | undefined;
       if (rawVariables) {
@@ -78,7 +80,10 @@ export async function POST(request: Request, context: { params: Promise<{ automa
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return redirectBack(request, automationId, "invalid-input");
         runtimeVariables = parsed as Record<string, unknown>;
       }
-      await client.command(automationId, "test", { runId, ...(runtimeVariables ? { runtimeVariables } : {}) });
+      await client.command(automationId, "test", {
+        runId: freshTestRunId(),
+        ...(runtimeVariables ? { runtimeVariables } : {}),
+      });
       return redirectBack(request, automationId, "tested");
     }
 

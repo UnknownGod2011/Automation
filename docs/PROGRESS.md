@@ -17,8 +17,29 @@ sign in -> dashboard -> create -> cloud capture -> persisted Browser Profile + t
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head `e8cf0051be1178d7990b53f816aa748fbb0fbc4c` (`Fix AWS smoke test fixture`) is green on CI #200.
+- Incoming head `173c81233d042ee49405d84ea259be3ccde2e95e` (`Add live capture effect verification`) is green on CI #201.
 - GitHub Actions on the exact new head remains authoritative; no new pass is claimed before it exists.
+
+## 2026-08-21 — server-owned compile and fresh-test identities
+
+The product-flow audit found a user-facing identity leak in the otherwise server-owned control plane: the automation page still asked users to type a `Workflow ID` before compilation and a `Run ID` before every fresh test, and the browser submitted the latest capture trace ID as a hidden form field. These are internal durable identifiers, not meaningful user choices, and letting the browser choose them creates avoidable collision/stale-selection failure modes in the real vertical demo.
+
+This slice keeps the existing provider-neutral lifecycle contracts unchanged while moving those choices behind the authenticated Next.js server boundary. Compile now resolves the latest completed capture from the authenticated automation summary immediately before dispatch, uses the authenticated automation ID as the stable workflow identity, and sends no trace/workflow identifier from the browser form. Fresh test now generates a UUID-based run identity server-side for each request; the user supplies only optional runtime variables.
+
+### Security / tenancy / idempotency / concurrency / retry / timeout / cost / observability / recovery
+
+- Tenant/user ownership remains derived from Cognito/authenticated control-plane context. The browser no longer gets to choose a stale/foreign capture trace for compile or an arbitrary durable fresh-test run key.
+- Workflow identity is deterministic for one automation and does not contain credentials or Browser/Profile state. Fresh-test identities are bounded `test-<uuid>` values and remain visible only where run history already intentionally exposes run correlation IDs.
+- The server resolves the latest completed capture at command time. If no completed capture exists, compile fails before lifecycle compilation rather than accepting a client-provided trace ID.
+- Each intentional fresh-test submission receives a new run ID, avoiding the old default `test-<automationId>` collision that could turn a second legitimate test into a duplicate of the first. The existing run repository remains the durable duplicate authority if transport delivery itself is replayed downstream.
+- No browser/model retry, scheduling, checkpoint, verification, recovery, IAM, dependency, or cloud-resource semantics changed.
+- Compile adds one authenticated automation-summary read before the existing compile mutation. This is small compared with capture/browser/model cost and keeps internal trace selection out of the client.
+
+### Validation added
+
+- Web tests cover stable server-owned workflow identity, bounded UUID-based fresh-test IDs, and invalid identity rejection.
+- The Next.js production build remains the integration gate for the updated command route and automation page.
+- Exact-head GitHub Actions after publication is authoritative.
 
 ## 2026-08-21 — live capture effect-verification bridge
 
@@ -96,16 +117,18 @@ The release manifest now contains a third immutable, versioned S3 artifact for t
 ## Next product milestones
 
 1. Run the protected deployment workflow and require the live smoke gate to pass against the real AWS environment.
-2. Execute the controlled interactive vertical demo from `outputs.webOrigin`: Cognito sign-in -> BYOK -> Live View capture -> compile -> fresh test -> publish -> scheduled execution -> verification/history/email -> target-auth takeover/resume. The capture-to-compile path must now prove the new effect-verification bridge on a real page before broader targets are attempted.
+2. Execute the controlled interactive vertical demo from `outputs.webOrigin`: Cognito sign-in -> BYOK -> Live View capture -> compile -> fresh test -> publish -> scheduled execution -> verification/history/email -> target-auth takeover/resume. The compile/test UX no longer asks the user for internal workflow/run/trace identifiers; the capture-to-compile path must prove the new effect-verification bridge on a real page before broader targets are attempted.
 3. Fix only concrete defects exposed by that environment; do not return to recovery micro-hardening without a demonstrated need.
-4. If the vertical slice is repeatable, add a minimal authenticated live-cloud smoke using a dedicated test identity and short-lived credentials without retaining secret-bearing Actions artifacts.
-5. Add Google federation/adapters only after the AWS vertical slice is demonstrated.
+4. After the first real demo, remove the remaining manual workflow-version field from approval by exposing the latest successfully tested version as trusted control-plane state rather than guessing it in the browser.
+5. If the vertical slice is repeatable, add a minimal authenticated live-cloud smoke using a dedicated test identity and short-lived credentials without retaining secret-bearing Actions artifacts.
+6. Add Google federation/adapters only after the AWS vertical slice is demonstrated.
 
 ## Parked limitations
 
 - Live OpenAI/SES/Cognito/AgentCore behavior still requires real AWS validation; deterministic CI is not live-cloud proof.
 - The new anonymous deployment smoke validates reachability/configuration/auth boundaries, not an authenticated user lifecycle or AgentCore Browser/model execution.
 - Capture structural verification is intentionally coarse and content-redacted. Dynamic pages whose post-action structure is unstable may fail verification and require a recapture or a future explicit user-authored effect assertion; do not silently weaken verification for them.
+- The approval form still exposes a workflow-version number. The control plane enforces latest-tested-only publication, but the product should eventually resolve that tested version server-side rather than ask the user to know it.
 - Sensitive target-site runtime values still need a dedicated secret-resolution contract if a workflow needs secrets beyond the persisted Browser Profile.
 - DynamoDB automation state and EventBridge Scheduler state cannot be atomically committed; current ordering fails closed.
 - Capture-task duplicate suppression remains process-local while capture completion is globally durable; harden only if live Runtime replacement demonstrates a defect.
