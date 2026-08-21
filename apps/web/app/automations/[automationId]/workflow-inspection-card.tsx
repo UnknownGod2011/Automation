@@ -1,6 +1,10 @@
 import type { WorkflowInspectionView } from "@automation/core";
 
 export function WorkflowInspectionCard({ workflow }: { workflow: WorkflowInspectionView }) {
+  const runtimeInputExample = workflow.runtimeInputs.length > 0
+    ? JSON.stringify(Object.fromEntries(workflow.runtimeInputs.map((input) => [input.key, "<value>"])))
+    : null;
+
   return (
     <div className="card subtle stack" style={{ marginTop: 12 }}>
       <div className="row">
@@ -9,8 +13,30 @@ export function WorkflowInspectionCard({ workflow }: { workflow: WorkflowInspect
       </div>
       <p>
         Review the semantic plan before spending a fresh test. Selectors, captured values,
-        variable names, verification expected values, and provider/browser credentials are hidden.
+        arbitrary variable names, verification expected values, and provider/browser credentials are hidden.
       </p>
+      {workflow.runtimeInputs.length > 0 ? (
+        <div className="notice stack">
+          <strong>Fresh test needs runtime input</strong>
+          <p>
+            Typed values were deliberately not stored during capture. The synthetic keys below contain no captured
+            value; provide a value in the Fresh Test JSON only when it is safe to do so.
+          </p>
+          <div className="stack">
+            {workflow.runtimeInputs.map((input) => (
+              <span key={input.key}>
+                <code>{input.key}</code> · Step {input.step} · treat as sensitive
+              </span>
+            ))}
+          </div>
+          {runtimeInputExample ? <p className="muted">Example: <code>{runtimeInputExample}</code></p> : null}
+          <p className="muted">
+            Do not paste passwords, OTPs, API keys, or other secrets into runtime JSON. Target-site authentication
+            belongs in the persisted Browser Profile. Scheduled runs still need a durable runtime-input source before
+            they can rely on these per-run values.
+          </p>
+        </div>
+      ) : null}
       <div className="list">
         {workflow.nodes.map((node) => (
           <div className="list-item" key={node.step}>

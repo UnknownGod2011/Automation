@@ -45,7 +45,11 @@ function graph(version: number): WorkflowGraph {
           { kind: "CSS", value: "#private-selector", confidence: 0.9 },
           { kind: "TEXT", value: "private visible target", confidence: 0.8 },
         ],
-        inputBindings: { value: "secret.runtime.variable" },
+        inputBindings: {
+          value: "capture_input_7",
+          privateHint: "secret.runtime.variable",
+          preseeded: "capture_input_8",
+        },
         outputBindings: { privateOutput: "secret.output.variable" },
         allowedSideEffects: ["TYPE"],
         verification: {
@@ -84,7 +88,10 @@ function graph(version: number): WorkflowGraph {
         escalation: "FAIL",
       },
     },
-    initialVariables: { "capture.literal": "private literal value" },
+    initialVariables: {
+      "capture.literal": "private literal value",
+      capture_input_8: "private preseeded value",
+    },
     createdAt: `2026-08-21T12:0${version}:00.000Z`,
   };
 }
@@ -99,7 +106,7 @@ async function setup() {
 }
 
 describe("WorkflowInspectionService", () => {
-  it("returns the latest compiled semantic plan while redacting execution internals and values", async () => {
+  it("returns the latest semantic plan and only exposes unresolved capture-generated input placeholders", async () => {
     const { service } = await setup();
 
     const view = await service.latest(owner, "auto-1");
@@ -119,8 +126,13 @@ describe("WorkflowInspectionService", () => {
       nextSteps: [2],
       hasBoundInputs: true,
     });
+    expect(view?.runtimeInputs).toEqual([
+      { key: "capture_input_7", step: 1, treatAsSensitive: true },
+    ]);
 
     const serialized = JSON.stringify(view);
+    expect(serialized).toContain("capture_input_7");
+    expect(serialized).not.toContain("capture_input_8");
     for (const forbidden of [
       "internal-workflow-secret-id",
       "secret-node-id",
@@ -132,11 +144,34 @@ describe("WorkflowInspectionService", () => {
       "private verification description",
       "private expected value",
       "private literal value",
+      "private preseeded value",
       "ELEMENT_NOT_FOUND",
       "profile-secret-ref",
     ]) {
       expect(serialized).not.toContain(forbidden);
     }
+  });
+
+  it("does not expose arbitrary runtime binding names that merely resemble application data", async () => {
+    const automations = new InMemoryAutomationRepository();
+    const workflows = new InMemoryWorkflowVersionRepository();
+    await automations.put(automation());
+    const privateGraph = graph(1);
+    await workflows.putImmutable(owner, {
+      ...privateGraph,
+      nodes: {
+        ...privateGraph.nodes,
+        "secret-node-id": {
+          ...privateGraph.nodes["secret-node-id"]!,
+          inputBindings: { value: "customer.email", secret: "api_token" },
+        },
+      },
+    });
+
+    const view = await new WorkflowInspectionService(automations, workflows).latest(owner, "auto-1");
+    expect(view?.runtimeInputs).toEqual([]);
+    expect(JSON.stringify(view)).not.toContain("customer.email");
+    expect(JSON.stringify(view)).not.toContain("api_token");
   });
 
   it("returns no workflow before compilation and keeps tenant scope authoritative", async () => {
@@ -178,7 +213,12 @@ describe("WorkflowInspectionService", () => {
       { scope: owner },
     );
     expect(response.status).toBe(200);
-    expect(response.body).toEqual(expect.objectContaining({ workflow: expect.objectContaining({ version: 2 }) }));
+    expect(response.body).toEqual(expect.objectContaining({
+      workflow: expect.objectContaining({
+        version: 2,
+        runtimeInputs: [{ key: "capture_input_7", step: 1, treatAsSensitive: true }],
+      }),
+    }));
 
     const methodRejected = await handler.handle(
       { method: "POST", path: "/v1/automations/auto-1/workflow" },

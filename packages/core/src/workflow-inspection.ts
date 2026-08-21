@@ -20,6 +20,8 @@ const MAX_INSPECTION_NODES = 200;
 const MAX_TEXT_LENGTH = 4_096;
 const MAX_SIDE_EFFECTS = 32;
 const MAX_SIDE_EFFECT_LENGTH = 160;
+const MAX_CAPTURE_RUNTIME_INPUTS = 64;
+const CAPTURE_RUNTIME_INPUT = /^capture_input_(?:[1-9]\d{0,3})$/;
 
 export interface WorkflowVerificationInspectionView {
   mode: NonNullable<WorkflowNode["verification"]>["mode"];
@@ -39,6 +41,14 @@ export interface WorkflowNodeInspectionView {
   hasBoundInputs: boolean;
 }
 
+export interface WorkflowRuntimeInputInspectionView {
+  /** Closed synthetic key emitted by the production capture collector, never a captured value. */
+  key: string;
+  step: number;
+  /** Capture typed values are treated as sensitive unless a future explicit classification says otherwise. */
+  treatAsSensitive: true;
+}
+
 export interface WorkflowInspectionView {
   version: number;
   objective: string;
@@ -47,6 +57,7 @@ export interface WorkflowInspectionView {
   totalNodeCount: number;
   truncated: boolean;
   nodes: readonly WorkflowNodeInspectionView[];
+  runtimeInputs: readonly WorkflowRuntimeInputInspectionView[];
 }
 
 function token(value: string, name: string): string {
@@ -96,6 +107,36 @@ function orderedNodeIds(graph: WorkflowGraph): readonly string[] {
   return ordered;
 }
 
+function runtimeInputs(
+  graph: WorkflowGraph,
+  orderedIds: readonly string[],
+  stepByNodeId: ReadonlyMap<string, number>,
+): readonly WorkflowRuntimeInputInspectionView[] {
+  const initialVariables = graph.initialVariables ?? {};
+  const seen = new Set<string>();
+  const inputs: WorkflowRuntimeInputInspectionView[] = [];
+
+  for (const nodeId of orderedIds) {
+    const node = graph.nodes[nodeId];
+    if (!node) throw new ControlPlaneError("CONFLICT", "compiled workflow state is invalid");
+    const step = stepByNodeId.get(nodeId);
+    if (!step) throw new ControlPlaneError("CONFLICT", "compiled workflow state is invalid");
+
+    for (const variableName of Object.values(node.inputBindings)) {
+      if (!CAPTURE_RUNTIME_INPUT.test(variableName)) continue;
+      if (Object.prototype.hasOwnProperty.call(initialVariables, variableName)) continue;
+      if (seen.has(variableName)) continue;
+      if (inputs.length >= MAX_CAPTURE_RUNTIME_INPUTS) {
+        throw new ControlPlaneError("CONFLICT", "compiled workflow has too many runtime inputs to inspect safely");
+      }
+      seen.add(variableName);
+      inputs.push({ key: variableName, step, treatAsSensitive: true });
+    }
+  }
+
+  return inputs;
+}
+
 function inspectionView(graph: WorkflowGraph): WorkflowInspectionView {
   try {
     assertWorkflowGraph(graph);
@@ -138,14 +179,18 @@ function inspectionView(graph: WorkflowGraph): WorkflowInspectionView {
     totalNodeCount: orderedIds.length,
     truncated: orderedIds.length > visibleIds.length,
     nodes,
+    runtimeInputs: runtimeInputs(graph, orderedIds, stepByNodeId),
   };
 }
 
 /**
  * Read-only inspection of the latest compiled semantic workflow. The response
  * intentionally excludes workflow/node identifiers, deterministic selectors,
- * input/output binding names or values, initial variables, verification expected
- * values/descriptions, and retry failure-code lists.
+ * arbitrary input/output binding names or values, initial variables, verification
+ * expected values/descriptions, and retry failure-code lists. The only binding
+ * names exposed are unresolved capture-generated `capture_input_N` placeholders;
+ * these synthetic keys contain no captured value and are required to make a
+ * privacy-preserving fresh test actionable.
  */
 export class WorkflowInspectionService {
   constructor(
