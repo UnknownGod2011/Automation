@@ -20,8 +20,9 @@ sign in -> dashboard -> create -> cloud capture -> persisted Browser Profile + t
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head `00178e000bab11ef4ee9b0e3b6b4565e54f57ee3` (`Fix Next.js schedule module resolution`) is green on GitHub Actions CI #208.
-- GitHub Actions on the exact new head remains authoritative. No pass is claimed for the current slice until that exact-head run completes successfully.
+- Incoming product head `00178e000bab11ef4ee9b0e3b6b4565e54f57ee3` (`Fix Next.js schedule module resolution`) was green on GitHub Actions CI #208 before this slice.
+- Product commit `1a1e8a0bfe140b92d9820169c61f5d981505fff5` (`Require fresh-test provenance for publish`) triggered CI #209. CI #209 failed only at the deterministic pnpm lock-snapshot gate before install/type-check/tests: expected `cb70fc8f25a801c5bf42295ce9e73b48a6262ed6843a473b2e5018e256e71c2c`, actual `8625718ffa4ad21010a4da1601095b866b14cd4bf6ef1a614865ec34b0b1faff`.
+- No package manifest changed. The corrective commit authenticates exactly that CI-generated graph and retains the explicit AWS DynamoDB peer-alignment assertions. GitHub Actions on the exact corrective head remains authoritative; no pass is claimed until it completes successfully.
 
 ## 2026-08-22 — require fresh-test provenance at the publish boundary
 
@@ -44,7 +45,8 @@ The vertical-path audit found that the server-owned publish-version resolver sel
 - A numerically higher successful `SCHEDULED` run cannot displace that fresh-test result.
 - Successful runs with missing/unknown provenance do not authorize publication.
 - `READY_TO_TEST` and failed fresh-test states still produce no publish candidate.
-- Exact-head GitHub Actions after publication is authoritative.
+- CI #209 root cause was dependency-snapshot drift, not code/type/test behavior; the corrective commit updates only the reviewed lock fingerprint plus this progress record.
+- Exact-head GitHub Actions after the corrective commit is authoritative.
 
 ## 2026-08-22 — normalize product schedules before AWS publish
 
