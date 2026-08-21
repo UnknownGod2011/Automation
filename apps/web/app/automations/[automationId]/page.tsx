@@ -1,3 +1,4 @@
+import type { CaptureRecordingView } from "@automation/core";
 import Link from "next/link";
 import { WebControlPlaneError } from "../../../lib/control-plane-client";
 import { createAuthenticatedWebControlPlaneClient, WebAuthError } from "../../../lib/server-auth";
@@ -7,6 +8,8 @@ export const dynamic = "force-dynamic";
 
 const notices: Record<string, string> = {
   created: "Draft created. Start capture when the capture capability is configured.",
+  "recording-started": "Workflow recording started. Demonstrate only the actions you want the automation to replay.",
+  "capture-finishing": "Finish requested. The capture worker will save the browser profile and trace before compilation becomes ready.",
   compiled: "Capture compiled into a workflow version.",
   tested: "Fresh test request completed.",
   published: "Workflow published with the requested schedule.",
@@ -30,9 +33,14 @@ export default async function AutomationDetailPage({
   const { notice } = await searchParams;
   let automation;
   let runs;
+  let captureRecording: CaptureRecordingView = { kind: "NONE" };
   try {
     const client = await createAuthenticatedWebControlPlaneClient();
-    [automation, runs] = await Promise.all([client.automation(automationId), client.runs(automationId)]);
+    [automation, runs, captureRecording] = await Promise.all([
+      client.automation(automationId),
+      client.runs(automationId),
+      client.captureRecording(automationId),
+    ]);
   } catch (error) {
     if (error instanceof WebAuthError) {
       return <section className="card stack"><div className="eyebrow">Sign in required</div><h1>Authenticate to inspect this automation.</h1><Link className="button" href={`/api/auth/sign-in?returnTo=${encodeURIComponent(`/automations/${automationId}`)}`}>Sign in</Link></section>;
@@ -54,7 +62,7 @@ export default async function AutomationDetailPage({
       <section className="grid two">
         <div className="card stack">
           <h2>Teach and verify</h2>
-          <div className="step"><div className="step-number">1</div><div><h3>Capture workflow</h3><p>Open the isolated cloud browser. Sign in yourself; authentication setup is excluded from scheduled replay.</p><form action={`/api/ui/automations/${encodeURIComponent(automationId)}/capture`} method="post"><button className="button" type="submit">Start cloud capture</button></form></div></div>
+          <div className="step"><div className="step-number">1</div><div><h3>Capture workflow</h3><p>Open the isolated cloud browser. Sign in yourself; authentication setup is excluded from scheduled replay. Use your browser Back button to return here after authentication.</p><form action={`/api/ui/automations/${encodeURIComponent(automationId)}/capture`} method="post"><button className="button" type="submit">Open cloud capture</button></form>{captureRecording.kind === "ACTIVE" ? <div className="stack" style={{ marginTop: 12 }}><div className="row"><span>Capture phase</span><span className="badge">{captureRecording.finishRequested ? "FINISHING" : captureRecording.phase}</span></div><p className="muted">Session expires {captureRecording.expiresAt}. Browser/Profile identifiers remain server-side.</p>{captureRecording.phase === "AUTH_SETUP" ? <><p>Finish signing in inside Live View, then start recording. Login steps will not become scheduled actions.</p><form action={`/api/ui/automations/${encodeURIComponent(automationId)}/record-workflow`} method="post"><input type="hidden" name="captureSessionId" value={captureRecording.captureSessionId} /><button className="button secondary" type="submit">Start recording workflow</button></form></> : captureRecording.finishRequested ? <p>Finish has been requested. Refresh this page until the trusted capture worker saves the profile and trace.</p> : <><p>Workflow recording is active. Demonstrate the reusable workflow, then request finish.</p><form action={`/api/ui/automations/${encodeURIComponent(automationId)}/finish-capture`} method="post"><input type="hidden" name="captureSessionId" value={captureRecording.captureSessionId} /><button className="button secondary" type="submit">Finish capture</button></form></>}<Link href={`/automations/${encodeURIComponent(automationId)}`}>Refresh capture state</Link></div> : <p className="muted">No active capture session. Starting a cloud capture creates durable recording-control state.</p>}</div></div>
           <div className="step"><div className="step-number">2</div><div><h3>Compile captured workflow</h3>{automation.latestCompletedCapture ? <><p>The latest trusted cloud capture completed at {automation.latestCompletedCapture.completedAt}. It is ready to compile; no server trace ID needs to be copied manually.</p><form action={`/api/ui/automations/${encodeURIComponent(automationId)}/compile`} method="post"><input type="hidden" name="traceId" value={automation.latestCompletedCapture.traceId} /><label>Workflow ID<input name="workflowId" defaultValue={`workflow-${automationId}`} required /></label><button className="button secondary" type="submit">Compile latest capture</button></form></> : <p>Finish a cloud capture first. Once the trusted capture worker saves the Browser Profile and trace, this step becomes ready automatically.</p>}</div></div>
           <div className="step"><div className="step-number">3</div><div><h3>Fresh test</h3><p>Run the compiled workflow from a fresh execution boundary before publication.</p><form action={`/api/ui/automations/${encodeURIComponent(automationId)}/test`} method="post"><label>Run ID<input name="runId" defaultValue={`test-${automationId}`} required /></label><label>Runtime variables (JSON, optional)<textarea name="runtimeVariables" placeholder={'{"customer":"Acme"}'} /></label><button className="button secondary" type="submit">Run fresh test</button></form></div></div>
         </div>

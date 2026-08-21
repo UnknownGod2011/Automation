@@ -20,7 +20,18 @@ function scheduleFromForm(form: FormData): { kind: "HOURLY" | "DAILY" | "WEEKLY"
   return { kind: kind as "HOURLY" | "DAILY" | "WEEKLY" | "CRON", expression, timezone };
 }
 
-const COMMANDS = ["capture", "compile", "test", "publish", "schedule", "pause", "resume", "disable"] as const;
+const COMMANDS = [
+  "capture",
+  "record-workflow",
+  "finish-capture",
+  "compile",
+  "test",
+  "publish",
+  "schedule",
+  "pause",
+  "resume",
+  "disable",
+] as const;
 
 export async function POST(request: Request, context: { params: Promise<{ automationId: string; command: string }> }): Promise<NextResponse> {
   if (!isSameOriginMutation(request.url, request.headers)) return new NextResponse("Forbidden", { status: 403 });
@@ -36,6 +47,17 @@ export async function POST(request: Request, context: { params: Promise<{ automa
       const liveView = new URL(result.liveViewUrl);
       if (liveView.protocol !== "https:") return redirectBack(request, automationId, "request-failed");
       return NextResponse.redirect(liveView, 303);
+    }
+
+    if (command === "record-workflow" || command === "finish-capture") {
+      const captureSessionId = String(form.get("captureSessionId") ?? "").trim();
+      if (!captureSessionId) return redirectBack(request, automationId, "invalid-input");
+      if (command === "record-workflow") {
+        await client.startCaptureRecording(automationId, captureSessionId);
+        return redirectBack(request, automationId, "recording-started");
+      }
+      await client.finishCaptureRecording(automationId, captureSessionId);
+      return redirectBack(request, automationId, "capture-finishing");
     }
 
     if (command === "compile") {

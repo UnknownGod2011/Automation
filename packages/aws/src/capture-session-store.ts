@@ -1,10 +1,11 @@
-import { GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import type { CaptureSessionRecord, CaptureSessionStore, OwnershipScope } from "@automation/core";
 import { scopedResourceIdentity, stableResourceToken } from "./idempotency.js";
 
 const CAPTURE_PREFIX = "CAPTURE#";
 const CAPTURE_LATEST_PREFIX = "CAPTURE_LATEST#";
-type CaptureDynamoCommand = GetCommand | PutCommand | TransactWriteCommand;
+const CAPTURE_CURRENT_PREFIX = "CAPTURE_CURRENT#";
+type CaptureDynamoCommand = GetCommand | TransactWriteCommand;
 
 export interface CaptureDynamoClientLike {
   send(command: CaptureDynamoCommand): Promise<Record<string, unknown>>;
@@ -22,6 +23,7 @@ function token(value: string, name: string): string {
 }
 function sessionSk(captureSessionId: string): string { return `${CAPTURE_PREFIX}${token(captureSessionId, "captureSessionId")}`; }
 function latestSk(automationId: string): string { return `${CAPTURE_LATEST_PREFIX}${token(automationId, "automationId")}`; }
+function currentSk(automationId: string): string { return `${CAPTURE_CURRENT_PREFIX}${token(automationId, "automationId")}`; }
 function conditionalFailure(error: unknown): boolean {
   if (typeof error !== "object" || error === null || !("name" in error)) return false;
   const name = String((error as { name?: unknown }).name);
@@ -45,16 +47,29 @@ export class AwsDynamoCaptureSessionStore implements CaptureSessionStore {
   async putStarted(record: CaptureSessionRecord): Promise<void> {
     if (record.status !== "STARTED" || record.traceId || record.completedAt) throw new Error("new capture session must be STARTED without completion metadata");
     const scope = { tenantId: record.tenantId, userId: record.userId };
-    await this.client.send(new PutCommand({
-      TableName: this.tableName,
-      Item: { pk: scopePk(scope), sk: sessionSk(record.captureSessionId), entity: "CaptureSession", record: structuredClone(record) },
-      ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+    await this.client.send(new TransactWriteCommand({
+      TransactItems: [
+        { Put: { TableName: this.tableName, Item: { pk: scopePk(scope), sk: sessionSk(record.captureSessionId), entity: "CaptureSession", record: structuredClone(record) }, ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } },
+        { Put: { TableName: this.tableName, Item: { pk: scopePk(scope), sk: currentSk(record.automationId), entity: "CaptureSessionCurrent", automationId: record.automationId, captureSessionId: record.captureSessionId, startedAt: record.startedAt } } },
+      ],
     }));
   }
 
   async get(scope: OwnershipScope, captureSessionId: string): Promise<CaptureSessionRecord | null> {
     const response = await this.client.send(new GetCommand({ TableName: this.tableName, Key: { pk: scopePk(scope), sk: sessionSk(captureSessionId) }, ConsistentRead: true }));
     return parseRecord(scope, response.Item as Record<string, unknown> | undefined);
+  }
+
+  async activeForAutomation(scope: OwnershipScope, automationId: string): Promise<CaptureSessionRecord | null> {
+    const pointer = await this.client.send(new GetCommand({ TableName: this.tableName, Key: { pk: scopePk(scope), sk: currentSk(automationId) }, ConsistentRead: true }));
+    const item = pointer.Item as Record<string, unknown> | undefined;
+    if (!item) return null;
+    if (item.entity !== "CaptureSessionCurrent" || item.automationId !== automationId || typeof item.captureSessionId !== "string") {
+      throw new Error("DynamoDB current capture pointer is invalid");
+    }
+    const record = await this.get(scope, item.captureSessionId);
+    if (!record || record.automationId !== automationId) throw new Error("DynamoDB current capture pointer is inconsistent");
+    return record.status === "STARTED" ? record : null;
   }
 
   async complete(scope: OwnershipScope, captureSessionId: string, traceId: string, completedAt: string): Promise<"COMPLETED" | "REPLAY"> {

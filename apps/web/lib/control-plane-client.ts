@@ -1,5 +1,6 @@
 import type {
   AutomationSummaryView,
+  CaptureRecordingView,
   CaptureStartResult,
   DashboardView,
   ProviderCredentialSummary,
@@ -132,6 +133,26 @@ export class WebControlPlaneClient {
     return this.request(`/v1/automations/${encodeURIComponent(automationId)}/capture`, {
       method: "POST",
       body: "{}",
+    });
+  }
+
+  async captureRecording(automationId: string): Promise<CaptureRecordingView> {
+    return this.request(`/v1/automations/${encodeURIComponent(automationId)}/capture-recording`, {
+      method: "GET",
+    });
+  }
+
+  async startCaptureRecording(automationId: string, captureSessionId: string): Promise<CaptureRecordingView> {
+    return this.request(`/v1/automations/${encodeURIComponent(automationId)}/capture-recording/start`, {
+      method: "POST",
+      body: JSON.stringify({ captureSessionId }),
+    });
+  }
+
+  async finishCaptureRecording(automationId: string, captureSessionId: string): Promise<CaptureRecordingView> {
+    return this.request(`/v1/automations/${encodeURIComponent(automationId)}/capture-recording/finish`, {
+      method: "POST",
+      body: JSON.stringify({ captureSessionId }),
     });
   }
 

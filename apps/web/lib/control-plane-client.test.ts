@@ -84,6 +84,36 @@ describe("WebControlPlaneClient", () => {
     expect(rotateInit?.body).toBe(JSON.stringify({ apiKey: "replacement-secret" }));
   });
 
+  it("routes capture recording state and commands through authenticated server requests", async () => {
+    const fetchImpl = vi.fn<FetchLike>(async () => new Response(JSON.stringify({
+      kind: "ACTIVE",
+      captureSessionId: "capture-1",
+      phase: "WORKFLOW",
+      finishRequested: false,
+      expiresAt: "2026-08-21T10:00:00.000Z",
+    }), { status: 200 }));
+    const client = new WebControlPlaneClient(
+      { baseUrl: "https://control.example.test", bearerToken: "request-token" },
+      fetchImpl,
+    );
+
+    await client.captureRecording("customer/demo");
+    await client.startCaptureRecording("customer/demo", "capture-1");
+    await client.finishCaptureRecording("customer/demo", "capture-1");
+
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(
+      "https://control.example.test/v1/automations/customer%2Fdemo/capture-recording",
+    );
+    expect(fetchImpl.mock.calls[0]?.[1]?.method).toBe("GET");
+    expect(String(fetchImpl.mock.calls[1]?.[0])).toBe(
+      "https://control.example.test/v1/automations/customer%2Fdemo/capture-recording/start",
+    );
+    expect(fetchImpl.mock.calls[1]?.[1]?.body).toBe(JSON.stringify({ captureSessionId: "capture-1" }));
+    expect(String(fetchImpl.mock.calls[2]?.[0])).toBe(
+      "https://control.example.test/v1/automations/customer%2Fdemo/capture-recording/finish",
+    );
+  });
+
   it("routes schedule lifecycle commands through the authenticated control plane", async () => {
     const fetchImpl = vi.fn<FetchLike>(async () => new Response(JSON.stringify({ status: "PAUSED" }), { status: 200 }));
     const client = new WebControlPlaneClient(

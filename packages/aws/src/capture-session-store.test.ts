@@ -33,15 +33,42 @@ function item(value: CaptureSessionRecord): Record<string, unknown> {
 }
 
 describe("AwsDynamoCaptureSessionStore", () => {
-  it("creates capture metadata conditionally and uses strongly consistent reads", async () => {
+  it("atomically creates capture metadata with a current-capture pointer and uses strongly consistent reads", async () => {
     const client = new FakeClient();
     const store = new AwsDynamoCaptureSessionStore(client, "state-table");
     await store.putStarted(record);
     client.responses.push(item(record));
     await expect(store.get(scope, "capture-1")).resolves.toEqual(record);
-    expect(client.commands[0]?.constructor.name).toBe("PutCommand");
+    expect(client.commands[0]?.constructor.name).toBe("TransactWriteCommand");
+    const created = client.commands[0] as { input?: { TransactItems?: unknown[] } };
+    expect(created.input?.TransactItems).toHaveLength(2);
     expect(client.commands[1]?.constructor.name).toBe("GetCommand");
     expect((client.commands[1] as { input?: { ConsistentRead?: boolean } }).input?.ConsistentRead).toBe(true);
+  });
+
+  it("resolves only the current STARTED capture and keeps browser/profile fields behind the store boundary", async () => {
+    const client = new FakeClient();
+    client.responses.push(
+      { Item: { entity: "CaptureSessionCurrent", automationId: "auto-1", captureSessionId: "capture-1" } },
+      item(record),
+    );
+    const store = new AwsDynamoCaptureSessionStore(client, "state-table");
+
+    await expect(store.activeForAutomation(scope, "auto-1")).resolves.toEqual(record);
+    expect(client.commands).toHaveLength(2);
+    expect((client.commands[0] as { input?: { ConsistentRead?: boolean } }).input?.ConsistentRead).toBe(true);
+    expect((client.commands[1] as { input?: { ConsistentRead?: boolean } }).input?.ConsistentRead).toBe(true);
+  });
+
+  it("returns no active capture when the current pointer resolves to a completed session", async () => {
+    const client = new FakeClient();
+    client.responses.push(
+      { Item: { entity: "CaptureSessionCurrent", automationId: "auto-1", captureSessionId: "capture-1" } },
+      item({ ...record, status: "COMPLETED", traceId: "trace-1", completedAt: "2026-08-20T00:10:00.000Z" }),
+    );
+    const store = new AwsDynamoCaptureSessionStore(client, "state-table");
+
+    await expect(store.activeForAutomation(scope, "auto-1")).resolves.toBeNull();
   });
 
   it("atomically commits completion and the latest-trace pointer", async () => {

@@ -8,7 +8,10 @@ import {
   AutomationControlPlaneService,
   AutomationProductLifecycleService,
   AutomationScheduleLifecycleService,
+  CaptureAwareControlPlaneHttpHandler,
+  CaptureCollectionControlService,
   CaptureCompletionService,
+  CaptureRecordingControlPlaneService,
   ProviderCredentialManagementService,
   TrustedCaptureCompletionHandler,
   type ControlPlaneCapabilities,
@@ -22,6 +25,7 @@ import {
   AwsSdkAgentCoreBrowserDataApi,
   type AgentCoreBrowserDataApi,
 } from "./browser-session.js";
+import { AwsDynamoCaptureCollectionControlStore } from "./capture-control.js";
 import {
   AgentCoreCaptureSessionFinalizer,
   AgentCoreCaptureSessionStarter,
@@ -122,7 +126,7 @@ export type AwsControlPlaneBootstrapResult =
   | {
       kind: "CONFIGURED";
       service: AutomationControlPlaneService;
-      http: AutomationControlPlaneHttpHandler;
+      http: CaptureAwareControlPlaneHttpHandler;
       lambda: Extract<AwsControlPlaneLambdaResult, { kind: "CONFIGURED" }>;
       captureCompletion: TrustedCaptureCompletionHandler;
       capabilities: ControlPlaneCapabilities;
@@ -204,6 +208,11 @@ export function createAwsControlPlaneBootstrap(
     captureDynamo,
     dynamo.config.tableName,
   );
+  const captureControlStore = new AwsDynamoCaptureCollectionControlStore(
+    captureDynamo,
+    dynamo.config.tableName,
+  );
+  const captureControl = new CaptureCollectionControlService(captureState, captureControlStore);
 
   const browserProfileApi = options.overrides?.browserProfiles ??
     new AwsSdkAgentCoreBrowserProfileApi({ region });
@@ -214,7 +223,7 @@ export function createAwsControlPlaneBootstrap(
     browserData,
     liveViewSigner,
     adapter.config.browserIdentifier,
-    { sessionStore: captureState },
+    { sessionStore: captureState, controlStore: captureControlStore },
   );
 
   const credentialControl = options.overrides?.credentialControl ?? new AwsSdkAgentCoreApiKeyControlApi({ region });
@@ -262,7 +271,9 @@ export function createAwsControlPlaneBootstrap(
     freshTests,
     scheduleLifecycle,
   });
-  const http = new AutomationControlPlaneHttpHandler(service);
+  const baseHttp = new AutomationControlPlaneHttpHandler(service);
+  const captureRecording = new CaptureRecordingControlPlaneService(captureState, captureControl);
+  const http = new CaptureAwareControlPlaneHttpHandler(baseHttp, captureRecording);
   const lambda = createAwsControlPlaneLambdaHandler(options.env, http);
   if (lambda.kind !== "CONFIGURED") {
     return { kind: "NOT_CONFIGURED", missing: lambda.missing };
