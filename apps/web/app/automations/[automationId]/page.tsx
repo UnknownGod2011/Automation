@@ -102,8 +102,8 @@ export default async function AutomationDetailPage({
       ) : null}
 
       <section className="card stack" style={{ marginTop: 18 }}>
-        <div className="row"><div><h2>Run history</h2><p className="muted">Execution state only; no cookies, browser profiles, provider keys, or hidden model chain-of-thought.</p></div></div>
-        {runs.length === 0 ? <p className="muted">No runs yet.</p> : <div className="list">{runs.map((run) => <div className="list-item" key={run.runId}><div><h3>{run.runId}</h3><div className="muted">Scheduled {run.scheduledAt}</div></div><div><span className={`badge ${runTone(run.status)}`}>{run.status}</span></div><div className="muted">{run.failureCode ? `Failure: ${run.failureCode}` : run.currentNodeId ? `Node: ${run.currentNodeId}` : "—"}</div></div>)}</div>}
+        <div className="row"><div><h2>Run history</h2><p className="muted">Execution state only; no cookies, browser profiles, provider keys, or hidden model chain-of-thought. Select a run for sanitized checkpoint diagnostics.</p></div></div>
+        {runs.length === 0 ? <p className="muted">No runs yet.</p> : <div className="list">{runs.map((run) => <div className="list-item" key={run.runId}><div><h3><Link href={`/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(run.runId)}`}>{run.runId}</Link></h3><div className="muted">Scheduled {run.scheduledAt}</div></div><div><span className={`badge ${runTone(run.status)}`}>{run.status}</span></div><div className="muted">{run.failureCode ? `Failure: ${run.failureCode}` : run.currentNodeId ? `Node: ${run.currentNodeId}` : "—"}</div></div>)}</div>}
       </section>
     </>
   );

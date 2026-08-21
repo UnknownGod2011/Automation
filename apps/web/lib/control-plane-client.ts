@@ -4,6 +4,7 @@ import type {
   CaptureStartResult,
   DashboardView,
   ProviderCredentialSummary,
+  RunDetailView,
   RunSummaryView,
 } from "@automation/core";
 
@@ -94,6 +95,13 @@ export class WebControlPlaneClient {
       { method: "GET" },
     );
     return result.runs;
+  }
+
+  async run(automationId: string, runId: string): Promise<RunDetailView> {
+    return this.request(
+      `/v1/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}`,
+      { method: "GET" },
+    );
   }
 
   async credentials(): Promise<readonly ProviderCredentialSummary[]> {
