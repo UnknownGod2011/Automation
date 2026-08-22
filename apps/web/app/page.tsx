@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { createAuthenticatedWebControlPlaneClient, getWebAuthStatus, WebAuthError } from "../lib/server-auth";
-import { automationPhase, formatCapability, formatSchedule, runTone } from "../lib/view-model";
+import { automationPhase, formatCapability, formatSchedule, nextRunLabel, runTone } from "../lib/view-model";
 
 export const dynamic = "force-dynamic";
 
@@ -50,6 +50,7 @@ export default async function DashboardPage() {
     throw error;
   }
   const configured = client.status().configured;
+  const renderedAt = new Date();
   const capabilities = Object.entries(dashboard.capabilities) as Array<
     [keyof typeof dashboard.capabilities, (typeof dashboard.capabilities)[keyof typeof dashboard.capabilities]]
   >;
@@ -71,7 +72,7 @@ export default async function DashboardPage() {
 
       <section className="card stack">
         <div className="row">
-          <div><h2>Automations</h2><p className="muted">Status, schedule, latest run, and human-attention state.</p></div>
+          <div><h2>Automations</h2><p className="muted">Status, schedule, next run, latest run, and human-attention state.</p></div>
           <Link className="button" href="/automations/new">Create automation</Link>
         </div>
         {dashboard.automations.length === 0 ? (
@@ -81,7 +82,7 @@ export default async function DashboardPage() {
             {dashboard.automations.map((automation) => (
               <Link className="list-item" href={`/automations/${encodeURIComponent(automation.automationId)}`} key={automation.automationId}>
                 <div><div className="row"><h3>{automation.name}</h3>{automation.needsAttention ? <span className="badge warning">Needs attention</span> : null}</div><div className="muted">{automation.websiteUrl}</div><p>{automation.objective}</p></div>
-                <div><div className="badge">{automationPhase(automation)}</div><p className="muted">{formatSchedule(automation)}</p></div>
+                <div><div className="badge">{automationPhase(automation)}</div><p className="muted">{formatSchedule(automation)}</p><p className="muted">{nextRunLabel(automation, renderedAt)}</p></div>
                 <div>{automation.lastRun ? <><span className={`badge ${runTone(automation.lastRun.status)}`}>{automation.lastRun.status}</span><p className="muted">{automation.lastRun.scheduledAt}</p></> : <span className="muted">No runs yet</span>}</div>
               </Link>
             ))}

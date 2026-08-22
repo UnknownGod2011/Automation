@@ -4,6 +4,7 @@ import {
   automationPhase,
   formatSchedule,
   latestFreshTestFeedback,
+  nextRunLabel,
   runHistoryStatusDetail,
   runKindLabel,
   runTone,
@@ -33,6 +34,16 @@ function run(overrides: Partial<RunSummaryView>): RunSummaryView {
   };
 }
 
+function published(schedule: NonNullable<AutomationSummaryView["schedule"]>, overrides: Partial<AutomationSummaryView> = {}): AutomationSummaryView {
+  return {
+    ...automation,
+    status: "ACTIVE",
+    publishedWorkflowVersion: 1,
+    schedule,
+    ...overrides,
+  };
+}
+
 describe("web view model", () => {
   it("distinguishes draft, published, and attention states", () => {
     expect(automationPhase(automation)).toBe("Draft");
@@ -48,6 +59,66 @@ describe("web view model", () => {
         schedule: { kind: "DAILY", expression: "cron(0 9 * * ? *)", timezone: "Asia/Kolkata" },
       }),
     ).toBe("daily at 09:00 · Asia/Kolkata");
+  });
+
+  it("shows the next daily and weekly wall-clock occurrence in the configured timezone", () => {
+    const daily = published({ kind: "DAILY", expression: "cron(0 9 * * ? *)", timezone: "Asia/Kolkata" });
+    expect(nextRunLabel(daily, new Date("2026-08-22T03:00:00.000Z"))).toBe(
+      "Next run: 2026-08-22 09:00 · Asia/Kolkata",
+    );
+    expect(nextRunLabel(daily, new Date("2026-08-22T04:00:01.000Z"))).toBe(
+      "Next run: 2026-08-23 09:00 · Asia/Kolkata",
+    );
+
+    const weekly = published({ kind: "WEEKLY", expression: "cron(30 8 ? * SUN *)", timezone: "UTC" });
+    expect(nextRunLabel(weekly, new Date("2026-08-22T12:00:00.000Z"))).toBe(
+      "Next run: 2026-08-23 08:30 · UTC",
+    );
+  });
+
+  it("anchors hourly next-run preview only to a durable scheduled occurrence", () => {
+    const hourly = published(
+      { kind: "HOURLY", expression: "rate(1 hour)", timezone: "UTC" },
+      {
+        lastRun: run({
+          runId: "scheduled-run",
+          runKind: "SCHEDULED",
+          status: "SUCCEEDED",
+          scheduledAt: "2026-08-22T10:15:00.000Z",
+        }),
+      },
+    );
+    expect(nextRunLabel(hourly, new Date("2026-08-22T12:20:00.000Z"))).toBe(
+      "Next run: 2026-08-22 13:15 · UTC",
+    );
+
+    expect(
+      nextRunLabel(
+        published({ kind: "HOURLY", expression: "rate(1 hour)", timezone: "UTC" }),
+        new Date("2026-08-22T12:20:00.000Z"),
+      ),
+    ).toBe("Next run: hourly from scheduler activation · UTC");
+
+    const freshTestOnly = published(
+      { kind: "HOURLY", expression: "rate(1 hour)", timezone: "UTC" },
+      { lastRun: run({ runKind: "FRESH_TEST", scheduledAt: "2026-08-22T10:15:00.000Z" }) },
+    );
+    expect(nextRunLabel(freshTestOnly, new Date("2026-08-22T12:20:00.000Z"))).toBe(
+      "Next run: hourly from scheduler activation · UTC",
+    );
+  });
+
+  it("does not manufacture next-run timestamps when the schedule is paused, disabled, custom, or invalid", () => {
+    const daily = { kind: "DAILY", expression: "cron(0 9 * * ? *)", timezone: "Asia/Kolkata" } as const;
+    expect(nextRunLabel({ ...published(daily), status: "PAUSED" })).toBe("Next run: paused");
+    expect(nextRunLabel({ ...published(daily), status: "DISABLED" })).toBe("Next run: disabled");
+    expect(
+      nextRunLabel(published({ kind: "CRON", expression: "cron(0/15 * * * ? *)", timezone: "UTC" })),
+    ).toBe("Next run: custom cron · UTC");
+    expect(
+      nextRunLabel(published({ kind: "DAILY", expression: "cron(0 9 * * ? *)", timezone: "Invalid/Zone" })),
+    ).toBe("Next run: schedule preview unavailable · Invalid/Zone");
+    expect(nextRunLabel(automation)).toBe("Next run: not scheduled");
   });
 
   it("maps run statuses to stable presentation tones", () => {
