@@ -24,8 +24,34 @@ sign in with email or Google -> dashboard -> create -> cloud capture -> persiste
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head `c486d33c500875156c0cd10cdb1bddbcc2e8b909` (`Require VPC AgentCore Browser deployment`) is green on GitHub Actions CI #231.
-- This slice removes the manual pre-provisioned Browser dependency by provisioning the VPC custom AgentCore Browser in CloudFormation and deriving its exact identity into the rest of the deployment. GitHub Actions on the exact new head remains authoritative; no pass is claimed until deterministic lock verification, frozen install, strict type/build checks, production packaging/deployment contracts, and the full test suite complete successfully.
+- Incoming head `072960d09b6b6556747f53b75f558599b7800f16` (`Provision VPC AgentCore Browser in deployment`) is green on GitHub Actions CI #232.
+- This slice binds semantic/model recovery to both the immutable workflow goal and the current constrained step. GitHub Actions on the exact new head remains authoritative; no pass is claimed until deterministic lock verification, frozen install, strict type/build checks, production packaging/deployment contracts, and the full test suite complete successfully.
+
+## 2026-08-22 — preserve the workflow goal during semantic recovery
+
+A production-path audit of the real Fresh Test/scheduled execution flow found that the execution engine passed only `node.objective` into `ReasoningProvider`. The OpenAI BYOK adapter labels that field as the workflow objective, so semantic recovery after UI drift could lose the user's actual immutable automation goal and receive only a local step description. This is especially weak for captured workflows whose node intent may be deliberately generic or structural.
+
+Semantic recovery now receives a bounded provider-neutral objective containing both authorities: the immutable `WorkflowGraph.objective` and the current `WorkflowNode.objective`. The allowed-action set is unchanged and remains derived from the immutable node, so adding the global goal cannot broaden browser permissions. Browser/page context remains the separately constrained untrusted context sent to the provider.
+
+A focused execution regression drives a deterministic click failure into semantic recovery and proves the reasoner receives the workflow goal plus current-step intent, while the permitted semantic action remains exactly `CLICK` and tenant/user identifiers are not embedded into the objective.
+
+### Review: security, tenancy, idempotency, concurrency, retry, verification, cost, observability, recovery
+
+- **Security:** this change adds only user-authored workflow intent already stored in the immutable graph. It does not add cookies, Browser Profile data, credentials, tenant identifiers, provider secrets, or page content to the objective. Model output remains locally validated against the node's allowed action boundary.
+- **Tenant isolation:** unchanged. The reasoner still receives the existing trusted ownership scope for server-side credential routing, while the human-readable objective does not embed tenant/user identifiers.
+- **Idempotency/concurrency:** unchanged. Run occurrence identity, automation leases, checkpointing, and duplicate suppression are unaffected.
+- **Retry/timeout:** unchanged. Semantic fallback still occurs only at the existing bounded recovery boundary and uses the provider's configured network/output limits.
+- **Side-effect verification:** unchanged and still mandatory. A semantically recovered action must satisfy the node's existing verification contract before the engine advances.
+- **Cost:** no additional model call is introduced; an existing semantic call receives slightly more bounded instruction context.
+- **Observability:** no new logs or metrics are added. The provider continues returning only a short observable summary rather than chain-of-thought.
+- **User recovery:** unchanged. If semantic recovery still cannot satisfy the declared effect, existing bounded retry/human-attention behavior remains authoritative.
+
+### Validation added
+
+- Semantic recovery is exercised after a recoverable deterministic `ELEMENT_NOT_FOUND` failure.
+- The reasoning request must contain the immutable workflow goal and current step intent.
+- The reasoner's allowed action remains constrained to the current workflow node.
+- Tenant/user identifiers are not copied into the reasoning objective.
 
 ## 2026-08-22 — provision the protected VPC AgentCore Browser in the release deployment
 
@@ -68,7 +94,7 @@ The intended AWS path is: Cognito email or optional Google sign-in -> BYOK -> Li
 
 ## Next product milestones
 
-1. Require exact-head CI for this Browser-provisioning slice; fix only root-caused failures without weakening checks.
+1. Require exact-head CI for the semantic-objective slice; fix only root-caused failures without weakening checks.
 2. Run the protected deployment workflow with real VPC subnet/security-group IDs; require Browser creation/readiness validation and the live public/auth smoke gate to pass.
 3. Validate the live Browser network path against private/link-local/control-plane destinations after DNS resolution and redirects. If VPC routing/security groups alone cannot enforce the required internet/private separation, add an explicit egress proxy/firewall or domain allowlist before broad arbitrary-host production use.
 4. Exercise a Fresh Test that intentionally runs longer than 30 seconds and verify the request returns promptly, the page follows durable run state, and the final result appears without manual refresh.

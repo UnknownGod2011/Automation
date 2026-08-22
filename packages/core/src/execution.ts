@@ -185,6 +185,13 @@ function semanticAllowedActions(node: WorkflowNode): readonly string[] {
   return [node.kind];
 }
 
+export function semanticReasoningObjective(
+  graph: WorkflowGraph,
+  node: WorkflowNode,
+): string {
+  return `Workflow goal: ${graph.objective}\nCurrent step: ${node.objective}`;
+}
+
 function validateDecision(
   node: WorkflowNode,
   decision: ReasoningDecision,
@@ -682,7 +689,7 @@ export class WorkflowExecutionEngine {
         automationId: graph.automationId,
         runId: run.runId,
         node,
-        objective: node.objective,
+        objective: semanticReasoningObjective(graph, node),
         context: inputs,
         allowedActions,
       });
