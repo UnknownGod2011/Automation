@@ -359,18 +359,15 @@ export class AutomationProductLifecycleService {
       automationId: request.automationId,
       scheduledAt: request.scheduledAt,
       runId: request.runId,
+      ...(request.runtimeVariables
+        ? { runtimeVariables: copyRuntimeVariables(request.runtimeVariables) }
+        : {}),
     });
     if (preparation.kind !== "READY") {
       return { kind: "NOT_RUN", preparation };
     }
 
     try {
-      await this.seedFreshCheckpoint(
-        request.scope,
-        preparation.run,
-        preparation.graph,
-        request.runtimeVariables,
-      );
       const execution = await this.makeEngine().execute({
         scope: request.scope,
         run: preparation.run,

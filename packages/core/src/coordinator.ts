@@ -207,20 +207,18 @@ export class ScheduledRunCoordinator {
       return { kind: "SKIPPED", run, reason: "CONCURRENT_RUN" };
     }
 
-    if (this.mode === "FRESH_TEST") {
-      await this.dependencies.checkpoints.put(request.scope, {
-        runId: run.runId,
-        automationId: run.automationId,
-        workflowVersion: graph.version,
-        currentNodeId: graph.entryNodeId,
-        completedNodeIds: [],
-        attempt: 0,
-        fingerprintRepeatCount: 0,
-        variables: cloneVariables(graph, request.runtimeVariables),
-        evidenceRefs: [],
-        updatedAt: this.now().toISOString(),
-      });
-    }
+    await this.dependencies.checkpoints.put(request.scope, {
+      runId: run.runId,
+      automationId: run.automationId,
+      workflowVersion: graph.version,
+      currentNodeId: graph.entryNodeId,
+      completedNodeIds: [],
+      attempt: 0,
+      fingerprintRepeatCount: 0,
+      variables: cloneVariables(graph, request.runtimeVariables),
+      evidenceRefs: [],
+      updatedAt: this.now().toISOString(),
+    });
 
     run = transitionRun(run, "RUNNING", { now: this.now().toISOString() });
     await this.dependencies.runs.update(run);
@@ -272,8 +270,7 @@ export class ScheduledRunCoordinator {
       completedNodeIds: [],
       attempt: 0,
       fingerprintRepeatCount: 0,
-      variables:
-        this.mode === "FRESH_TEST" ? cloneVariables(graph, runtimeVariables) : {},
+      variables: cloneVariables(graph, runtimeVariables),
       evidenceRefs: blocker.evidenceRefs,
       lastFailure: blocker,
       updatedAt: this.now().toISOString(),

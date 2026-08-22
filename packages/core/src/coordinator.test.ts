@@ -138,13 +138,25 @@ function coordinator(options: {
 const request = { scope, automationId: "auto-1", scheduledAt: "2026-08-18T12:00:00.000Z", runId: "run-1" };
 
 describe("ScheduledRunCoordinator", () => {
-  it("prepares one immutable workflow version and acquires a renewable execution lease", async () => {
-    const { value, locks } = coordinator();
-    const result = await value.prepare(request);
+  it("checkpoints compiled and runtime variables before a scheduled browser run becomes READY", async () => {
+    const workflow: WorkflowGraph = {
+      ...graph,
+      initialVariables: { "capture.literal": "Monthly report" },
+    };
+    const { value, locks, checkpoints } = coordinator({ workflow });
+    const result = await value.prepare({
+      ...request,
+      runtimeVariables: { "report.recipient": "ops-team" },
+    });
     expect(result.kind).toBe("READY");
     if (result.kind !== "READY") throw new Error("expected READY");
     expect(result.run.status).toBe("RUNNING");
     expect(result.run.workflowVersion).toBe(1);
+    expect(checkpoints.value?.variables).toEqual({
+      "capture.literal": "Monthly report",
+      "report.recipient": "ops-team",
+    });
+    expect(checkpoints.value?.currentNodeId).toBe("end");
     const renewed = await value.renewLease(scope, result.lease);
     expect(renewed.ownerToken).toBe("run-1");
     expect(locks.renewCalls).toBe(1);
@@ -164,13 +176,24 @@ describe("ScheduledRunCoordinator", () => {
     expect(result.run.status).toBe("SKIPPED");
   });
 
-  it("durably checkpoints the blocker when an authorized browser profile is missing", async () => {
-    const { value, checkpoints } = coordinator({ profilePresent: false });
-    const result = await value.prepare(request);
+  it("durably checkpoints scheduled inputs when an authorized browser profile is missing", async () => {
+    const workflow: WorkflowGraph = {
+      ...graph,
+      initialVariables: { "capture.literal": "Monthly report" },
+    };
+    const { value, checkpoints } = coordinator({ profilePresent: false, workflow });
+    const result = await value.prepare({
+      ...request,
+      runtimeVariables: { "report.recipient": "ops-team" },
+    });
     expect(result.kind).toBe("BLOCKED");
     expect(result.run.status).toBe("WAITING_FOR_HUMAN");
     expect(checkpoints.value?.lastFailure?.code).toBe("TARGET_AUTH_REQUIRED");
     expect(checkpoints.value?.currentNodeId).toBe("end");
+    expect(checkpoints.value?.variables).toEqual({
+      "capture.literal": "Monthly report",
+      "report.recipient": "ops-team",
+    });
   });
 
   it("accepts provider readiness checks without introducing provider dependencies", async () => {
