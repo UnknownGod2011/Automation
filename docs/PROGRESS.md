@@ -24,37 +24,38 @@ sign in with email or Google -> dashboard -> create -> cloud capture -> persiste
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head `9bb611362739b731e531fe84959765fd57517811` (`Follow asynchronous Fresh Test results`) is green on GitHub Actions CI #229.
-- This slice adds a provider-neutral public-target URL policy before cloud Browser Profile allocation. GitHub Actions on the exact new head remains authoritative; no pass is claimed until deterministic lock verification, frozen install, strict type/build checks, production packaging/deployment contracts, and the full test suite complete successfully.
+- Incoming head `84a535feabb668de4e25a7beb074187124882c77` (`Block private cloud browser targets`) is green on GitHub Actions CI #230.
+- This slice makes the protected AWS deployment path require and verify a deployment-owned VPC custom AgentCore Browser before any CloudFormation mutation. GitHub Actions on the exact new head remains authoritative; no pass is claimed until deterministic lock verification, frozen install, strict type/build checks, production packaging/deployment contracts, and the full test suite complete successfully.
 
-## 2026-08-22 — block explicit internal-network automation targets before cloud allocation
+## 2026-08-22 — require a VPC custom AgentCore Browser for protected deployment
 
-A pre-deployment security review found that automation creation accepted any syntactically valid HTTP(S) URL, including `localhost`, RFC1918/private IPv4 literals, link-local cloud metadata addresses, local/internal hostnames, and local IPv6 addresses. Because the stored website becomes navigation authority for AgentCore Browser capture and execution, an authenticated user could otherwise direct the cloud browser toward infrastructure-local services.
+The preceding application-layer target policy rejects explicit localhost/private/link-local/control-plane destinations before Browser Profile allocation. That remains useful, but it cannot stop DNS rebinding or a public page redirecting toward an internal address. The protected AWS release path previously still accepted the AWS-managed `aws.browser.v1` browser and did not inspect the live Browser network configuration before deployment.
 
-The provider-neutral lifecycle now validates the target before creating the automation Browser Profile. The application-layer policy rejects embedded URL credentials, localhost/local/home-arpa and single-label hosts, Google metadata hostnames, non-public/reserved IPv4 literals including RFC1918/loopback/link-local/CGNAT/documentation/benchmark/multicast ranges, and local/link-local/multicast/documentation/IPv4-mapped IPv6 literals. Public HTTP(S) hostnames and public IP literals continue to normalize through the standard URL parser.
+The ordered deployment script now requires `parameters.runtime.AgentCoreBrowserIdentifier` and `AgentCoreBrowserResourceArn` to identify the same account-owned custom AgentCore Browser in the deployment region. The AWS-managed browser is rejected by the protected deployer. Before the first CloudFormation mutation, the deployer performs a read-only `bedrock-agentcore-control get-browser` and requires the returned identity to match exactly, status to be `READY`, `networkConfiguration.networkMode` to be `VPC`, and the VPC configuration to contain non-empty security-group and subnet lists.
 
-The same policy is reused when validating persisted capture-trace website identity, preventing a trace from reintroducing an explicit target that the draft boundary would not accept.
+The browser identity is then treated as derived deployment authority: the same verified identifier is supplied to the control-plane stack, and environment configuration cannot independently override the control-plane Browser identifier. The final non-secret deployment result also records the exact verified Browser identifier and ARN for operational traceability.
+
+This is intentionally a prerequisite rather than a claim that `VPC` mode alone proves safe internet egress. The actual VPC route tables, security groups, DNS behavior, firewall/proxy controls, and any allow/deny policy still need live validation to ensure private/link-local/control-plane destinations remain unreachable after DNS resolution and redirects.
 
 ### Review: security, tenancy, idempotency, concurrency, retry, verification, cost, observability, recovery
 
-- **Security:** explicit internal/private target authority is rejected before Browser Profile allocation. Embedded URL credentials are also rejected so userinfo cannot become persisted website metadata. This is a first application-layer SSRF boundary, not a claim of complete SSRF containment.
-- **Tenant isolation:** unchanged. Website policy is independent of ownership; all automation and execution state remains tenant/user scoped.
-- **Idempotency/concurrency:** unchanged. Invalid targets never reach profile allocation or durable automation creation, so they create no competing resource identity.
-- **Retry/timeout:** no retry or network lookup was introduced. Validation is deterministic and local.
-- **Side-effect verification:** unchanged. The execution engine still requires declared verification before success.
-- **Cost:** invalid/private targets fail before Browser Profile creation, avoiding unnecessary cloud resource allocation. Valid requests add only local parsing/range checks.
-- **Observability:** failures surface through the existing sanitized bad-request/control-plane boundary; no target credentials or internal provider errors are added to logs/telemetry.
-- **User recovery:** invalid targets are corrected at creation time rather than becoming failed cloud runs. Existing browser takeover/resume behavior is unchanged.
+- **Security:** protected deployments no longer accept the service-managed public Browser. The live custom Browser identity, readiness, and VPC network mode are checked before infrastructure mutation. This adds a second deployment/network layer behind the provider-neutral target URL guard without weakening either boundary.
+- **Tenant isolation:** unchanged. The Browser is deployment-owned infrastructure; automation/run ownership remains tenant/user scoped in application state. The control plane and execution plane are now forced to use the same verified Browser identifier.
+- **Idempotency/concurrency:** unchanged. Browser inspection is read-only and occurs before stack mutation. Exact deployment reruns continue to rely on CloudFormation idempotency and immutable release artifacts.
+- **Retry/timeout:** no new retry loop was added. If Browser inspection is unavailable, mismatched, not READY, or not VPC-backed, deployment fails closed rather than guessing.
+- **Side-effect verification:** workflow effect verification is unchanged. This slice only constrains the cloud Browser resource through which effects are executed.
+- **Cost:** one bounded control-plane Browser lookup is added per deployment. A rejected configuration fails before CloudFormation changes or browser/model execution cost.
+- **Observability:** the deployment result records only the non-secret Browser ID/ARN. It does not expose Browser Profiles, session IDs, Live View credentials, BYOK material, or workload tokens.
+- **User recovery:** unchanged. Existing target-auth takeover/resume continues to use the same deployment Browser/Profile boundary.
 
 ### Validation added
 
-- Unit coverage accepts normal public hostnames plus public IPv4/IPv6 targets and rejects non-HTTP protocols and credential-bearing URLs.
-- Table-driven coverage rejects localhost/local/home-arpa/metadata hostnames, single-label internal names, private/link-local/CGNAT/documentation/benchmark/multicast IPv4 ranges, and loopback/ULA/link-local/documentation/multicast IPv6 ranges.
-- Lifecycle regression coverage proves rejected targets do not call `BrowserProfileStore.create`, keeping cloud allocation behind target validation.
-
-### Residual network-security boundary
-
-Application parsing cannot prevent DNS rebinding, a public hostname later resolving to a private address, or an allowed page redirecting/navigation to an internal address. Before broad arbitrary-site production exposure, the AgentCore Browser/runtime network path still needs a deployment-enforced DNS/egress/redirect policy (or a justified domain allowlist) that blocks private/link-local/control-plane destinations at connection time. Do not weaken this application guard; treat runtime network enforcement as the second layer.
+- The no-cloud deployment contract now supplies a realistic custom AgentCore Browser ID/ARN and verifies Browser inspection happens before the first CloudFormation deploy.
+- A `READY` VPC browser with non-empty security groups/subnets is accepted and its identifier is derived into the control-plane deployment.
+- A `PUBLIC` browser fails before any CloudFormation mutation.
+- The AWS-managed `aws.browser.v1` path fails locally before any AWS call.
+- An environment attempt to independently override the control-plane Browser identifier fails before any AWS call.
+- Existing derived callback/stack-output protections remain covered.
 
 ## Current release/deployment state
 
@@ -64,9 +65,9 @@ The intended AWS path is: Cognito email or optional Google sign-in -> BYOK -> Li
 
 ## Next product milestones
 
-1. Require exact-head CI for this target-policy slice; fix only root-caused failures without weakening checks.
-2. Run the protected deployment workflow and require the live public/auth smoke gate to pass against a real AWS environment.
-3. Before enabling arbitrary untrusted target hosts broadly, verify the live AgentCore Browser/runtime network boundary blocks private/link-local/control-plane destinations after DNS resolution and redirects; if the managed service cannot guarantee that, add a deployment-level allowlist/egress enforcement boundary.
+1. Require exact-head CI for this VPC-browser deployment slice; fix only root-caused failures without weakening checks.
+2. Configure a real custom AgentCore Browser in VPC mode with deployment-owned subnets/security groups and run the protected deployment workflow; require the live public/auth smoke gate to pass.
+3. Validate the live Browser network path against private/link-local/control-plane destinations after DNS resolution and redirects. If VPC routing/security groups alone cannot enforce the required internet/private separation, add an explicit egress proxy/firewall or domain allowlist before broad arbitrary-host production use.
 4. Exercise a Fresh Test that intentionally runs longer than 30 seconds and verify the request returns promptly, the page follows durable run state, and the final result appears without manual refresh.
 5. Execute the controlled interactive vertical demo from `outputs.webOrigin`: sign in -> BYOK -> Live View capture -> compile/inspect -> Fresh Test -> publish -> scheduled execution -> semantic diagnostics/history/email -> target-auth takeover/resume.
 6. Fix concrete defects exposed by the live environment before adding more infrastructure or recovery depth.
@@ -74,7 +75,8 @@ The intended AWS path is: Cognito email or optional Google sign-in -> BYOK -> Li
 
 ## Parked limitations / known risks
 
-- Application-layer target validation blocks explicit private/local hosts but cannot by itself stop DNS rebinding or redirect-to-private behavior; runtime egress/DNS enforcement remains required for comprehensive SSRF containment.
+- VPC Browser mode is now required by the protected deployer, but the repository cannot prove an environment's route tables, DNS controls, security groups, firewall/proxy behavior, or redirect-time destination resolution without live AWS validation. Do not treat `networkMode=VPC` by itself as complete SSRF containment.
+- Application-layer target validation blocks explicit private/local hosts but cannot by itself stop DNS rebinding or redirect-to-private behavior; retain it as defense in depth.
 - Background Fresh Test duplicate suppression is process-local; durable run occurrence identity and the automation lease remain the cross-process authority. Harden only if live Runtime replacement demonstrates a concrete duplicate-start defect.
 - Fresh Test page polling is bounded to five minutes; longer tests remain valid and can be followed through manual refresh/run diagnostics.
 - Live OpenAI, SES, Cognito, AgentCore Browser/Profile/Runtime behavior still requires real AWS validation; deterministic CI and anonymous deployment smoke are not substitutes for a real authenticated lifecycle.
