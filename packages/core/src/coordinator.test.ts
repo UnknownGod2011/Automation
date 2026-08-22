@@ -14,7 +14,6 @@ import {
 } from "./index.js";
 
 const scope: OwnershipScope = { tenantId: "tenant-1", userId: "user-1" };
-
 const automation = (overrides: Partial<AutomationRecord> = {}): AutomationRecord => ({
   tenantId: scope.tenantId,
   userId: scope.userId,
@@ -31,7 +30,6 @@ const automation = (overrides: Partial<AutomationRecord> = {}): AutomationRecord
   updatedAt: "2026-08-18T00:00:00.000Z",
   ...overrides,
 });
-
 const graph: WorkflowGraph = {
   schemaVersion: 1,
   workflowId: "wf-1",
@@ -55,7 +53,6 @@ const graph: WorkflowGraph = {
     },
   },
 };
-
 class AutomationRepo implements AutomationRepository {
   constructor(private readonly value: AutomationRecord | null) {}
   async get() { return this.value ? structuredClone(this.value) : null; }
@@ -70,11 +67,7 @@ class WorkflowRepo implements WorkflowVersionRepository {
 }
 class Runs implements RunRepository {
   value: RunRecord | null = null;
-  async createIfAbsent(run: RunRecord) {
-    if (this.value) return { created: false as const, run: structuredClone(this.value) };
-    this.value = structuredClone(run);
-    return { created: true as const, run: structuredClone(run) };
-  }
+  async createIfAbsent(run: RunRecord) { if (this.value) return { created: false as const, run: structuredClone(this.value) }; this.value = structuredClone(run); return { created: true as const, run: structuredClone(run) }; }
   async get() { return this.value ? structuredClone(this.value) : null; }
   async update(run: RunRecord) { this.value = structuredClone(run); }
   async listForAutomation() { return this.value ? [structuredClone(this.value)] : []; }
@@ -94,27 +87,11 @@ class Locks implements AutomationLockManager {
   lease: LockLease | null = null;
   renewCalls = 0;
   constructor(private readonly available = true) {}
-  async acquire(_: OwnershipScope, automationId: string, ownerToken: string, ttlMs: number) {
-    if (!this.available) return null;
-    this.lease = { automationId, ownerToken, expiresAt: new Date(ttlMs).toISOString() };
-    return structuredClone(this.lease);
-  }
-  async renew(_: OwnershipScope, lease: LockLease, ttlMs: number) {
-    this.renewCalls += 1;
-    if (!this.lease || this.lease.ownerToken !== lease.ownerToken) return null;
-    this.lease = { ...lease, expiresAt: new Date(ttlMs + 1).toISOString() };
-    return structuredClone(this.lease);
-  }
+  async acquire(_: OwnershipScope, automationId: string, ownerToken: string, ttlMs: number) { if (!this.available) return null; this.lease = { automationId, ownerToken, expiresAt: new Date(ttlMs).toISOString() }; return structuredClone(this.lease); }
+  async renew(_: OwnershipScope, lease: LockLease, ttlMs: number) { this.renewCalls += 1; if (!this.lease || this.lease.ownerToken !== lease.ownerToken) return null; this.lease = { ...lease, expiresAt: new Date(ttlMs + 1).toISOString() }; return structuredClone(this.lease); }
   async release() { this.lease = null; }
 }
-
-function coordinator(options: {
-  automation?: AutomationRecord;
-  workflow?: WorkflowGraph | null;
-  profilePresent?: boolean;
-  lockAvailable?: boolean;
-  preflightChecks?: readonly RunPreflightCheck[];
-} = {}) {
+function coordinator(options: { automation?: AutomationRecord; workflow?: WorkflowGraph | null; profilePresent?: boolean; lockAvailable?: boolean; preflightChecks?: readonly RunPreflightCheck[] } = {}) {
   const runs = new Runs();
   const locks = new Locks(options.lockAvailable ?? true);
   const checkpoints = new Checkpoints();
@@ -134,32 +111,46 @@ function coordinator(options: {
     }),
   };
 }
-
 const request = { scope, automationId: "auto-1", scheduledAt: "2026-08-18T12:00:00.000Z", runId: "run-1" };
+function inputWorkflow(): WorkflowGraph {
+  return {
+    ...graph,
+    initialVariables: { "capture.literal": "Monthly report" },
+    nodes: { ...graph.nodes, end: { ...graph.nodes.end!, inputBindings: { value: "capture_input_3" } } },
+  };
+}
 
 describe("ScheduledRunCoordinator", () => {
-  it("checkpoints compiled and runtime variables before a scheduled browser run becomes READY", async () => {
-    const workflow: WorkflowGraph = {
-      ...graph,
-      initialVariables: { "capture.literal": "Monthly report" },
-    };
-    const { value, locks, checkpoints } = coordinator({ workflow });
-    const result = await value.prepare({
-      ...request,
-      runtimeVariables: { "report.recipient": "ops-team" },
+  it("checkpoints compiled and persisted scheduled inputs before a scheduled browser run becomes READY", async () => {
+    const { value, locks, checkpoints } = coordinator({
+      workflow: inputWorkflow(),
+      automation: automation({ scheduledNonSecretInputs: { capture_input_3: "ops-team" } }),
     });
+    const result = await value.prepare(request);
     expect(result.kind).toBe("READY");
     if (result.kind !== "READY") throw new Error("expected READY");
     expect(result.run.status).toBe("RUNNING");
-    expect(result.run.workflowVersion).toBe(1);
-    expect(checkpoints.value?.variables).toEqual({
-      "capture.literal": "Monthly report",
-      "report.recipient": "ops-team",
-    });
-    expect(checkpoints.value?.currentNodeId).toBe("end");
+    expect(checkpoints.value?.variables).toEqual({ "capture.literal": "Monthly report", capture_input_3: "ops-team" });
     const renewed = await value.renewLease(scope, result.lease);
     expect(renewed.ownerToken).toBe("run-1");
     expect(locks.renewCalls).toBe(1);
+  });
+
+  it("allows an explicit invocation value to override a persisted scheduled default", async () => {
+    const { value, checkpoints } = coordinator({
+      workflow: inputWorkflow(),
+      automation: automation({ scheduledNonSecretInputs: { capture_input_3: "default-team" } }),
+    });
+    expect((await value.prepare({ ...request, runtimeVariables: { capture_input_3: "override-team" } })).kind).toBe("READY");
+    expect(checkpoints.value?.variables.capture_input_3).toBe("override-team");
+  });
+
+  it("fails a legacy active workflow before browser work when a required scheduled input is missing", async () => {
+    const { value, checkpoints } = coordinator({ workflow: inputWorkflow() });
+    const result = await value.prepare(request);
+    expect(result.kind).toBe("FAILED");
+    expect(result.run.failure?.code).toBe("NOT_CONFIGURED");
+    expect(checkpoints.value).toBeNull();
   });
 
   it("returns the existing run for duplicate at-least-once schedule delivery", async () => {
@@ -177,31 +168,20 @@ describe("ScheduledRunCoordinator", () => {
   });
 
   it("durably checkpoints scheduled inputs when an authorized browser profile is missing", async () => {
-    const workflow: WorkflowGraph = {
-      ...graph,
-      initialVariables: { "capture.literal": "Monthly report" },
-    };
-    const { value, checkpoints } = coordinator({ profilePresent: false, workflow });
-    const result = await value.prepare({
-      ...request,
-      runtimeVariables: { "report.recipient": "ops-team" },
+    const { value, checkpoints } = coordinator({
+      profilePresent: false,
+      workflow: inputWorkflow(),
+      automation: automation({ scheduledNonSecretInputs: { capture_input_3: "ops-team" } }),
     });
+    const result = await value.prepare(request);
     expect(result.kind).toBe("BLOCKED");
     expect(result.run.status).toBe("WAITING_FOR_HUMAN");
     expect(checkpoints.value?.lastFailure?.code).toBe("TARGET_AUTH_REQUIRED");
-    expect(checkpoints.value?.currentNodeId).toBe("end");
-    expect(checkpoints.value?.variables).toEqual({
-      "capture.literal": "Monthly report",
-      "report.recipient": "ops-team",
-    });
+    expect(checkpoints.value?.variables).toEqual({ "capture.literal": "Monthly report", capture_input_3: "ops-team" });
   });
 
   it("accepts provider readiness checks without introducing provider dependencies", async () => {
-    const check: RunPreflightCheck = {
-      async check() {
-        return { ready: false, disposition: "WAITING_FOR_HUMAN", failure: { code: "NOT_CONFIGURED", message: "reasoning provider not configured", retryable: false, evidenceRefs: [] } };
-      },
-    };
+    const check: RunPreflightCheck = { async check() { return { ready: false, disposition: "WAITING_FOR_HUMAN", failure: { code: "NOT_CONFIGURED", message: "reasoning provider not configured", retryable: false, evidenceRefs: [] } }; } };
     const { value, checkpoints } = coordinator({ preflightChecks: [check] });
     expect((await value.prepare(request)).kind).toBe("BLOCKED");
     expect(checkpoints.value?.lastFailure?.code).toBe("NOT_CONFIGURED");

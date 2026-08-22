@@ -132,6 +132,8 @@ export interface AutomationRecord {
   publishedWorkflowVersion?: number;
   browserProfileRef?: string;
   schedule?: AutomationSchedule;
+  /** Explicitly non-secret values persisted for unresolved capture_input_N bindings on scheduled runs. */
+  scheduledNonSecretInputs?: Readonly<Record<string, string>>;
   notifyOnSuccess: boolean;
   notifyOnFailure: boolean;
   createdAt: string;

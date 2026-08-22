@@ -16,6 +16,7 @@ import type {
   WorkflowVersionRepository,
 } from "./index.js";
 import { transitionRun } from "./run-state.js";
+import { validateScheduledNonSecretInputs } from "./scheduled-runtime-inputs.js";
 
 export interface RunPreflightContext {
   scope: OwnershipScope;
@@ -26,11 +27,7 @@ export interface RunPreflightContext {
 
 export type RunPreflightCheckResult =
   | { ready: true }
-  | {
-      ready: false;
-      disposition: "WAITING_FOR_HUMAN" | "FAILED";
-      failure: RunFailure;
-    };
+  | { ready: false; disposition: "WAITING_FOR_HUMAN" | "FAILED"; failure: RunFailure };
 
 export interface RunPreflightCheck {
   check(context: RunPreflightContext): Promise<RunPreflightCheckResult>;
@@ -51,13 +48,7 @@ export type PrepareScheduledRunResult =
   | { kind: "SKIPPED"; run: RunRecord; reason: "AUTOMATION_NOT_ACTIVE" | "CONCURRENT_RUN" }
   | { kind: "BLOCKED"; run: RunRecord }
   | { kind: "FAILED"; run: RunRecord }
-  | {
-      kind: "READY";
-      automation: AutomationRecord;
-      graph: WorkflowGraph;
-      run: RunRecord;
-      lease: LockLease;
-    };
+  | { kind: "READY"; automation: AutomationRecord; graph: WorkflowGraph; run: RunRecord; lease: LockLease };
 
 export interface ScheduledRunCoordinatorDependencies {
   automations: AutomationRepository;
@@ -78,10 +69,12 @@ function preflightFailure(code: RunFailure["code"], message: string): RunFailure
 
 function cloneVariables(
   graph: WorkflowGraph,
+  scheduledVariables: Readonly<Record<string, string>>,
   runtimeVariables: Readonly<Record<string, unknown>> | undefined,
 ): Readonly<Record<string, unknown>> {
   return structuredClone({
     ...(graph.initialVariables ?? {}),
+    ...scheduledVariables,
     ...(runtimeVariables ?? {}),
   });
 }
@@ -111,14 +104,10 @@ export class ScheduledRunCoordinator {
       userId: request.scope.userId,
       runId: request.runId,
       automationId: request.automationId,
-      workflowVersion:
-        this.mode === "FRESH_TEST"
-          ? graph?.version ?? 0
-          : automation.publishedWorkflowVersion ?? 0,
-      occurrenceKey:
-        this.mode === "FRESH_TEST"
-          ? `${request.automationId}:test:${request.runId}`
-          : makeOccurrenceKey(request.automationId, request.scheduledAt),
+      workflowVersion: this.mode === "FRESH_TEST" ? graph?.version ?? 0 : automation.publishedWorkflowVersion ?? 0,
+      occurrenceKey: this.mode === "FRESH_TEST"
+        ? `${request.automationId}:test:${request.runId}`
+        : makeOccurrenceKey(request.automationId, request.scheduledAt),
       status: "QUEUED",
       scheduledAt,
     };
@@ -136,10 +125,7 @@ export class ScheduledRunCoordinator {
     }
 
     if (this.mode === "SCHEDULED" && automation.publishedWorkflowVersion === undefined) {
-      return this.fail(
-        run,
-        preflightFailure("NOT_CONFIGURED", "active automation has no published workflow version"),
-      );
+      return this.fail(run, preflightFailure("NOT_CONFIGURED", "active automation has no published workflow version"));
     }
     if (!graph) {
       return this.fail(
@@ -152,10 +138,7 @@ export class ScheduledRunCoordinator {
         ),
       );
     }
-    if (
-      graph.automationId !== automation.automationId ||
-      (this.mode === "SCHEDULED" && graph.version !== automation.publishedWorkflowVersion)
-    ) {
+    if (graph.automationId !== automation.automationId || (this.mode === "SCHEDULED" && graph.version !== automation.publishedWorkflowVersion)) {
       return this.fail(
         run,
         preflightFailure(
@@ -167,12 +150,25 @@ export class ScheduledRunCoordinator {
       );
     }
 
+    let scheduledVariables: Readonly<Record<string, string>> = {};
+    if (this.mode === "SCHEDULED") {
+      try {
+        scheduledVariables = validateScheduledNonSecretInputs(graph, automation.scheduledNonSecretInputs);
+      } catch {
+        return this.fail(
+          run,
+          preflightFailure("NOT_CONFIGURED", "published workflow requires scheduled runtime inputs that are not configured"),
+        );
+      }
+    }
+
     if (!automation.browserProfileRef) {
       return this.block(
         request.scope,
         run,
         graph,
         preflightFailure("TARGET_AUTH_REQUIRED", "automation has no browser profile"),
+        scheduledVariables,
         request.runtimeVariables,
       );
     }
@@ -182,6 +178,7 @@ export class ScheduledRunCoordinator {
         run,
         graph,
         preflightFailure("TARGET_AUTH_REQUIRED", "automation browser profile is unavailable"),
+        scheduledVariables,
         request.runtimeVariables,
       );
     }
@@ -191,7 +188,7 @@ export class ScheduledRunCoordinator {
       const result = await check.check(context);
       if (result.ready) continue;
       return result.disposition === "WAITING_FOR_HUMAN"
-        ? this.block(request.scope, run, graph, result.failure, request.runtimeVariables)
+        ? this.block(request.scope, run, graph, result.failure, scheduledVariables, request.runtimeVariables)
         : this.fail(run, result.failure);
     }
 
@@ -215,7 +212,7 @@ export class ScheduledRunCoordinator {
       completedNodeIds: [],
       attempt: 0,
       fingerprintRepeatCount: 0,
-      variables: cloneVariables(graph, request.runtimeVariables),
+      variables: cloneVariables(graph, scheduledVariables, request.runtimeVariables),
       evidenceRefs: [],
       updatedAt: this.now().toISOString(),
     });
@@ -235,10 +232,7 @@ export class ScheduledRunCoordinator {
     await this.dependencies.locks.release(scope, lease);
   }
 
-  private async resolveGraph(
-    scope: OwnershipScope,
-    automation: AutomationRecord,
-  ): Promise<WorkflowGraph | null> {
+  private async resolveGraph(scope: OwnershipScope, automation: AutomationRecord): Promise<WorkflowGraph | null> {
     if (this.mode === "FRESH_TEST") {
       if (automation.status !== "READY_TO_TEST" && automation.status !== "READY_TO_PUBLISH") {
         throw new Error("automation must be READY_TO_TEST or READY_TO_PUBLISH before a fresh test");
@@ -246,13 +240,8 @@ export class ScheduledRunCoordinator {
       const versions = await this.dependencies.workflows.list(scope, automation.automationId);
       return versions.at(-1) ?? null;
     }
-
     if (automation.publishedWorkflowVersion === undefined) return null;
-    return this.dependencies.workflows.get(
-      scope,
-      automation.automationId,
-      automation.publishedWorkflowVersion,
-    );
+    return this.dependencies.workflows.get(scope, automation.automationId, automation.publishedWorkflowVersion);
   }
 
   private async block(
@@ -260,6 +249,7 @@ export class ScheduledRunCoordinator {
     run: RunRecord,
     graph: WorkflowGraph,
     blocker: RunFailure,
+    scheduledVariables: Readonly<Record<string, string>>,
     runtimeVariables?: Readonly<Record<string, unknown>>,
   ): Promise<PrepareScheduledRunResult> {
     await this.dependencies.checkpoints.put(scope, {
@@ -270,7 +260,7 @@ export class ScheduledRunCoordinator {
       completedNodeIds: [],
       attempt: 0,
       fingerprintRepeatCount: 0,
-      variables: cloneVariables(graph, runtimeVariables),
+      variables: cloneVariables(graph, scheduledVariables, runtimeVariables),
       evidenceRefs: blocker.evidenceRefs,
       lastFailure: blocker,
       updatedAt: this.now().toISOString(),

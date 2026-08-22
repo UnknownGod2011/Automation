@@ -78,6 +78,7 @@ export * from "./run-detail.js";
 export * from "./run-finalization.js";
 export * from "./run-reporting.js";
 export * from "./run-state.js";
+export * from "./scheduled-runtime-inputs.js";
 export * from "./worker.js";
 export * from "./workflow-compiler.js";
 export * from "./workflow-inspection.js";
