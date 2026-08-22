@@ -24,46 +24,45 @@ sign in with email or Google -> dashboard -> create -> cloud capture -> persiste
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head `34e7dc1583cc13105d1f0c525292e82afd4d1a3d` (`Fix strict Fresh Test input typing`) is green on GitHub Actions CI #227.
-- This slice changes production cloud Fresh Test from a synchronous AgentCore Runtime request to an acknowledged background Runtime task so the API Lambda/HTTP API request does not need to remain open for the duration of browser/model execution.
+- Incoming head `21f45d35b4a98f569f45c34286a2aabe265fc92a` (`Run cloud Fresh Tests asynchronously`) is green on GitHub Actions CI #228.
+- This slice closes the UX gap introduced by asynchronous Fresh Test submission: the automation page now follows the durable Fresh Test state automatically until it reaches a terminal/attention result, including the brief acknowledgement-to-run-creation gap.
 - GitHub Actions on the exact new head is authoritative. No pass is claimed until deterministic lock verification, frozen install, strict type/build checks, production packaging/deployment contracts, and the full test suite complete successfully.
 
-## 2026-08-22 — decouple cloud Fresh Test from the control-plane HTTP timeout
+## 2026-08-22 — follow asynchronous Fresh Test results in the product UX
 
-The live-deployment audit found a concrete vertical-path blocker: `AwsAgentCoreFreshTestExecutionPort` synchronously awaited the complete AgentCore browser/model test, but the production control-plane Lambda is bounded to 29 seconds and its API Gateway HTTP API integration is bounded to 30 seconds. A valid browser workflow can easily exceed that duration, causing the user-facing request to fail even while the execution plane is healthy.
+The preceding production change correctly decoupled cloud Fresh Test execution from the 29–30 second control-plane HTTP timeout by returning an AgentCore `ACCEPTED` acknowledgement while the durable test continued in the Runtime. The product page, however, still rendered one server snapshot after that acknowledgement. A legitimate >30 second test could therefore finish successfully in AgentCore while the user continued to see stale in-progress or even pre-run state until a manual refresh.
 
-Production Fresh Test submission now has an explicit `ACCEPTED` result. The control plane sends the authenticated test request to AgentCore Runtime and returns as soon as Runtime has accepted the stable server-owned run identity. The Runtime host starts the existing `AwsFreshTestRunHandler` as a background task, while durable run/checkpoint creation, automation locking, BYOK preflight, browser execution, verification, and final `READY_TO_PUBLISH` transition remain owned by the existing execution path. Local/mock Fresh Test remains synchronous for deterministic tests and development.
+The automation detail page now polls only while the latest Fresh Test is genuinely in progress, or while a just-accepted submission has not yet become visible in durable run history. It refreshes every five seconds for at most five minutes, then stops with an explicit manual-refresh/diagnostics fallback. Once the durable run becomes `SUCCEEDED`, `WAITING_FOR_HUMAN`, `FAILED`, `CANCELED`, or `SKIPPED`, polling stops automatically and the existing correction/publish/human-attention UX becomes visible.
 
-The Runtime keeps a process-local map keyed by a tenant/user-scoped opaque fresh-test task identity to suppress duplicate task starts in one Runtime process. That map is not execution authority: replacement/concurrent Runtime processes still converge through the existing durable run occurrence key and automation lease. The Runtime returns only `{ kind: "ACCEPTED", runId }`; tenant IDs, workload tokens, BYOK material, Browser Profile references, and provider/browser errors are not returned.
+The Fresh Test form is also suppressed while that poll state is active. This avoids encouraging the user to create a second intentional Fresh Test merely because the first asynchronous run has not finished yet; cross-process execution safety still remains with the existing durable occurrence key and automation lock.
 
 ### Review: security, tenancy, idempotency, concurrency, retry, verification, cost, observability, recovery
 
-- **Security:** the acceptance response contains only the server-created run ID already used by the authenticated product flow. Tenant identity and the AgentCore workload token remain out of the payload/response, and detached task failures emit only a fixed event name.
-- **Tenant isolation:** Runtime user identity still comes from AgentCore's trusted `runtimeUserId`; the configured tenant is checked before invocation, and the background-task key includes the trusted ownership scope.
-- **Idempotency/concurrency:** identical submissions use the same Runtime session/task identity. Process-local duplicate suppression reduces duplicate work, while the durable `automation:test:runId` occurrence key and automation lock remain the cross-process authority.
-- **Retry/timeout:** no new execution retry is added. The API request is now short-lived; browser/model work continues under the Runtime's existing long-running execution timeout, bounded workflow retries, and lease renewal.
-- **Side-effect verification:** unchanged. The same immutable workflow and verification-before-success rules run inside the existing Fresh Test handler.
-- **Cost:** the change prevents API/Lambda timeouts from causing unnecessary user resubmission. Process-local duplicate suppression also avoids obvious same-container duplicate execution attempts.
-- **Observability:** Runtime health reports busy while either capture collection or Fresh Test background tasks are active. Detached failures log only a fixed `fresh_test_task_failed` event; durable run diagnostics remain the authoritative user-visible state.
-- **User recovery:** a submission acknowledgement is not treated as test success. Publication still requires a durable successful `FRESH_TEST` run for the latest immutable workflow version.
+- **Security:** polling contains no new identifiers, secrets, browser/profile state, BYOK material, or provider errors. It only re-renders the same authenticated sanitized automation/run views already available on the page.
+- **Tenant isolation:** every refresh still executes through the Cognito-authenticated server control-plane client; no tenant/user identity moves into browser-supplied state.
+- **Idempotency/concurrency:** no execution authority changes. The page merely observes durable state and suppresses an obvious duplicate-submit UX while a Fresh Test is active; run occurrence identity and the automation lease remain authoritative.
+- **Retry/timeout:** no browser/model retry was added. UI polling is bounded to 60 attempts at five-second cadence and stops after five minutes.
+- **Side-effect verification:** unchanged. A Fresh Test is still publishable only after the existing durable verification-before-success path returns `SUCCEEDED` for the latest immutable workflow.
+- **Cost:** worst-case polling is bounded. Each refresh reuses the existing automation-detail reads; the five-second cadence is intentionally slower than capture-finalization polling because cloud browser/model tests are materially longer-running.
+- **Observability:** users now see durable status transitions without having to infer whether the accepted request is still executing. Run diagnostics remain the detailed source of truth.
+- **User recovery:** `WAITING_FOR_HUMAN` and failed Fresh Tests automatically surface their existing repair/correction path when the durable state changes; polling itself never retries execution.
 
 ### Validation added
 
-- AWS unit coverage requires the cloud Fresh Test port to accept the new acknowledgement shape and reject an acknowledgement for a different run ID.
-- Coverage verifies stable Runtime session/background-task identities and cross-tenant rejection before AgentCore invocation.
-- The AgentCore Runtime production host now routes `FRESH_TEST` requests into the background task path and includes those tasks in `HealthyBusy` health state.
-- Existing full CI remains required, including AgentCore Runtime packaging; this ensures the modified host and compiled AWS exports are present in the deployable ZIP.
+- Web unit coverage proves polling starts for a running Fresh Test, covers the post-acknowledgement/pre-run visibility gap, stops for terminal/attention/correction states, and stays off on unrelated pages with no Fresh Test.
+- Poll interval and maximum attempts are tested as bounded and long enough to cover the >30 second cloud-runtime scenario that motivated asynchronous submission.
+- Next.js production build remains part of `pnpm check`, so the new client poller/server component integration must compile through the actual deployment build.
 
 ## Current release/deployment state
 
 The repository has deterministic production packages for AgentCore Runtime, control-plane/capture/dispatcher Lambda entrypoints, and the Next.js standalone Lambda. Release artifacts are uploaded create-only to a versioned S3 bucket and deployed by exact `VersionId`. The protected deployment workflow validates source before acquiring short-lived AWS credentials through GitHub OIDC, deploys stacks in dependency order, retains no GitHub Actions artifacts, and runs a public/auth-boundary smoke after deployment.
 
-The intended AWS path is: Cognito email or optional Google sign-in -> BYOK -> Live View capture -> compile/inspect -> AgentCore Fresh Test submission -> durable Fresh Test execution/result -> publish with schedule + explicitly non-secret recurring capture inputs -> EventBridge scheduled dispatch -> AgentCore Browser/OpenAI execution -> verification -> semantic run history/SES -> bounded human attention -> secure target-auth takeover/resume.
+The intended AWS path is: Cognito email or optional Google sign-in -> BYOK -> Live View capture -> compile/inspect -> AgentCore Fresh Test submission -> automatically observed durable Fresh Test result -> publish with schedule + explicitly non-secret recurring capture inputs -> EventBridge scheduled dispatch -> AgentCore Browser/OpenAI execution -> verification -> semantic run history/SES -> bounded human attention -> secure target-auth takeover/resume.
 
 ## Next product milestones
 
 1. Run the protected deployment workflow and require the live public/auth smoke gate to pass against a real AWS environment.
-2. Exercise a Fresh Test that intentionally runs longer than 30 seconds and verify the web/control-plane request returns promptly while the durable run continues to completion in AgentCore Runtime.
+2. Exercise a Fresh Test that intentionally runs longer than 30 seconds and verify the web/control-plane request returns promptly, the page automatically follows the durable run, and the final `SUCCEEDED`/attention result appears without manual refresh.
 3. If Google sign-in is part of the demo, create the Google OAuth client and Secrets Manager secret, deploy with only its client ID + secret ARN, complete one real Google sign-in, then run `scripts/verify-google-demo-user.sh` before relying on SES evidence.
 4. Execute the controlled interactive vertical demo from `outputs.webOrigin`: sign in -> BYOK -> Live View capture -> compile/inspect -> Fresh Test -> publish -> scheduled execution -> semantic diagnostics/history/email -> target-auth takeover/resume.
 5. Fix concrete defects exposed by the live environment before adding more infrastructure or recovery depth.
@@ -73,6 +72,7 @@ The intended AWS path is: Cognito email or optional Google sign-in -> BYOK -> Li
 ## Parked limitations / known risks
 
 - Background Fresh Test duplicate suppression is process-local; durable run occurrence identity and the automation lease remain the cross-process authority. Harden only if live Runtime replacement demonstrates a concrete duplicate-start defect.
+- Fresh Test page polling is bounded to five minutes; longer tests remain valid and can be followed through manual refresh/run diagnostics rather than keeping an unbounded browser polling loop alive.
 - Live OpenAI, SES, Cognito, AgentCore Browser/Profile/Runtime behavior still requires real AWS validation; deterministic CI and anonymous deployment smoke are not substitutes for a real authenticated lifecycle.
 - Google federation still requires a real Google OAuth web client and a Secrets Manager secret; CI validates the infrastructure and verification tooling but cannot prove a live external OAuth exchange without deployment-owned credentials.
 - Capture structural verification is intentionally coarse and content-redacted. Highly dynamic pages may require recapture or a future explicit user-authored effect assertion; do not silently weaken verification.
