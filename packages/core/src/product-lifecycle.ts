@@ -360,7 +360,7 @@ export class AutomationProductLifecycleService {
       scheduledAt: request.scheduledAt,
       runId: request.runId,
       ...(request.runtimeVariables
-        ? { runtimeVariables: copyRuntimeVariables(request.runtimeVariables) }
+        ? { runtimeVariables: structuredClone(request.runtimeVariables) }
         : {}),
     });
     if (preparation.kind !== "READY") {

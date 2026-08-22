@@ -24,8 +24,9 @@ sign in -> dashboard -> create -> cloud capture -> persisted Browser Profile + t
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
 - Incoming head `0c141c4a078d28002adb8bc3ec8e4cf1aaeeefb7` (`Expose privacy-safe capture runtime inputs`) is green on GitHub Actions CI #216.
-- CI #216 is the authoritative baseline: deterministic lock verification, frozen installation, strict checks/builds, production packaging/deployment contracts, and the full test suite succeeded.
-- GitHub Actions on the exact new head remains authoritative. No pass is claimed for the current slice until that exact-head run completes successfully.
+- Normal implementation head `893092dac9cd313462e4de90253c6328ca92af8a` reached CI #217. Deterministic lock verification and frozen installation passed, then `pnpm check` failed on one strict `exactOptionalPropertyTypes` construction in `AutomationProductLifecycleService.dispatchOccurrence`: the helper result remained `Readonly<Record<string, unknown>> | undefined` even inside the conditional property spread.
+- The corrective change constructs that property directly from the already-narrowed `request.runtimeVariables` using `structuredClone`; no compiler setting or check is weakened.
+- GitHub Actions on the exact corrective head remains authoritative. No pass is claimed until that exact-head run completes successfully.
 
 ## 2026-08-22 — seed production scheduled checkpoints from compiled workflow inputs
 
@@ -51,6 +52,7 @@ The local product lifecycle now delegates scheduled checkpoint creation to the s
 - Coordinator tests prove a READY scheduled run checkpoints both graph `initialVariables` and invocation runtime variables before browser execution.
 - A blocked scheduled run proves the same variables survive into the durable `WAITING_FOR_HUMAN` checkpoint.
 - Existing local product-lifecycle coverage still proves scheduled TYPE execution receives both captured literals and per-run runtime values, now through the same coordinator-owned seeding path.
+- CI #217 root-caused one strict optional-property construction issue before tests ran; the corrective commit changes only that typed construction.
 - Exact-head GitHub Actions must prove strict TypeScript/Next.js builds, packaging/deployment contracts, and the full suite.
 
 ## Current release/deployment state
