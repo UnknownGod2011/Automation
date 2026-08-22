@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { parseFreshTestRuntimeInputForm } from "./fresh-test-input-form";
+import {
+  freshTestRuntimeInputPresentation,
+  parseFreshTestRuntimeInputForm,
+} from "./fresh-test-input-form";
 
 const requirements = [
   { key: "capture_input_1" },
@@ -72,5 +75,21 @@ describe("fresh-test runtime input form", () => {
   it("rejects malformed or duplicate trusted requirements", () => {
     expect(parseFreshTestRuntimeInputForm(new FormData(), [{ key: "customer.email" }])).toBeNull();
     expect(parseFreshTestRuntimeInputForm(new FormData(), [{ key: "capture_input_1" }, { key: "capture_input_1" }])).toBeNull();
+  });
+
+  it("builds the Fresh Test example from exactly the trusted required keys", () => {
+    expect(freshTestRuntimeInputPresentation(requirements)).toEqual({
+      required: true,
+      example: JSON.stringify({ capture_input_1: "", capture_input_7: "" }, null, 2),
+    });
+  });
+
+  it("does not suggest arbitrary JSON when the workflow requires no runtime input", () => {
+    expect(freshTestRuntimeInputPresentation([])).toEqual({ required: false, example: "" });
+  });
+
+  it("fails closed when the trusted requirements are malformed", () => {
+    expect(freshTestRuntimeInputPresentation([{ key: "customer.email" }])).toBeNull();
+    expect(freshTestRuntimeInputPresentation([{ key: "capture_input_1" }, { key: "capture_input_1" }])).toBeNull();
   });
 });

@@ -7,6 +7,43 @@ export interface FreshTestRuntimeInputRequirement {
   key: string;
 }
 
+export interface FreshTestRuntimeInputPresentation {
+  required: boolean;
+  example: string;
+}
+
+function trustedRuntimeInputKeys(
+  requirements: readonly FreshTestRuntimeInputRequirement[],
+): readonly string[] | null {
+  if (requirements.length > MAX_RUNTIME_INPUTS) return null;
+
+  const allowed = new Set<string>();
+  const keys: string[] = [];
+  for (const requirement of requirements) {
+    if (!CAPTURE_RUNTIME_INPUT.test(requirement.key) || allowed.has(requirement.key)) return null;
+    allowed.add(requirement.key);
+    keys.push(requirement.key);
+  }
+  return keys;
+}
+
+/**
+ * Produces the Fresh Test form shape from the same closed trusted requirement set
+ * used by the server-side parser. The UI therefore never suggests arbitrary
+ * workflow variable names that the mutation boundary would reject.
+ */
+export function freshTestRuntimeInputPresentation(
+  requirements: readonly FreshTestRuntimeInputRequirement[],
+): FreshTestRuntimeInputPresentation | null {
+  const keys = trustedRuntimeInputKeys(requirements);
+  if (!keys) return null;
+  if (keys.length === 0) return { required: false, example: "" };
+  return {
+    required: true,
+    example: JSON.stringify(Object.fromEntries(keys.map((key) => [key, ""])), null, 2),
+  };
+}
+
 /**
  * Parses the existing Fresh Test JSON field against the closed set of unresolved
  * capture-generated inputs resolved from trusted workflow inspection. The web
@@ -16,13 +53,9 @@ export function parseFreshTestRuntimeInputForm(
   form: FormData,
   requirements: readonly FreshTestRuntimeInputRequirement[],
 ): Readonly<Record<string, string>> | null | undefined {
-  if (requirements.length > MAX_RUNTIME_INPUTS) return null;
-
-  const allowed = new Set<string>();
-  for (const requirement of requirements) {
-    if (!CAPTURE_RUNTIME_INPUT.test(requirement.key) || allowed.has(requirement.key)) return null;
-    allowed.add(requirement.key);
-  }
+  const keys = trustedRuntimeInputKeys(requirements);
+  if (!keys) return null;
+  const allowed = new Set(keys);
 
   const entries = form.getAll("runtimeVariables");
   if (entries.length > 1 || (entries.length === 1 && typeof entries[0] !== "string")) return null;
@@ -48,7 +81,7 @@ export function parseFreshTestRuntimeInputForm(
 
   const values: Record<string, string> = {};
   let totalLength = 0;
-  for (const runtimeKey of allowed) {
+  for (const runtimeKey of keys) {
     const value = record[runtimeKey];
     if (typeof value !== "string" || value.length > MAX_VALUE_LENGTH) return null;
     totalLength += value.length;
