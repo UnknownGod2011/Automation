@@ -215,7 +215,33 @@ export function latestFreshTestFeedback(runs: readonly RunSummaryView[]): FreshT
 
 export function automationPhase(automation: AutomationSummaryView): string {
   if (automation.needsAttention) return "Needs attention";
-  if (automation.status === "ACTIVE") return "Published";
-  if (automation.publishedWorkflowVersion !== undefined) return "Published";
-  return "Draft";
+
+  switch (automation.status) {
+    case "DRAFT":
+      return "Draft";
+    case "CAPTURING":
+      return "Capturing";
+    case "COMPILING":
+      return "Compiling";
+    case "READY_TO_TEST":
+      return "Ready to test";
+    case "TESTING":
+      return "Testing";
+    case "READY_TO_PUBLISH":
+      return "Ready to publish";
+    case "ACTIVE":
+      return "Published";
+    case "RUNNING":
+      return "Running";
+    case "PAUSED":
+      return "Paused";
+    case "NEEDS_AUTH":
+      return "Needs sign-in";
+    case "NEEDS_API_KEY":
+      return "Needs API key";
+    case "NEEDS_ATTENTION":
+      return "Needs attention";
+    case "DISABLED":
+      return "Disabled";
+  }
 }

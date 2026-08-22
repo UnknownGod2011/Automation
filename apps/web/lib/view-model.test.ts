@@ -45,10 +45,40 @@ function published(schedule: NonNullable<AutomationSummaryView["schedule"]>, ove
 }
 
 describe("web view model", () => {
-  it("distinguishes draft, published, and attention states", () => {
-    expect(automationPhase(automation)).toBe("Draft");
-    expect(automationPhase({ ...automation, status: "ACTIVE", publishedWorkflowVersion: 3 })).toBe("Published");
-    expect(automationPhase({ ...automation, status: "NEEDS_ATTENTION", needsAttention: true })).toBe("Needs attention");
+  it("renders every durable automation lifecycle state truthfully", () => {
+    const cases: ReadonlyArray<[AutomationSummaryView["status"], string]> = [
+      ["DRAFT", "Draft"],
+      ["CAPTURING", "Capturing"],
+      ["COMPILING", "Compiling"],
+      ["READY_TO_TEST", "Ready to test"],
+      ["TESTING", "Testing"],
+      ["READY_TO_PUBLISH", "Ready to publish"],
+      ["ACTIVE", "Published"],
+      ["RUNNING", "Running"],
+      ["PAUSED", "Paused"],
+      ["NEEDS_AUTH", "Needs sign-in"],
+      ["NEEDS_API_KEY", "Needs API key"],
+      ["NEEDS_ATTENTION", "Needs attention"],
+      ["DISABLED", "Disabled"],
+    ];
+
+    for (const [status, label] of cases) {
+      expect(
+        automationPhase({
+          ...automation,
+          status,
+          ...(status === "ACTIVE" || status === "RUNNING" || status === "PAUSED" || status === "DISABLED"
+            ? { publishedWorkflowVersion: 3 }
+            : {}),
+        }),
+      ).toBe(label);
+    }
+
+    expect(automationPhase({ ...automation, status: "ACTIVE", publishedWorkflowVersion: 3, needsAttention: true })).toBe(
+      "Needs attention",
+    );
+    expect(automationPhase({ ...automation, status: "PAUSED", publishedWorkflowVersion: 3 })).not.toBe("Published");
+    expect(automationPhase({ ...automation, status: "DISABLED", publishedWorkflowVersion: 3 })).not.toBe("Published");
   });
 
   it("formats normalized schedules without exposing provider syntax when it is recognized", () => {
