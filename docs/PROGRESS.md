@@ -8,74 +8,67 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end corre
 
 ## Incoming validation
 
-- Incoming PR #1 head: `a0993bc28aad023520f3f4129b89471dc8b1ffef` (`Fence workflow authoring from published execution`).
-- GitHub Actions CI #241 completed successfully on that exact head before this slice began.
+- Incoming PR #1 head: `b8523b26a5d84d95e3e4a8aa06f5d82b10b053cd` (`Align workflow revision regression coverage`).
+- GitHub Actions CI #243 completed successfully on that exact head before this slice began.
 - PR #1 remains open, draft, mergeable, and unmerged.
 - Deterministic pnpm lock verification, frozen installation, strict TypeScript/Next.js validation, production packaging, AWS release/deployment/demo/OIDC contracts, and the full test suite remain mandatory gates.
 
-## This slice — make workflow revision explicit and execution-safe
+## This slice — align capture controls with the safe workflow-revision lifecycle
 
-### Product gap closed
+### Product defect closed
 
-The previous slice correctly prevented an `ACTIVE`, `PAUSED`, `RUNNING`, or human-attention automation from silently reopening Capture while its production schedule could still execute. That safety fence also left a normal product need incomplete: a user who had successfully tested or already published a workflow had no supported path to teach a corrected workflow version.
+The server-side authoring boundary already correctly requires a published automation to be disabled before a replacement workflow can be captured, and it already prevents a second authoritative capture while one is active. The automation detail page did not reflect those rules: it rendered **Open cloud capture** even while a durable capture was already active and while lifecycle states such as `ACTIVE`, `PAUSED`, `RUNNING`, or human-attention states would intentionally reject capture.
 
-The existing schedule lifecycle already provides the correct production fence for a published automation. `disable()` first persists durable `DISABLED` state and only then disables EventBridge Scheduler. A stale Scheduler delivery therefore reaches execution preflight after the automation is already non-executable. This slice reuses that boundary rather than creating another cross-system transaction or recovery state machine.
+That mismatch was safe at the backend but poor product behavior: the UI invited requests the product was designed to refuse, obscuring the newly added disable → revise → retest → republish flow.
 
 ### Changes
 
-- `canAuthorWorkflowCapture()` now treats `READY_TO_PUBLISH` and `DISABLED` as safe authoring states in addition to `DRAFT`, `COMPILING`, and `READY_TO_TEST`.
-- `READY_TO_PUBLISH` is safe because no production schedule has been activated yet; the user may return to Capture to correct a tested plan instead of being forced to publish it first.
-- A published automation becomes editable only after the user explicitly disables it through the existing schedule lifecycle. `ACTIVE`, `RUNNING`, `PAUSED`, target-auth/credential/attention states, `CAPTURING`, and `TESTING` remain blocked from capture.
-- Starting a new capture from `DISABLED` preserves the existing immutable published workflow version, schedule metadata, Browser Profile reference, and run history while moving the automation into the new revision's `COMPILING` state after the trace is accepted.
-- Compilation still requires exactly `COMPILING`; the revision creates a new immutable workflow version, requires a fresh test, and must pass the existing latest-successfully-tested publish gate before Scheduler can be enabled again.
-- Republish continues to replace stale scheduled non-secret input configuration with the values validated against the newly compiled graph.
-- The AWS AgentCore capture starter automatically consumes the expanded provider-neutral policy, so it still rejects executable states before allocating Browser compute or signing Live View.
+- Added `captureLaunchPresentation()` in the web boundary.
+- The helper delegates authoring eligibility to the provider-neutral `canAuthorWorkflowCapture()` policy rather than duplicating a second list of allowed states.
+- An existing active capture always suppresses a second launch button and keeps the user on continue/cancel controls for the authoritative session.
+- `ACTIVE` and `PAUSED` published automations now explain that explicit Disable is required before teaching a replacement workflow; Pause alone does not reopen authoring.
+- `RUNNING` and human-attention states now explain that the current execution/recovery state must be resolved before revision.
+- `DISABLED` explicitly tells the user that the automation is safe to revise and exposes the capture launch action.
+- Overlapping `CAPTURING`/`TESTING` lifecycle phases remain blocked from starting another capture.
+- No execution-plane, scheduling, recovery, persistence, IAM, browser, or model behavior changed.
 
 ### Security / tenant isolation
 
-- Ownership validation remains tenant/user scoped and independent of lifecycle state.
-- No client may turn an `ACTIVE` automation into authoring state merely by calling Capture; explicit schedule disablement remains the prerequisite for published revisions.
-- Browser Profile references, session IDs, Live View capability material, BYOK secrets, workload tokens, selectors, captured values, and execution identities remain server-side.
-- Existing public-target URL policy and VPC-backed AgentCore Browser requirements are unchanged.
+- This is a presentation boundary only; authenticated tenant/user ownership continues to come from the control plane.
+- Browser session IDs, Browser Profile references, Live View capability material, BYOK secrets, workload tokens, workflow selectors, and internal execution identities remain server-side.
+- The UI does not become an authorization authority: the existing core lifecycle policy and AWS capture preflight remain the final guards against stale/tampered requests.
 
 ### Idempotency / concurrency / retry / verification
 
-- The revision path intentionally relies on the existing fail-closed disable ordering: durable `DISABLED` first, external Scheduler disable second. If the Scheduler mutation is uncertain, preflight still rejects stale delivery because durable state is authoritative.
-- A concurrent run already admitted before disablement remains governed by the existing automation execution lease; this slice does not invent an unsafe forced-cancel mechanism for in-flight browser effects.
-- Capture duplicate claims, immutable trace/version writes, fresh-test run identity, scheduled occurrence idempotency, bounded retries, and verification-before-success remain unchanged.
-- No new retry loop, lease, outbox, crash-reconciliation state, or external side-effect path was added.
+- Duplicate capture protection remains durable in the existing capture-session/current-capture authority.
+- Suppressing the second launch button reduces avoidable duplicate Browser allocation attempts but does not replace the backend conditional-write protection.
+- The safe revision ordering remains unchanged: a published automation must become durably `DISABLED` before capture is eligible, and stale Scheduler deliveries remain rejected by execution preflight.
+- Existing bounded retries, immutable workflow versions, side-effect verification, run leases, and human-recovery semantics are unchanged.
 
-### Cost / observability / user recovery
+### Cost / observability / recovery
 
-- Published revisions allocate AgentCore Browser compute only after the automation is durably non-executable.
-- Reusing the existing disable/publish lifecycle adds no AWS resource, SDK dependency, IAM permission, queue, table, metric dimension, or retained CI artifact.
-- The user can now correct a successfully tested workflow before publication, or disable a published automation, teach a replacement, fresh-test it, and republish while preserving prior versions and history.
+- Sequential duplicate capture clicks are no longer encouraged while an active capture exists, reducing unnecessary rejected control-plane calls and potential short-lived Browser allocation races.
+- No new AWS resource, SDK dependency, table, queue, metric dimension, retained CI artifact, or model/browser execution path was added.
+- User recovery remains explicit: continue/cancel the active capture, resolve an in-flight/attention state, or disable the published automation before revision.
 
 ### Regression coverage
 
-Tests prove:
+Web tests now prove:
 
-- only non-executing authoring states (`DRAFT`, `COMPILING`, `READY_TO_TEST`, `READY_TO_PUBLISH`, `DISABLED`) permit capture;
-- executable, in-flight, and human-attention states remain rejected;
-- a disabled published automation can accept a new capture while preserving its published version, schedule, Browser Profile reference, and previous scheduled-input metadata during authoring;
-- an active published automation still cannot accept capture;
-- a successfully tested but not yet published automation can return to capture for correction;
-- each immutable compile still requires a newly accepted capture.
+- `DRAFT`, `READY_TO_PUBLISH`, and `DISABLED` expose capture launch through the same core authoring policy;
+- an active durable capture suppresses another launch even when the automation status itself is authoring-eligible;
+- `ACTIVE` and `PAUSED` require Disable before workflow revision;
+- `RUNNING`, `NEEDS_AUTH`, `NEEDS_API_KEY`, and `NEEDS_ATTENTION` remain blocked;
+- overlapping capture/test lifecycle phases remain blocked;
+- existing server-resolved recording/finish identities retain their replay-safe behavior.
 
-### CI #242 root cause and corrective boundary
-
-The normal product commit `51bf7daf51828713981a93429b7d3f085ea26698` reached GitHub Actions CI #242. Deterministic lock verification, frozen install, `pnpm check`, all production package builds, and every AWS deployment/release/demo/OIDC contract passed. The full test run then exposed exactly two stale assertions in the pre-existing `workflow-authoring-state.test.ts`:
-
-- it still expected `READY_TO_PUBLISH` and `DISABLED` to be rejected even though this slice deliberately makes those non-executing states revision-capable;
-- it still matched the previous `pre-publish workflow-authoring state` error text rather than the new `non-executing workflow-authoring state` contract.
-
-The new workflow-revision tests themselves passed. The corrective change updates only those stale assertions and this progress record; production behavior and CI strictness are unchanged. Exact-head GitHub Actions remains authoritative, so the corrective head is not considered validated until its CI run completes successfully.
+Exact-head GitHub Actions is authoritative. This slice is not considered validated until CI completes successfully on the final published commit.
 
 ## Known production risks intentionally left visible
 
 - VPC-mode AgentCore Browser is required by deployment, but real subnet/route/DNS/security-group/firewall policy still needs live proof that private/link-local/control-plane targets stay unreachable after DNS resolution and redirects.
 - Live AWS/Cognito/Google/SES/AgentCore integrations are structurally tested with fakes and deployment contracts but still need the controlled real environment demonstration.
-- Workflow revision intentionally does not force-cancel an execution already admitted before disablement. The existing execution lease/immutable version keeps that run isolated; operators/users should wait for or resolve an in-flight run before teaching a replacement when side effects could conflict.
+- Workflow revision intentionally does not force-cancel an execution already admitted before disablement. The existing execution lease/immutable version keeps that run isolated; users should let or resolve an in-flight side-effecting run before teaching its replacement.
 - An abandoned browser may survive until its bounded AgentCore session expiry if post-cancellation cleanup is uncertain; durable cancellation still prevents its trace/profile from becoming authoritative.
 - Same-provider BYOK key rotation remains opt-in; the platform does not rotate keys to evade provider quotas/rate limits.
 - Recurring secret typed workflow inputs remain unsupported by design; if the live product needs them, they require vault-backed secret references rather than ordinary automation metadata.
@@ -89,11 +82,11 @@ Run the protected real AWS deployment and controlled vertical demonstration usin
 1. deploy immutable artifacts and pass the live public/auth smoke;
 2. sign in through Cognito/Google and verify the trusted notification identity;
 3. configure BYOK;
-4. start one Live View capture, authenticate, optionally verify **Cancel capture & start over**, then complete capture, compile, and inspect;
-5. run a Fresh Test lasting more than 30 seconds and confirm asynchronous UI progression to its durable result;
-6. verify correction before first publish by returning from `READY_TO_PUBLISH` to Capture, then fresh-test the replacement;
-7. approve/publish with recurrence/timezone and any explicitly non-secret recurring inputs;
-8. verify published revision requires explicit Disable before Capture, then teach/test/republish a new immutable version while prior history remains intact;
+4. start one Live View capture and confirm a second capture launch is not offered while it is active; optionally verify Cancel capture & start over;
+5. complete capture, compile, inspect, and run a Fresh Test lasting more than 30 seconds while the UI follows its durable result;
+6. verify correction before first publish from `READY_TO_PUBLISH`;
+7. publish with recurrence/timezone and any explicitly non-secret recurring inputs;
+8. confirm published `ACTIVE`/`PAUSED` state does not offer capture, then Disable and verify capture becomes available for revision;
 9. observe Scheduler → SQS → Step Functions → AgentCore Runtime execution, verification, history, CloudWatch, and SES;
 10. deliberately expire target authentication, use bounded secure Live View repair, resume, and verify the post-resume terminal outcome.
 
