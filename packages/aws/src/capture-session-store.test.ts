@@ -33,15 +33,19 @@ function item(value: CaptureSessionRecord): Record<string, unknown> {
 }
 
 describe("AwsDynamoCaptureSessionStore", () => {
-  it("atomically creates capture metadata with a current-capture pointer and uses strongly consistent reads", async () => {
+  it("atomically creates capture metadata with a guarded current-capture pointer and uses strongly consistent reads", async () => {
     const client = new FakeClient();
     const store = new AwsDynamoCaptureSessionStore(client, "state-table");
     await store.putStarted(record);
     client.responses.push(item(record));
     await expect(store.get(scope, "capture-1")).resolves.toEqual(record);
     expect(client.commands[0]?.constructor.name).toBe("TransactWriteCommand");
-    const created = client.commands[0] as { input?: { TransactItems?: unknown[] } };
+    const created = client.commands[0] as { input?: { TransactItems?: Array<{ Put?: { Item?: Record<string, unknown>; ConditionExpression?: string; ExpressionAttributeValues?: Record<string, unknown> } }> } };
     expect(created.input?.TransactItems).toHaveLength(2);
+    const current = created.input?.TransactItems?.[1]?.Put;
+    expect(current?.Item).toMatchObject({ captureSessionId: "capture-1", expiresAt: record.expiresAt });
+    expect(current?.ConditionExpression).toContain("expiresAt <= :startedAt");
+    expect(current?.ExpressionAttributeValues).toEqual({ ":startedAt": record.startedAt });
     expect(client.commands[1]?.constructor.name).toBe("GetCommand");
     expect((client.commands[1] as { input?: { ConsistentRead?: boolean } }).input?.ConsistentRead).toBe(true);
   });
@@ -49,7 +53,7 @@ describe("AwsDynamoCaptureSessionStore", () => {
   it("resolves only the current STARTED capture and keeps browser/profile fields behind the store boundary", async () => {
     const client = new FakeClient();
     client.responses.push(
-      { Item: { entity: "CaptureSessionCurrent", automationId: "auto-1", captureSessionId: "capture-1" } },
+      { Item: { entity: "CaptureSessionCurrent", automationId: "auto-1", captureSessionId: "capture-1", expiresAt: record.expiresAt } },
       item(record),
     );
     const store = new AwsDynamoCaptureSessionStore(client, "state-table");
@@ -63,7 +67,7 @@ describe("AwsDynamoCaptureSessionStore", () => {
   it("returns no active capture when the current pointer resolves to a completed session", async () => {
     const client = new FakeClient();
     client.responses.push(
-      { Item: { entity: "CaptureSessionCurrent", automationId: "auto-1", captureSessionId: "capture-1" } },
+      { Item: { entity: "CaptureSessionCurrent", automationId: "auto-1", captureSessionId: "capture-1", expiresAt: record.expiresAt } },
       item({ ...record, status: "COMPLETED", traceId: "trace-1", completedAt: "2026-08-20T00:10:00.000Z" }),
     );
     const store = new AwsDynamoCaptureSessionStore(client, "state-table");
@@ -71,17 +75,20 @@ describe("AwsDynamoCaptureSessionStore", () => {
     await expect(store.activeForAutomation(scope, "auto-1")).resolves.toBeNull();
   });
 
-  it("atomically commits completion and the latest-trace pointer", async () => {
+  it("atomically commits completion, latest-trace pointer, and release of the exact current-capture claim", async () => {
     const client = new FakeClient();
     client.responses.push(item(record), {});
     const store = new AwsDynamoCaptureSessionStore(client, "state-table");
     await expect(store.complete(scope, "capture-1", "trace-1", "2026-08-20T00:10:00.000Z")).resolves.toBe("COMPLETED");
     expect(client.commands[1]?.constructor.name).toBe("TransactWriteCommand");
-    const transaction = client.commands[1] as { input?: { TransactItems?: unknown[] } };
-    expect(transaction.input?.TransactItems).toHaveLength(2);
+    const transaction = client.commands[1] as { input?: { TransactItems?: Array<{ Delete?: { ConditionExpression?: string; ExpressionAttributeValues?: Record<string, unknown> } }> } };
+    expect(transaction.input?.TransactItems).toHaveLength(3);
+    const release = transaction.input?.TransactItems?.[2]?.Delete;
+    expect(release?.ConditionExpression).toBe("captureSessionId = :captureSessionId");
+    expect(release?.ExpressionAttributeValues).toEqual({ ":captureSessionId": "capture-1" });
   });
 
-  it("classifies a lost conditional race as replay only for the same trace", async () => {
+  it("classifies a lost conditional completion race as replay only for the same trace", async () => {
     const client = new FakeClient();
     const conditional = Object.assign(new Error("lost race"), { name: "TransactionCanceledException" });
     client.responses.push(

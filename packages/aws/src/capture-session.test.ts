@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AutomationRecord } from "@automation/contracts";
-import { InMemoryCaptureSessionStore } from "@automation/core";
+import { InMemoryCaptureSessionStore, type CaptureSessionRecord, type OwnershipScope } from "@automation/core";
 import {
   AgentCoreCaptureSessionStarter,
   profileRef,
@@ -34,7 +34,7 @@ class FakeDataApi implements AgentCoreBrowserDataApi {
 
   async start(input: AgentCoreBrowserSessionStartInput) {
     this.starts.push(structuredClone(input));
-    return { sessionId: "session123" };
+    return { sessionId: `session${this.starts.length}` };
   }
   async save(input: AgentCoreBrowserSessionSaveInput) { this.saves.push(structuredClone(input)); }
   async stop(browserIdentifier: string, sessionId: string) { this.stops.push({ browserIdentifier, sessionId }); }
@@ -51,10 +51,31 @@ class FakeLiveViewSigner implements AgentCoreBrowserLiveViewSigner {
   }
 }
 
+class ActiveInMemoryCaptureSessionStore extends InMemoryCaptureSessionStore {
+  private current: CaptureSessionRecord | null = null;
+
+  override async putStarted(record: CaptureSessionRecord): Promise<void> {
+    await super.putStarted(record);
+    this.current = structuredClone(record);
+  }
+
+  async activeForAutomation(requestScope: OwnershipScope, automationId: string): Promise<CaptureSessionRecord | null> {
+    const current = this.current;
+    if (
+      !current ||
+      current.status !== "STARTED" ||
+      current.tenantId !== requestScope.tenantId ||
+      current.userId !== requestScope.userId ||
+      current.automationId !== automationId
+    ) return null;
+    return structuredClone(current);
+  }
+}
+
 function starter(options: ConstructorParameters<typeof AgentCoreCaptureSessionStarter>[3] = {}) {
   const api = new FakeDataApi();
   const signer = new FakeLiveViewSigner();
-  const sessionStore = new InMemoryCaptureSessionStore();
+  const sessionStore = new ActiveInMemoryCaptureSessionStore();
   return {
     api,
     signer,
@@ -74,8 +95,42 @@ describe("AgentCoreCaptureSessionStarter", () => {
     const result = await value.start(scope, automation);
     expect(result).toEqual({ kind: "READY", captureSessionId: "capture-1", liveViewUrl: "https://bedrock-agentcore.us-west-2.amazonaws.com/live-view?signed=1", expiresAt: "2026-08-20T00:15:00.000Z" });
     expect(api.starts[0]).toMatchObject({ browserIdentifier: "aws.browser.v1", timeoutSeconds: 3_600, profileIdentifier: profileId, viewport: { width: 1_440, height: 900 } });
-    expect(signer.calls).toEqual([{ browserIdentifier: "aws.browser.v1", sessionId: "session123", expiresInSeconds: 900 }]);
-    expect(await sessionStore.get(scope, "capture-1")).toMatchObject({ browserSessionId: "session123", browserProfileRef: automation.browserProfileRef, status: "STARTED" });
+    expect(signer.calls).toEqual([{ browserIdentifier: "aws.browser.v1", sessionId: "session1", expiresInSeconds: 900 }]);
+    expect(await sessionStore.get(scope, "capture-1")).toMatchObject({ browserSessionId: "session1", browserProfileRef: automation.browserProfileRef, status: "STARTED" });
+  });
+
+  it("rejects a second live capture before allocating another AgentCore Browser session", async () => {
+    const { value, api, signer } = starter();
+    await value.start(scope, automation);
+
+    await expect(value.start(scope, automation)).rejects.toThrow(/already active/);
+    expect(api.starts).toHaveLength(1);
+    expect(signer.calls).toHaveLength(1);
+  });
+
+  it("allows a replacement after the durable active capture has expired", async () => {
+    const api = new FakeDataApi();
+    const signer = new FakeLiveViewSigner();
+    const sessionStore = new ActiveInMemoryCaptureSessionStore();
+    await sessionStore.putStarted({
+      tenantId: scope.tenantId,
+      userId: scope.userId,
+      automationId: automation.automationId,
+      captureSessionId: "capture-old",
+      browserSessionId: "session-old",
+      browserProfileRef: automation.browserProfileRef ?? "",
+      startedAt: "2026-08-19T22:00:00.000Z",
+      expiresAt: "2026-08-19T23:00:00.000Z",
+      status: "STARTED",
+    });
+    const value = new AgentCoreCaptureSessionStarter(api, signer, "aws.browser.v1", {
+      sessionStore,
+      now: () => new Date("2026-08-20T00:00:00.000Z"),
+      captureId: () => "capture-new",
+    });
+
+    await expect(value.start(scope, automation)).resolves.toMatchObject({ captureSessionId: "capture-new" });
+    expect(api.starts).toHaveLength(1);
   });
 
   it("rejects cross-tenant automation objects before creating browser compute", async () => {
@@ -104,7 +159,7 @@ describe("AgentCoreCaptureSessionStarter", () => {
     const { value, api, signer } = starter();
     signer.error = new Error("signing failed");
     await expect(value.start(scope, automation)).rejects.toThrow(/signing failed/);
-    expect(api.stops).toEqual([{ browserIdentifier: "aws.browser.v1", sessionId: "session123" }]);
+    expect(api.stops).toEqual([{ browserIdentifier: "aws.browser.v1", sessionId: "session1" }]);
   });
 
   it("rejects unsafe Live View URLs and cleans up the browser session", async () => {

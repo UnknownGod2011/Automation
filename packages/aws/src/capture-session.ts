@@ -23,6 +23,10 @@ export interface AgentCoreBrowserLiveViewSigner {
   sign(browserIdentifier: string, sessionId: string, expiresInSeconds: number): Promise<string>;
 }
 
+interface ActiveCaptureSessionReader {
+  activeForAutomation(scope: OwnershipScope, automationId: string): Promise<CaptureSessionRecord | null>;
+}
+
 export interface AgentCoreCaptureSessionStarterOptions {
   sessionStore?: CaptureSessionStore;
   controlStore?: CaptureCollectionControlStore;
@@ -60,6 +64,19 @@ function validateLiveViewUrl(value: string): string {
 
 function defaultCaptureId(): string {
   return `capture-${globalThis.crypto.randomUUID()}`;
+}
+
+function activeReader(store: CaptureSessionStore): ActiveCaptureSessionReader | null {
+  const candidate = store as CaptureSessionStore & Partial<ActiveCaptureSessionReader>;
+  return typeof candidate.activeForAutomation === "function"
+    ? { activeForAutomation: candidate.activeForAutomation.bind(candidate) }
+    : null;
+}
+
+function expirationMillis(record: CaptureSessionRecord): number {
+  const value = Date.parse(record.expiresAt);
+  if (!Number.isFinite(value)) throw new Error("durable capture session has an invalid expiry");
+  return value;
 }
 
 export class AwsAgentCoreBrowserLiveViewSigner implements AgentCoreBrowserLiveViewSigner {
@@ -115,6 +132,27 @@ export class AgentCoreCaptureSessionStarter implements CaptureSessionStarter {
       throw new Error("automation browser profile is required before capture");
     }
     const profileIdentifier = parseProfileRef(automation.browserProfileRef);
+    const startedAt = this.now();
+    const reader = activeReader(this.sessionStore);
+    if (reader) {
+      const current = await reader.activeForAutomation(scope, automation.automationId);
+      if (current) {
+        if (
+          current.tenantId !== scope.tenantId ||
+          current.userId !== scope.userId ||
+          current.automationId !== automation.automationId
+        ) {
+          throw new Error("durable active capture identity is invalid");
+        }
+        if (expirationMillis(current) > startedAt.getTime()) {
+          // Live View URLs are intentionally not persisted, so an already-active capture
+          // cannot be safely reconstructed by replaying Start. Reject before allocating
+          // another Browser and let the existing recording-control state remain authoritative.
+          throw new Error("capture session is already active for this automation");
+        }
+      }
+    }
+
     const captureSessionId = this.captureId().trim();
     if (!captureSessionId || captureSessionId.length > 160) {
       throw new Error("capture session identifier is invalid");
@@ -127,7 +165,6 @@ export class AgentCoreCaptureSessionStarter implements CaptureSessionStarter {
       this.browserIdentifier,
     );
     const resourceToken = stableResourceToken(identity);
-    const startedAt = this.now();
     const session = await this.api.start({
       browserIdentifier: this.browserIdentifier,
       name: `capture-${resourceToken.slice(0, 24)}`,

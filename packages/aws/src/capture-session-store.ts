@@ -50,7 +50,26 @@ export class AwsDynamoCaptureSessionStore implements CaptureSessionStore {
     await this.client.send(new TransactWriteCommand({
       TransactItems: [
         { Put: { TableName: this.tableName, Item: { pk: scopePk(scope), sk: sessionSk(record.captureSessionId), entity: "CaptureSession", record: structuredClone(record) }, ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } },
-        { Put: { TableName: this.tableName, Item: { pk: scopePk(scope), sk: currentSk(record.automationId), entity: "CaptureSessionCurrent", automationId: record.automationId, captureSessionId: record.captureSessionId, startedAt: record.startedAt } } },
+        {
+          Put: {
+            TableName: this.tableName,
+            Item: {
+              pk: scopePk(scope),
+              sk: currentSk(record.automationId),
+              entity: "CaptureSessionCurrent",
+              automationId: record.automationId,
+              captureSessionId: record.captureSessionId,
+              startedAt: record.startedAt,
+              expiresAt: record.expiresAt,
+            },
+            // A current capture is a per-automation concurrency guard. The legacy
+            // attribute_not_exists(expiresAt) branch permits replacement of pointers
+            // written before this guard existed; the starter's strongly-consistent
+            // preflight still rejects a live legacy capture before browser allocation.
+            ConditionExpression: "attribute_not_exists(pk) OR attribute_not_exists(expiresAt) OR expiresAt <= :startedAt",
+            ExpressionAttributeValues: { ":startedAt": record.startedAt },
+          },
+        },
       ],
     }));
   }
@@ -85,6 +104,14 @@ export class AwsDynamoCaptureSessionStore implements CaptureSessionStore {
         TransactItems: [
           { Put: { TableName: this.tableName, Item: { pk: scopePk(scope), sk: sessionSk(captureSessionId), entity: "CaptureSession", record: structuredClone(completed) }, ConditionExpression: "#record.#status = :started", ExpressionAttributeNames: { "#record": "record", "#status": "status" }, ExpressionAttributeValues: { ":started": "STARTED" } } },
           { Put: { TableName: this.tableName, Item: { pk: scopePk(scope), sk: latestSk(existing.automationId), entity: "CaptureSessionLatest", captureSessionId, traceId, completedAt } } },
+          {
+            Delete: {
+              TableName: this.tableName,
+              Key: { pk: scopePk(scope), sk: currentSk(existing.automationId) },
+              ConditionExpression: "captureSessionId = :captureSessionId",
+              ExpressionAttributeValues: { ":captureSessionId": captureSessionId },
+            },
+          },
         ],
       }));
       return "COMPLETED";
