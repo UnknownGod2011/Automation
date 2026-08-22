@@ -27,6 +27,7 @@ import {
   requiredScheduledCaptureInputs,
   validateScheduledNonSecretInputs,
 } from "./scheduled-runtime-inputs.js";
+import { normalizeAutomationTargetUrl } from "./target-url-policy.js";
 import { compileCaptureTrace } from "./workflow-compiler.js";
 
 export interface CaptureTraceRepository {
@@ -115,10 +116,7 @@ function nonEmpty(value: string, name: string): string {
 }
 
 function normalizeWebsiteUrl(value: string): string {
-  let parsed: URL;
-  try { parsed = new URL(value); } catch { throw new Error("websiteUrl must be a valid HTTP(S) URL"); }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("websiteUrl must be a valid HTTP(S) URL");
-  return parsed.toString();
+  return normalizeAutomationTargetUrl(value);
 }
 
 function assertSchedule(schedule: AutomationSchedule): void {
@@ -154,6 +152,7 @@ export class AutomationProductLifecycleService {
     if (!request.consentAcknowledged) throw new Error("explicit authorization/consent acknowledgement is required");
     const automationId = nonEmpty(request.automationId, "automationId");
     if (await this.dependencies.automations.get(request.scope, automationId)) throw new Error(`automation '${automationId}' already exists in ownership scope`);
+    const websiteUrl = normalizeWebsiteUrl(request.websiteUrl);
     const now = this.now().toISOString();
     const browserProfileRef = await this.dependencies.profiles.create(request.scope, automationId);
     const record: AutomationRecord = {
@@ -161,7 +160,7 @@ export class AutomationProductLifecycleService {
       userId: request.scope.userId,
       automationId,
       name: nonEmpty(request.name, "name"),
-      websiteUrl: normalizeWebsiteUrl(request.websiteUrl),
+      websiteUrl,
       prompt: nonEmpty(request.objective, "objective"),
       status: "DRAFT",
       browserProfileRef,
