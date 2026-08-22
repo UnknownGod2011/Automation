@@ -1,8 +1,10 @@
 import Link from "next/link";
 import type { RunSemanticStepView } from "@automation/core";
 import { WebControlPlaneError } from "../../../../../lib/control-plane-client";
+import { shouldPollRunStatus } from "../../../../../lib/run-status-readiness";
 import { createAuthenticatedWebControlPlaneClient, WebAuthError } from "../../../../../lib/server-auth";
 import { runTone } from "../../../../../lib/view-model";
+import { RunStatusPoller } from "./run-status-poller";
 
 export const dynamic = "force-dynamic";
 
@@ -48,6 +50,7 @@ export default async function RunDetailPage({
   const currentStep = run.semantic?.current;
   const failureStep = run.semantic?.failure;
   const completedSteps = run.semantic?.completed ?? [];
+  const pollRunStatus = shouldPollRunStatus({ status: run.status, ...(notice ? { notice } : {}) });
 
   return (
     <>
@@ -67,10 +70,11 @@ export default async function RunDetailPage({
         </div>
       </section>
 
-      {notice === "resume-submitted" ? <section className="card" style={{ marginBottom: 18 }}><p>Resume command submitted. Refresh this run to see the latest durable state.</p></section> : null}
+      {notice === "resume-submitted" ? <section className="card" style={{ marginBottom: 18 }}><p>Resume command submitted. This page will follow the latest durable run state automatically.</p></section> : null}
       {notice === "resume-failed" ? <section className="card" style={{ marginBottom: 18 }}><p>The resume command was not accepted. The run remains protected by its durable pause boundary.</p></section> : null}
-      {notice === "takeover-finished" ? <section className="card" style={{ marginBottom: 18 }}><p>The repaired browser profile was saved and the durable resume command was submitted. Refresh to see the latest run state.</p></section> : null}
+      {notice === "takeover-finished" ? <section className="card" style={{ marginBottom: 18 }}><p>The repaired browser profile was saved and the durable resume command was submitted. This page will follow the resumed run automatically.</p></section> : null}
       {notice === "takeover-failed" ? <section className="card" style={{ marginBottom: 18 }}><p>The repair session could not be completed. The run remains safely paused.</p></section> : null}
+      <RunStatusPoller enabled={pollRunStatus} />
 
       {run.needsHumanAttention ? (
         <section className="card stack" style={{ marginBottom: 18 }}>

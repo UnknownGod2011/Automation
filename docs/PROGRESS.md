@@ -8,59 +8,55 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end corre
 
 ## Incoming validation
 
-- Incoming PR #1 head: `b8523b26a5d84d95e3e4a8aa06f5d82b10b053cd` (`Align workflow revision regression coverage`).
-- GitHub Actions CI #243 completed successfully on that exact head before this slice began.
+- Incoming PR #1 head: `c154ea59d47b265303b35116e2bcd9e679df786b` (`Align capture controls with revision lifecycle`).
+- GitHub Actions CI #244 completed successfully on that exact head before this slice began.
 - PR #1 remains open, draft, mergeable, and unmerged.
 - Deterministic pnpm lock verification, frozen installation, strict TypeScript/Next.js validation, production packaging, AWS release/deployment/demo/OIDC contracts, and the full test suite remain mandatory gates.
 
-## This slice — align capture controls with the safe workflow-revision lifecycle
+## This slice — automatically follow durable run state after resume/repair
 
 ### Product defect closed
 
-The server-side authoring boundary already correctly requires a published automation to be disabled before a replacement workflow can be captured, and it already prevents a second authoritative capture while one is active. The automation detail page did not reflect those rules: it rendered **Open cloud capture** even while a durable capture was already active and while lifecycle states such as `ACTIVE`, `PAUSED`, `RUNNING`, or human-attention states would intentionally reject capture.
-
-That mismatch was safe at the backend but poor product behavior: the UI invited requests the product was designed to refuse, obscuring the newly added disable → revise → retest → republish flow.
+Human continuation and target-auth repair already execute asynchronously through AgentCore Runtime, but the run diagnostics page still told the user to manually refresh after `Continue workflow` or `Save repaired session & resume`. That made the final bounded-failure → human-repair → successful-resume lifecycle feel incomplete even though the durable execution machinery was already correct.
 
 ### Changes
 
-- Added `captureLaunchPresentation()` in the web boundary.
-- The helper delegates authoring eligibility to the provider-neutral `canAuthorWorkflowCapture()` policy rather than duplicating a second list of allowed states.
-- An existing active capture always suppresses a second launch button and keeps the user on continue/cancel controls for the authoritative session.
-- `ACTIVE` and `PAUSED` published automations now explain that explicit Disable is required before teaching a replacement workflow; Pause alone does not reopen authoring.
-- `RUNNING` and human-attention states now explain that the current execution/recovery state must be resolved before revision.
-- `DISABLED` explicitly tells the user that the automation is safe to revise and exposes the capture launch action.
-- Overlapping `CAPTURING`/`TESTING` lifecycle phases remain blocked from starting another capture.
-- No execution-plane, scheduling, recovery, persistence, IAM, browser, or model behavior changed.
+- Added a small web-only run-status polling policy with a 5-second cadence and a hard 5-minute maximum window.
+- Active durable run states (`QUEUED`, `PREFLIGHT`, `RUNNING`, `RETRYING`) are followed automatically.
+- A `WAITING_FOR_HUMAN` run is polled only after a trusted `resume-submitted` or `takeover-finished` server notice. Ordinary paused runs do not create background polling traffic.
+- Terminal states (`SUCCEEDED`, `FAILED`, `CANCELED`, `SKIPPED`) stop polling immediately even if the original success notice remains in the URL.
+- Added a client `RunStatusPoller` that refreshes only the current server-rendered run view; it does not call execution, browser, model, evidence, or recovery APIs directly.
+- Updated run diagnostics copy so successful resume/repair submission explains that the page will follow durable state automatically rather than asking for manual refresh.
 
 ### Security / tenant isolation
 
-- This is a presentation boundary only; authenticated tenant/user ownership continues to come from the control plane.
-- Browser session IDs, Browser Profile references, Live View capability material, BYOK secrets, workload tokens, workflow selectors, and internal execution identities remain server-side.
-- The UI does not become an authorization authority: the existing core lifecycle policy and AWS capture preflight remain the final guards against stale/tampered requests.
+- Polling only refreshes the already-authenticated run page. The browser receives no tenant/user authority, workflow node ID, resolution ID, Browser Profile reference, session ID, BYOK credential, workload token, evidence reference, or provider/browser error detail.
+- The authenticated server and control plane continue to re-resolve tenant/user/run ownership on every refresh.
+- The poller is presentation-only and cannot create a run, claim a resolution, acquire a lease, start browser/model work, or mutate durable state.
 
-### Idempotency / concurrency / retry / verification
+### Idempotency / concurrency / retry / timeout / verification
 
-- Duplicate capture protection remains durable in the existing capture-session/current-capture authority.
-- Suppressing the second launch button reduces avoidable duplicate Browser allocation attempts but does not replace the backend conditional-write protection.
-- The safe revision ordering remains unchanged: a published automation must become durably `DISABLED` before capture is eligible, and stale Scheduler deliveries remain rejected by execution preflight.
-- Existing bounded retries, immutable workflow versions, side-effect verification, run leases, and human-recovery semantics are unchanged.
+- Existing human-resolution claim IDs, execution leases, heartbeat fencing, immutable workflow versions, bounded workflow retries, and side-effect verification remain the execution authority.
+- Refreshing diagnostics is read-only and does not redeliver the resume/takeover POST command.
+- The polling window is bounded to 60 attempts at 5 seconds each (5 minutes), preventing an unbounded browser refresh loop if Runtime remains slow or unavailable.
+- A run that pauses again stops automatic polling unless a new trusted resume/repair submission occurs.
 
 ### Cost / observability / recovery
 
-- Sequential duplicate capture clicks are no longer encouraged while an active capture exists, reducing unnecessary rejected control-plane calls and potential short-lived Browser allocation races.
-- No new AWS resource, SDK dependency, table, queue, metric dimension, retained CI artifact, or model/browser execution path was added.
-- User recovery remains explicit: continue/cancel the active capture, resolve an in-flight/attention state, or disable the published automation before revision.
+- The only added cost is bounded authenticated control-plane read traffic while a run is actively progressing after user intervention.
+- No new AWS resource, SDK dependency, DynamoDB record, queue, model call, browser session, metric dimension, retained Actions artifact, or recovery subsystem was added.
+- The change improves the user recovery loop by making the terminal result visible automatically after a successful human action.
 
 ### Regression coverage
 
 Web tests now prove:
 
-- `DRAFT`, `READY_TO_PUBLISH`, and `DISABLED` expose capture launch through the same core authoring policy;
-- an active durable capture suppresses another launch even when the automation status itself is authoring-eligible;
-- `ACTIVE` and `PAUSED` require Disable before workflow revision;
-- `RUNNING`, `NEEDS_AUTH`, `NEEDS_API_KEY`, and `NEEDS_ATTENTION` remain blocked;
-- overlapping capture/test lifecycle phases remain blocked;
-- existing server-resolved recording/finish identities retain their replay-safe behavior.
+- active execution states poll;
+- an untouched `WAITING_FOR_HUMAN` run does not poll;
+- a paused run polls after a trusted resume or takeover-completion submission;
+- failed resume/takeover notices do not poll;
+- terminal states stop polling even when the original submission notice is still present;
+- the polling window remains exactly bounded to five minutes.
 
 Exact-head GitHub Actions is authoritative. This slice is not considered validated until CI completes successfully on the final published commit.
 
@@ -82,12 +78,9 @@ Run the protected real AWS deployment and controlled vertical demonstration usin
 1. deploy immutable artifacts and pass the live public/auth smoke;
 2. sign in through Cognito/Google and verify the trusted notification identity;
 3. configure BYOK;
-4. start one Live View capture and confirm a second capture launch is not offered while it is active; optionally verify Cancel capture & start over;
-5. complete capture, compile, inspect, and run a Fresh Test lasting more than 30 seconds while the UI follows its durable result;
-6. verify correction before first publish from `READY_TO_PUBLISH`;
-7. publish with recurrence/timezone and any explicitly non-secret recurring inputs;
-8. confirm published `ACTIVE`/`PAUSED` state does not offer capture, then Disable and verify capture becomes available for revision;
-9. observe Scheduler → SQS → Step Functions → AgentCore Runtime execution, verification, history, CloudWatch, and SES;
-10. deliberately expire target authentication, use bounded secure Live View repair, resume, and verify the post-resume terminal outcome.
+4. complete Live View capture, compile, inspect, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
+5. publish with recurrence/timezone and any explicitly non-secret recurring inputs;
+6. observe Scheduler → SQS → Step Functions → AgentCore Runtime execution, verification, history, CloudWatch, and SES;
+7. deliberately expire target authentication, use bounded secure Live View repair, submit resume, and confirm this diagnostics page automatically follows the run through its terminal post-resume outcome.
 
 Further engineering should be driven primarily by concrete failures from that live path, not additional recovery micro-hardening.
