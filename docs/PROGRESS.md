@@ -23,33 +23,31 @@ sign in with email or Google -> dashboard -> create -> cloud capture -> persiste
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head `fed8daa3f92b25b4a32d19c9455a033cf5cafe07` (`Sanitize automation run history`) is green on GitHub Actions CI #222.
-- This run adds optional Google federation to the Cognito deployment while retaining native email sign-in. GitHub Actions on the exact outgoing head remains authoritative; no pass is claimed until that run completes successfully.
+- Incoming head `661d26651b13dc3af2fbd7c13019088ab6198e3a` (`Add optional Google sign-in federation`) is green on GitHub Actions CI #223.
+- This run fixes Google-federated email verification propagation needed by the existing trusted SES recipient resolver. GitHub Actions on the exact outgoing head remains authoritative; no pass is claimed until that run completes successfully.
 
-## 2026-08-22 — optional Google federation for production sign-in
+## 2026-08-22 — preserve Google email verification for notifications
 
-The end goal promises Google or email sign-in, but the deployed Cognito app client previously configured only `COGNITO`. The product could therefore satisfy email/password sign-in but not the first user-journey requirement for Google federation.
+The live-deployment audit found a concrete integration defect in the new Google federation path. Cognito mapped Google's `email` claim but not its `email_verified` claim. AWS documents that mapped federated email addresses are unverified by default unless verification status is explicitly mapped from the external IdP. The production notification recipient resolver intentionally rejects unverified Cognito email addresses, so a Google user could sign in successfully yet fail to receive the run-success, run-failure, or human-attention email promised by the product lifecycle.
 
-`infra/aws/control-plane-auth.yaml` now supports an optional Google social IdP. Native Cognito email sign-in remains enabled unconditionally. Google is enabled only when both `GoogleClientId` and `GoogleClientSecretArn` are configured; a CloudFormation rule rejects a partial pair. The Google OAuth client secret is never a plaintext stack parameter. CloudFormation resolves it directly from Secrets Manager through a versionless dynamic reference when creating `AWS::Cognito::UserPoolIdentityProvider`.
-
-The ordinary deployment JSON contains only the non-secret Google client ID and Secrets Manager ARN. Deployments that omit both values remain valid and continue to expose email-only managed login, so cloud credentials are not required for CI/local validation and existing environments do not break.
+`infra/aws/control-plane-auth.yaml` now maps `email_verified: email_verified` from Google into the Cognito user profile alongside the existing email/name mappings. This preserves the trust boundary rather than weakening the resolver to accept unverified addresses. Native Cognito email sign-in remains unchanged.
 
 ### Review: security, tenancy, idempotency, concurrency, retry, verification, cost, observability, recovery
 
-- **Security:** the Google OAuth client secret stays out of Git, GitHub environment JSON, CloudFormation parameter values, Lambda environment variables, app tables, and logs. The deploy principal needs scoped `secretsmanager:GetSecretValue` only when federation is enabled.
-- **Tenant isolation:** unchanged. Federation only changes the upstream Cognito authentication method; trusted application ownership still derives user identity from the verified Cognito `sub` and tenant identity from deployment configuration.
-- **Idempotency/concurrency:** CloudFormation remains the single deployment authority. Re-applying the same IdP/client configuration is a normal stack update and does not create application runs or browser effects.
-- **Retry/timeout:** no application retry loop or timeout changes. Identity-provider provisioning failure leaves stack deployment failed rather than silently falling back from a requested Google configuration.
-- **Side-effect verification:** unchanged. Authentication configuration has no workflow execution authority.
-- **Cost:** no new steady-state compute. Enabling Google adds one Cognito user-pool identity-provider resource plus the separately managed Secrets Manager secret.
-- **Observability:** `GoogleFederationEnabled` is exposed as a non-secret stack output for deployment evidence. Secret values are never emitted.
-- **User recovery:** if Google federation is unavailable, native Cognito email sign-in remains available only when Google was not requested. A requested-but-invalid Google configuration fails deployment instead of creating a misleading partial login path.
+- **Security:** notification routing still requires a verified Cognito email. The fix propagates Google's verification claim instead of bypassing verification or trusting an address from the scheduled payload.
+- **Tenant isolation:** unchanged. Cognito `sub` remains the trusted user identifier and tenant identity remains deployment-owned; the email directory lookup is still scoped to that identity.
+- **Idempotency/concurrency:** identity-provider attribute mapping is deployment configuration only and has no run/browser execution authority.
+- **Retry/timeout:** unchanged. No new application retry loop, timeout, browser call, model call, or queue is introduced.
+- **Side-effect verification:** unchanged. Workflow effect verification remains authoritative for automation success.
+- **Cost:** no additional steady-state AWS resource or request is added; the existing Cognito user record simply contains its federated verification status.
+- **Observability:** scheduled and human-resume SES/CloudWatch reporting can now use the same trusted directory path for Google users as native Cognito users without exposing provider tokens.
+- **User recovery:** a Google-authenticated owner can receive the existing bounded failure/human-attention notifications instead of silently losing that recovery signal.
 
 ### Validation added
 
-- New no-cloud CI contract checks the conditional Google IdP, the exact Google scopes, preservation of native Cognito sign-in, Secrets Manager dynamic-reference boundary, and absence of a plaintext Google client-secret parameter.
-- CI now runs that contract alongside the existing packaging, release, deployment, demo, OIDC, type, and test gates.
-- Deployment documentation records the Secrets Manager setup and the extra least-privilege deploy-role permission required only for Google federation.
+- The no-cloud Cognito Google federation contract now requires `email_verified: email_verified` exactly once in the IdP mapping.
+- Existing checks still require the conditional Google IdP, exact OAuth scopes, native Cognito support, Secrets Manager dynamic-reference boundary, and absence of a plaintext Google client-secret parameter.
+- Exact-head GitHub Actions must still pass deterministic lock verification, frozen install, strict type/build checks, production packaging/deployment/demo/OIDC contracts, and the complete test suite.
 
 ## Current release/deployment state
 
@@ -60,7 +58,7 @@ The intended AWS path is: Cognito email or optional Google sign-in -> BYOK -> Li
 ## Next product milestones
 
 1. Run the protected deployment workflow and require the live public/auth smoke gate to pass against a real AWS environment.
-2. If Google sign-in is part of the demo, create the Google OAuth client and Secrets Manager secret, then deploy with only its client ID + secret ARN in the protected environment JSON.
+2. If Google sign-in is part of the demo, create the Google OAuth client and Secrets Manager secret, deploy with only its client ID + secret ARN, and verify the resulting federated Cognito user has both `email` and `email_verified=true` before relying on SES notification evidence.
 3. Execute the controlled interactive vertical demo from `outputs.webOrigin`: sign in -> BYOK -> Live View capture -> compile/inspect -> fresh test -> publish -> scheduled execution -> semantic diagnostics/history/email -> target-auth takeover/resume.
 4. Fix concrete defects exposed by the live environment before adding more infrastructure or recovery depth.
 5. If the demo genuinely requires a recurring secret typed value outside target-site authentication, add a distinct vault-reference runtime-input contract; never place the secret itself in scheduled plaintext inputs.

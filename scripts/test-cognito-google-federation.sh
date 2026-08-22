@@ -19,6 +19,8 @@ required = [
     "authorize_scopes: 'email profile openid'",
     "client_id: !Ref GoogleClientId",
     "client_secret: !Sub '{{resolve:secretsmanager:${GoogleClientSecretArn}:SecretString}}'",
+    "email: email",
+    "email_verified: email_verified",
     "- !If [HasGoogleFederation, !Ref AutomationGoogleIdentityProvider, !Ref 'AWS::NoValue']",
     "GoogleFederationEnabled:",
 ]
@@ -32,4 +34,6 @@ if "client_secret: !Ref" in template:
     raise SystemExit("Google OAuth client secret must be resolved from Secrets Manager, not a plaintext parameter")
 if template.count("SupportedIdentityProviders:") != 1 or template.count("- COGNITO") != 1:
     raise SystemExit("native Cognito email sign-in must remain enabled exactly once")
+if template.count("email_verified: email_verified") != 1:
+    raise SystemExit("Google email verification status must be mapped exactly once for trusted notification routing")
 PY

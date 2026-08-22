@@ -82,6 +82,7 @@ Resources:
         client_secret: !Sub '{{resolve:secretsmanager:${GoogleClientSecretArn}:SecretString}}'
       AttributeMapping:
         email: email
+        email_verified: email_verified
         name: name
 
   AutomationWebClient:
