@@ -3,9 +3,11 @@ import {
   InvokeAgentRuntimeCommand,
 } from "@aws-sdk/client-bedrock-agentcore";
 import type {
+  FreshTestExecutionResult,
   FreshTestExecutionPort,
   FreshTestRunRequest,
   FreshTestRunResult,
+  OwnershipScope,
   ScheduledRunRequest,
 } from "@automation/core";
 import {
@@ -145,7 +147,10 @@ function decodeInvocationPayload(payload: unknown): unknown {
   }
 }
 
-function parseFreshTestResult(payload: string): FreshTestRunResult {
+function parseFreshTestResult(
+  payload: string,
+  expectedRunId: string,
+): FreshTestExecutionResult {
   if (new TextEncoder().encode(payload).byteLength > MAX_RUNTIME_BODY_BYTES) {
     throw new Error("AgentCore Runtime fresh-test response is too large");
   }
@@ -159,6 +164,12 @@ function parseFreshTestResult(payload: string): FreshTestRunResult {
     throw new Error("AgentCore Runtime fresh-test response is invalid");
   }
   const record = value as Readonly<Record<string, unknown>>;
+  if (record.kind === "ACCEPTED") {
+    if (record.runId !== expectedRunId) {
+      throw new Error("AgentCore Runtime fresh-test acceptance identity is invalid");
+    }
+    return { kind: "ACCEPTED", runId: expectedRunId };
+  }
   if (record.kind === "DUPLICATE" && typeof record.run === "object" && record.run !== null) {
     return value as FreshTestRunResult;
   }
@@ -166,6 +177,19 @@ function parseFreshTestResult(payload: string): FreshTestRunResult {
     return value as FreshTestRunResult;
   }
   throw new Error("AgentCore Runtime fresh-test response has an invalid result kind");
+}
+
+export function freshTestTaskKey(input: {
+  scope: OwnershipScope;
+  automationId: string;
+  runId: string;
+}): string {
+  return scopedResourceIdentity(
+    input.scope,
+    "fresh-test-task",
+    token(input.automationId, "automationId"),
+    token(input.runId, "runId"),
+  );
 }
 
 export class AwsAgentCoreFreshTestExecutionPort implements FreshTestExecutionPort {
@@ -181,7 +205,7 @@ export class AwsAgentCoreFreshTestExecutionPort implements FreshTestExecutionPor
     this.api = api ?? new AwsSdkAgentCoreFreshTestInvokeApi(configuration.region);
   }
 
-  async execute(request: FreshTestRunRequest): Promise<FreshTestRunResult> {
+  async execute(request: FreshTestRunRequest): Promise<FreshTestExecutionResult> {
     if (request.scope.tenantId !== this.configuration.tenantId) {
       throw new Error("fresh-test ownership does not match the configured tenant");
     }
@@ -216,7 +240,7 @@ export class AwsAgentCoreFreshTestExecutionPort implements FreshTestExecutionPor
       runtimeUserId,
       payload: serialized,
     });
-    return parseFreshTestResult(response);
+    return parseFreshTestResult(response, runId);
   }
 }
 

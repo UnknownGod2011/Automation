@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { FreshTestRunRequest } from "@automation/core";
 import {
   AwsAgentCoreFreshTestExecutionPort,
+  freshTestTaskKey,
   readAwsAgentCoreFreshTestConfiguration,
   type AgentCoreFreshTestInvokeApi,
   type AgentCoreFreshTestInvokeRequest,
@@ -12,20 +13,7 @@ class FakeInvokeApi implements AgentCoreFreshTestInvokeApi {
 
   async invoke(request: AgentCoreFreshTestInvokeRequest): Promise<string> {
     this.calls.push(structuredClone(request));
-    return JSON.stringify({
-      kind: "DUPLICATE",
-      run: {
-        tenantId: "tenant-1",
-        userId: "user-1",
-        runId: "test-run-1",
-        automationId: "auto-1",
-        workflowVersion: 2,
-        occurrenceKey: "auto-1:test:test-run-1",
-        status: "SUCCEEDED",
-        scheduledAt: "2026-08-20T15:00:00.000Z",
-      },
-      checkpoint: null,
-    });
+    return JSON.stringify({ kind: "ACCEPTED", runId: "test-run-1" });
   }
 }
 
@@ -44,12 +32,12 @@ const request: FreshTestRunRequest = {
 };
 
 describe("AwsAgentCoreFreshTestExecutionPort", () => {
-  it("invokes AgentCore with trusted runtimeUserId while keeping ownership and credentials out of JSON", async () => {
+  it("submits AgentCore work asynchronously with trusted runtimeUserId while keeping ownership and credentials out of JSON", async () => {
     const api = new FakeInvokeApi();
     const port = new AwsAgentCoreFreshTestExecutionPort(configuration, api);
     const result = await port.execute(request);
 
-    expect(result.kind).toBe("DUPLICATE");
+    expect(result).toEqual({ kind: "ACCEPTED", runId: "test-run-1" });
     expect(api.calls).toHaveLength(1);
     const call = api.calls[0];
     expect(call?.runtimeArn).toBe(configuration.runtimeArn);
@@ -66,12 +54,50 @@ describe("AwsAgentCoreFreshTestExecutionPort", () => {
     expect(call?.payload).not.toContain("WorkloadAccessToken");
   });
 
-  it("derives a stable Runtime session identity from the authenticated scope and test run", async () => {
+  it("derives stable Runtime session and background-task identities from the authenticated scope and test run", async () => {
     const api = new FakeInvokeApi();
     const port = new AwsAgentCoreFreshTestExecutionPort(configuration, api);
     await port.execute(request);
     await port.execute(request);
     expect(api.calls[0]?.runtimeSessionId).toBe(api.calls[1]?.runtimeSessionId);
+    expect(
+      freshTestTaskKey({
+        scope: request.scope,
+        automationId: request.automationId,
+        runId: request.runId,
+      }),
+    ).toBe(
+      freshTestTaskKey({
+        scope: request.scope,
+        automationId: request.automationId,
+        runId: request.runId,
+      }),
+    );
+    expect(
+      freshTestTaskKey({
+        scope: { tenantId: "tenant-1", userId: "user-2" },
+        automationId: request.automationId,
+        runId: request.runId,
+      }),
+    ).not.toBe(
+      freshTestTaskKey({
+        scope: request.scope,
+        automationId: request.automationId,
+        runId: request.runId,
+      }),
+    );
+  });
+
+  it("rejects an acceptance response for a different run identity", async () => {
+    const api: AgentCoreFreshTestInvokeApi = {
+      async invoke() {
+        return JSON.stringify({ kind: "ACCEPTED", runId: "other-run" });
+      },
+    };
+    const port = new AwsAgentCoreFreshTestExecutionPort(configuration, api);
+    await expect(port.execute(request)).rejects.toThrow(
+      "AgentCore Runtime fresh-test acceptance identity is invalid",
+    );
   });
 
   it("rejects cross-tenant composition before invoking AgentCore", async () => {

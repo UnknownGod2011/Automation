@@ -47,8 +47,10 @@ export interface RotateCredentialCommand { apiKey: string; }
 export type CaptureStartResult = { kind: "READY"; captureSessionId: string; liveViewUrl: string; expiresAt: string } | { kind: "NOT_CONFIGURED"; reason: string };
 export interface CaptureSessionStarter { start(scope: OwnershipScope, automation: AutomationRecord): Promise<CaptureStartResult>; }
 export interface CaptureCompletionReader { latestCompletedForAutomation(scope: OwnershipScope, automationId: string): Promise<CaptureSessionRecord | null>; }
-/** Trusted execution-plane boundary for production fresh tests. */
-export interface FreshTestExecutionPort { execute(request: FreshTestRunRequest): Promise<FreshTestRunResult>; }
+export interface FreshTestAcceptedResult { kind: "ACCEPTED"; runId: string; }
+export type FreshTestExecutionResult = FreshTestRunResult | FreshTestAcceptedResult;
+/** Trusted execution-plane boundary for production fresh tests. Cloud implementations may acknowledge before long-running execution completes. */
+export interface FreshTestExecutionPort { execute(request: FreshTestRunRequest): Promise<FreshTestExecutionResult>; }
 export interface AutomationLifecyclePort {
   createDraft(request: Parameters<AutomationProductLifecycleService["createDraft"]>[0]): ReturnType<AutomationProductLifecycleService["createDraft"]>;
   persistCapture(request: Parameters<AutomationProductLifecycleService["persistCapture"]>[0]): ReturnType<AutomationProductLifecycleService["persistCapture"]>;
@@ -147,12 +149,12 @@ export class AutomationControlPlaneService {
     try { return await this.dependencies.lifecycle.compile({ scope, automationId: requireToken(automationId, "automationId"), traceId: requireToken(command.traceId, "traceId"), workflowId: requireToken(command.workflowId, "workflowId") }); }
     catch { throw new ControlPlaneError("CONFLICT", "automation could not be compiled from this capture"); }
   }
-  async runFreshTest(scope: OwnershipScope, automationId: string, command: TestAutomationCommand): Promise<FreshTestRunResult> {
+  async runFreshTest(scope: OwnershipScope, automationId: string, command: TestAutomationCommand): Promise<FreshTestExecutionResult> {
     const request: FreshTestRunRequest = { scope, automationId: requireToken(automationId, "automationId"), runId: requireToken(command.runId, "runId"), ...(command.runtimeVariables ? { runtimeVariables: structuredClone(command.runtimeVariables) } : {}) };
     if (this.dependencies.capabilities.cloudExecution === "CONFIGURED") {
       if (!this.dependencies.freshTests) throw new ControlPlaneError("NOT_CONFIGURED", "cloud fresh-test execution is not configured");
       try { return await this.dependencies.freshTests.execute(request); }
-      catch (error) { if (error instanceof ControlPlaneError) throw error; throw new ControlPlaneError("CONFLICT", "cloud fresh test could not be completed"); }
+      catch (error) { if (error instanceof ControlPlaneError) throw error; throw new ControlPlaneError("CONFLICT", "cloud fresh test could not be submitted"); }
     }
     try { return await this.dependencies.lifecycle.runFreshTest(request); }
     catch { throw new ControlPlaneError("CONFLICT", "automation is not ready for a fresh test"); }

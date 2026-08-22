@@ -24,53 +24,55 @@ sign in with email or Google -> dashboard -> create -> cloud capture -> persiste
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head `bbac0d4ed3d4c302a939aa54c1d4ad515df9d08d` (`Verify live Google notification identity`) is green on GitHub Actions CI #225.
-- Normal implementation head `76c8fd22bc74fd98e00cc25fae577944b472cdd0` reached deterministic lock verification and frozen installation successfully, then CI #226 failed strict web type-checking because the parser intentionally returned `undefined` for “no inputs required” while its return annotation omitted `undefined`. Production behavior was not implicated.
-- The single corrective commit changes only that return contract plus this validation record. GitHub Actions on the exact corrective head remains authoritative; no pass is claimed until it completes successfully.
+- Incoming head `34e7dc1583cc13105d1f0c525292e82afd4d1a3d` (`Fix strict Fresh Test input typing`) is green on GitHub Actions CI #227.
+- This slice changes production cloud Fresh Test from a synchronous AgentCore Runtime request to an acknowledged background Runtime task so the API Lambda/HTTP API request does not need to remain open for the duration of browser/model execution.
+- GitHub Actions on the exact new head is authoritative. No pass is claimed until deterministic lock verification, frozen install, strict type/build checks, production packaging/deployment contracts, and the full test suite complete successfully.
 
-## 2026-08-22 — restrict Fresh Test runtime input to captured requirements
+## 2026-08-22 — decouple cloud Fresh Test from the control-plane HTTP timeout
 
-The live-demo path still exposed a product/security seam: workflow inspection deliberately reveals only unresolved compiler-generated `capture_input_N` placeholders, but the Fresh Test form accepted an arbitrary JSON object and forwarded every key as a runtime variable. A normal user should not need or be able to guess internal binding names, and a tampered browser form should not be able to inject unrelated workflow variables through the product UX.
+The live-deployment audit found a concrete vertical-path blocker: `AwsAgentCoreFreshTestExecutionPort` synchronously awaited the complete AgentCore browser/model test, but the production control-plane Lambda is bounded to 29 seconds and its API Gateway HTTP API integration is bounded to 30 seconds. A valid browser workflow can easily exceed that duration, causing the user-facing request to fail even while the execution plane is healthy.
 
-The authenticated web mutation route now reloads the latest trusted workflow inspection before starting a fresh test. `parseFreshTestRuntimeInputForm` accepts only the exact unresolved `capture_input_N` keys required by that workflow. Missing keys, additional/forged keys, malformed JSON, non-string values, duplicate form fields, malformed trusted requirements, values over 4,096 characters, or aggregate values over 32,768 characters fail before the cloud fresh-test command is sent. When the compiled workflow requires no capture input, a blank field or `{}` remains valid but arbitrary variables are rejected.
+Production Fresh Test submission now has an explicit `ACCEPTED` result. The control plane sends the authenticated test request to AgentCore Runtime and returns as soon as Runtime has accepted the stable server-owned run identity. The Runtime host starts the existing `AwsFreshTestRunHandler` as a background task, while durable run/checkpoint creation, automation locking, BYOK preflight, browser execution, verification, and final `READY_TO_PUBLISH` transition remain owned by the existing execution path. Local/mock Fresh Test remains synchronous for deterministic tests and development.
 
-The lower-level provider-neutral fresh-test API still supports explicit runtime variables for trusted programmatic callers. This change intentionally narrows only the human-facing Next.js product form, which already shows the exact privacy-safe capture placeholders and JSON example in the semantic workflow inspection.
+The Runtime keeps a process-local map keyed by a tenant/user-scoped opaque fresh-test task identity to suppress duplicate task starts in one Runtime process. That map is not execution authority: replacement/concurrent Runtime processes still converge through the existing durable run occurrence key and automation lease. The Runtime returns only `{ kind: "ACCEPTED", runId }`; tenant IDs, workload tokens, BYOK material, Browser Profile references, and provider/browser errors are not returned.
 
 ### Review: security, tenancy, idempotency, concurrency, retry, verification, cost, observability, recovery
 
-- **Security:** the browser can no longer use the Fresh Test form to submit arbitrary workflow variable names; only trusted workflow-inspection `capture_input_N` requirements are accepted. Raw values remain per-run checkpoint material and are not added to automation summaries, logs, emails, or metrics.
-- **Tenant isolation:** the allowed-key set comes from `client.workflow(automationId)` under the authenticated Cognito-derived scope. Tenant/user identity is still never taken from the form.
-- **Idempotency/concurrency:** the server still creates a unique fresh-test run ID for each intentional submission. A workflow changed between page render and submit is re-read server-side, so stale input shapes fail closed instead of targeting an older graph implicitly.
-- **Retry/timeout:** no retry layer or timeout changed. Invalid input is rejected before AgentCore Browser/model execution.
-- **Side-effect verification:** unchanged. The same immutable workflow and verification contracts remain authoritative once a fresh test starts.
-- **Cost:** one workflow-inspection read is added to an intentional Fresh Test submission; invalid/malformed submissions are stopped before cloud execution cost.
-- **Observability/privacy:** no new metric dimension or log payload is introduced. Values are deliberately absent from diagnostics and notifications.
-- **User recovery:** invalid or stale Fresh Test input returns the existing bounded `invalid-input` UX rather than creating a cloud run with unintended variables.
+- **Security:** the acceptance response contains only the server-created run ID already used by the authenticated product flow. Tenant identity and the AgentCore workload token remain out of the payload/response, and detached task failures emit only a fixed event name.
+- **Tenant isolation:** Runtime user identity still comes from AgentCore's trusted `runtimeUserId`; the configured tenant is checked before invocation, and the background-task key includes the trusted ownership scope.
+- **Idempotency/concurrency:** identical submissions use the same Runtime session/task identity. Process-local duplicate suppression reduces duplicate work, while the durable `automation:test:runId` occurrence key and automation lock remain the cross-process authority.
+- **Retry/timeout:** no new execution retry is added. The API request is now short-lived; browser/model work continues under the Runtime's existing long-running execution timeout, bounded workflow retries, and lease renewal.
+- **Side-effect verification:** unchanged. The same immutable workflow and verification-before-success rules run inside the existing Fresh Test handler.
+- **Cost:** the change prevents API/Lambda timeouts from causing unnecessary user resubmission. Process-local duplicate suppression also avoids obvious same-container duplicate execution attempts.
+- **Observability:** Runtime health reports busy while either capture collection or Fresh Test background tasks are active. Detached failures log only a fixed `fresh_test_task_failed` event; durable run diagnostics remain the authoritative user-visible state.
+- **User recovery:** a submission acknowledgement is not treated as test success. Publication still requires a durable successful `FRESH_TEST` run for the latest immutable workflow version.
 
 ### Validation added
 
-- New web unit coverage accepts the exact required capture-input set and intentionally empty string values.
-- Negative tests reject missing/extra keys, arbitrary names when no inputs are required, malformed JSON, non-string values, duplicate fields, malformed/duplicate trusted requirements, per-value overflow, and aggregate overflow.
-- CI #226 root cause was a strict TypeScript return-annotation mismatch only: `undefined` was an intentional value for “no inputs required” but missing from the declared union. The corrective change adds it explicitly; no runtime behavior or compiler setting is weakened.
-- Exact-head GitHub Actions must still pass deterministic lock verification, frozen install, strict type/Next.js build checks, all production packaging/deployment/demo/OIDC contracts, and the complete test suite.
+- AWS unit coverage requires the cloud Fresh Test port to accept the new acknowledgement shape and reject an acknowledgement for a different run ID.
+- Coverage verifies stable Runtime session/background-task identities and cross-tenant rejection before AgentCore invocation.
+- The AgentCore Runtime production host now routes `FRESH_TEST` requests into the background task path and includes those tasks in `HealthyBusy` health state.
+- Existing full CI remains required, including AgentCore Runtime packaging; this ensures the modified host and compiled AWS exports are present in the deployable ZIP.
 
 ## Current release/deployment state
 
 The repository has deterministic production packages for AgentCore Runtime, control-plane/capture/dispatcher Lambda entrypoints, and the Next.js standalone Lambda. Release artifacts are uploaded create-only to a versioned S3 bucket and deployed by exact `VersionId`. The protected deployment workflow validates source before acquiring short-lived AWS credentials through GitHub OIDC, deploys stacks in dependency order, retains no GitHub Actions artifacts, and runs a public/auth-boundary smoke after deployment.
 
-The intended AWS path is: Cognito email or optional Google sign-in -> BYOK -> Live View capture -> compile/inspect -> AgentCore fresh test -> publish with schedule + explicitly non-secret recurring capture inputs -> EventBridge scheduled dispatch -> AgentCore Browser/OpenAI execution -> verification -> semantic run history/SES -> bounded human attention -> secure target-auth takeover/resume.
+The intended AWS path is: Cognito email or optional Google sign-in -> BYOK -> Live View capture -> compile/inspect -> AgentCore Fresh Test submission -> durable Fresh Test execution/result -> publish with schedule + explicitly non-secret recurring capture inputs -> EventBridge scheduled dispatch -> AgentCore Browser/OpenAI execution -> verification -> semantic run history/SES -> bounded human attention -> secure target-auth takeover/resume.
 
 ## Next product milestones
 
 1. Run the protected deployment workflow and require the live public/auth smoke gate to pass against a real AWS environment.
-2. If Google sign-in is part of the demo, create the Google OAuth client and Secrets Manager secret, deploy with only its client ID + secret ARN, complete one real Google sign-in, then run `scripts/verify-google-demo-user.sh` before relying on SES evidence.
-3. Execute the controlled interactive vertical demo from `outputs.webOrigin`: sign in -> BYOK -> Live View capture -> compile/inspect -> fresh test -> publish -> scheduled execution -> semantic diagnostics/history/email -> target-auth takeover/resume.
-4. Fix concrete defects exposed by the live environment before adding more infrastructure or recovery depth.
-5. If the demo genuinely requires a recurring secret typed value outside target-site authentication, add a distinct vault-reference runtime-input contract; never place the secret itself in scheduled plaintext inputs.
-6. Add Google cloud execution adapters only after the AWS vertical slice is demonstrated; Google identity federation is independent of that future provider adapter.
+2. Exercise a Fresh Test that intentionally runs longer than 30 seconds and verify the web/control-plane request returns promptly while the durable run continues to completion in AgentCore Runtime.
+3. If Google sign-in is part of the demo, create the Google OAuth client and Secrets Manager secret, deploy with only its client ID + secret ARN, complete one real Google sign-in, then run `scripts/verify-google-demo-user.sh` before relying on SES evidence.
+4. Execute the controlled interactive vertical demo from `outputs.webOrigin`: sign in -> BYOK -> Live View capture -> compile/inspect -> Fresh Test -> publish -> scheduled execution -> semantic diagnostics/history/email -> target-auth takeover/resume.
+5. Fix concrete defects exposed by the live environment before adding more infrastructure or recovery depth.
+6. If the demo genuinely requires a recurring secret typed value outside target-site authentication, add a distinct vault-reference runtime-input contract; never place the secret itself in scheduled plaintext inputs.
+7. Add Google cloud execution adapters only after the AWS vertical slice is demonstrated; Google identity federation is independent of that future provider adapter.
 
 ## Parked limitations / known risks
 
+- Background Fresh Test duplicate suppression is process-local; durable run occurrence identity and the automation lease remain the cross-process authority. Harden only if live Runtime replacement demonstrates a concrete duplicate-start defect.
 - Live OpenAI, SES, Cognito, AgentCore Browser/Profile/Runtime behavior still requires real AWS validation; deterministic CI and anonymous deployment smoke are not substitutes for a real authenticated lifecycle.
 - Google federation still requires a real Google OAuth web client and a Secrets Manager secret; CI validates the infrastructure and verification tooling but cannot prove a live external OAuth exchange without deployment-owned credentials.
 - Capture structural verification is intentionally coarse and content-redacted. Highly dynamic pages may require recapture or a future explicit user-authored effect assertion; do not silently weaken verification.

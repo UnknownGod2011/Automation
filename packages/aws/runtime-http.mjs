@@ -3,7 +3,9 @@ import {
   captureCollectionTaskKey,
   createAwsAgentCoreScheduledRuntime,
   createAwsAgentCoreScheduledRuntimeInvocationFromHttp,
+  freshTestTaskKey,
   isAwsAgentCoreCaptureCollectionPayload,
+  isAwsAgentCoreFreshTestPayload,
 } from "./dist/index.js";
 
 const PORT = 8080;
@@ -11,6 +13,7 @@ const MAX_BODY_BYTES = 1_048_576;
 const MAX_RUNTIME_REQUEST_MILLISECONDS = 3_600_000;
 const composition = createAwsAgentCoreScheduledRuntime({ env: process.env });
 const backgroundCaptureTasks = new Map();
+const backgroundFreshTestTasks = new Map();
 
 function sendJson(response, statusCode, body) {
   response.writeHead(statusCode, {
@@ -46,12 +49,34 @@ function startCaptureTask(invocation, payload) {
   }
 }
 
+function startFreshTestTask(invocation, payload) {
+  const key = freshTestTaskKey({
+    scope: {
+      tenantId: process.env.AUTOMATION_TENANT_ID ?? "",
+      userId: invocation.runtimeUserId,
+    },
+    automationId: payload.automationId,
+    runId: payload.runId,
+  });
+  if (!backgroundFreshTestTasks.has(key)) {
+    const task = composition.entrypoint.handle(invocation)
+      .catch(() => {
+        // Durable run/checkpoint state records the execution outcome; never reflect provider details.
+        console.error(JSON.stringify({ event: "fresh_test_task_failed" }));
+      })
+      .finally(() => {
+        backgroundFreshTestTasks.delete(key);
+      });
+    backgroundFreshTestTasks.set(key, task);
+  }
+}
+
 const server = createServer((request, response) => {
   const path = requestPath(request);
   if (request.method === "GET" && path === "/ping") {
     const configured = composition.kind === "CONFIGURED";
     const status = configured
-      ? backgroundCaptureTasks.size > 0 ? "HealthyBusy" : "Healthy"
+      ? backgroundCaptureTasks.size + backgroundFreshTestTasks.size > 0 ? "HealthyBusy" : "Healthy"
       : "Unhealthy";
     sendJson(response, configured ? 200 : 503, { status });
     return;
@@ -106,6 +131,14 @@ const server = createServer((request, response) => {
         sendJson(response, 200, {
           kind: "CAPTURE_COLLECTION_STARTED",
           captureSessionId: payload.captureSessionId,
+        });
+        return;
+      }
+      if (isAwsAgentCoreFreshTestPayload(payload)) {
+        startFreshTestTask(invocation, payload);
+        sendJson(response, 200, {
+          kind: "ACCEPTED",
+          runId: payload.runId,
         });
         return;
       }
