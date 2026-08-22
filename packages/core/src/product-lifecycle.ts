@@ -113,12 +113,15 @@ const WORKFLOW_CAPTURE_AUTHORING_STATUSES = new Set<AutomationRecord["status"]>(
   "DRAFT",
   "COMPILING",
   "READY_TO_TEST",
+  "READY_TO_PUBLISH",
+  "DISABLED",
 ]);
 
 /**
- * Capture/recompile is intentionally a pre-publish authoring operation. Published and
- * human-attention states need an explicit revision workflow that coordinates Scheduler and
- * in-flight execution rather than silently replacing the active automation state.
+ * Capture/recompile is allowed only while no production execution can start. A published
+ * automation must first be explicitly disabled through the schedule lifecycle, which makes
+ * durable state non-executable before Scheduler is disabled. READY_TO_PUBLISH has not been
+ * activated yet and can safely re-enter capture when the user wants to correct the tested plan.
  */
 export function canAuthorWorkflowCapture(status: AutomationRecord["status"]): boolean {
   return WORKFLOW_CAPTURE_AUTHORING_STATUSES.has(status);
@@ -192,7 +195,7 @@ export class AutomationProductLifecycleService {
     assertCaptureTrace(request.trace);
     const automation = await this.requireAutomation(request.scope, request.trace.automationId);
     if (!canAuthorWorkflowCapture(automation.status)) {
-      throw new Error("automation must be in a pre-publish workflow-authoring state before accepting a capture");
+      throw new Error("automation must be in a non-executing workflow-authoring state before accepting a capture");
     }
     this.assertTraceOwnership(request.scope, automation, request.trace);
     if (!automation.browserProfileRef || automation.browserProfileRef !== request.trace.browserProfileRef) throw new Error("capture trace browser profile does not match the automation");
