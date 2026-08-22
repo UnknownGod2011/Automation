@@ -1,9 +1,18 @@
 import Link from "next/link";
+import type { RunSemanticStepView } from "@automation/core";
 import { WebControlPlaneError } from "../../../../../lib/control-plane-client";
 import { createAuthenticatedWebControlPlaneClient, WebAuthError } from "../../../../../lib/server-auth";
 import { runTone } from "../../../../../lib/view-model";
 
 export const dynamic = "force-dynamic";
+
+function stepHeading(step: RunSemanticStepView | undefined): string {
+  return step ? `Step ${step.step} · ${step.kind}` : "Step unavailable";
+}
+
+function evidenceSummary(count: number): string {
+  return count === 0 ? "No evidence recorded." : `${count} protected evidence item${count === 1 ? "" : "s"} recorded.`;
+}
 
 export default async function RunDetailPage({
   params,
@@ -36,6 +45,9 @@ export default async function RunDetailPage({
     run.checkpoint?.lastFailure?.code === "TARGET_AUTH_REQUIRED" &&
     run.checkpoint.lastFailure.nodeId === pausedNodeId,
   );
+  const currentStep = run.semantic?.current;
+  const failureStep = run.semantic?.failure;
+  const completedSteps = run.semantic?.completed ?? [];
 
   return (
     <>
@@ -48,7 +60,8 @@ export default async function RunDetailPage({
         </div>
         <div className="card subtle stack">
           <div className="row"><span>Status</span><span className={`badge ${runTone(run.status)}`}>{run.status}</span></div>
-          <div className="row"><span>Current node</span><strong>{pausedNodeId ?? "—"}</strong></div>
+          <div className="row"><span>Current step</span><strong>{stepHeading(currentStep)}</strong></div>
+          {currentStep ? <p>{currentStep.objective}</p> : <p className="muted">Semantic workflow metadata is temporarily unavailable; durable run state remains intact.</p>}
           <div className="row"><span>Started</span><span className="muted">{run.startedAt ?? "—"}</span></div>
           <div className="row"><span>Finished</span><span className="muted">{run.finishedAt ?? "—"}</span></div>
         </div>
@@ -63,15 +76,14 @@ export default async function RunDetailPage({
         <section className="card stack" style={{ marginBottom: 18 }}>
           <div className="eyebrow">Human attention required</div>
           <h2>This run is safely paused.</h2>
-          <p>The platform will not automatically replay the blocked action. Inspect the failure and checkpoint below before continuing.</p>
-          {run.humanResumeEligible && pausedNodeId ? (
+          <p>The platform will not automatically replay the blocked action. Inspect the semantic step and failure below before continuing.</p>
+          {run.humanResumeEligible ? (
             <>
               <p>This is an explicit workflow human step with exactly one declared successor. After completing or approving the requested manual step, continue the same durable run.</p>
               <form action={`/api/ui/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}/resume`} method="post">
-                <input type="hidden" name="expectedNodeId" value={pausedNodeId} />
                 <button className="button" type="submit">Continue workflow</button>
               </form>
-              <p className="muted">Duplicate submissions reuse a server-owned resolution identity at the run/node boundary. The UI cannot choose another branch, claim ID, or execution credential.</p>
+              <p className="muted">The browser does not choose the paused node, branch, claim ID, or execution credential. The authenticated server reloads the latest durable run state before submitting the idempotent resolution.</p>
             </>
           ) : targetAuthRepairEligible ? (
             <>
@@ -98,8 +110,9 @@ export default async function RunDetailPage({
             <>
               <div className="row"><span>Code</span><strong>{run.failure.code}</strong></div>
               <div className="row"><span>Retryable</span><span>{run.failure.retryable ? "Yes" : "No"}</span></div>
-              <div className="row"><span>Node</span><span>{run.failure.nodeId ?? "—"}</span></div>
-              <div><h3>Evidence references</h3>{run.failure.evidenceRefs.length === 0 ? <p className="muted">None recorded.</p> : <ul>{run.failure.evidenceRefs.map((ref) => <li key={ref}><code>{ref}</code></li>)}</ul>}</div>
+              <div className="row"><span>Step</span><span>{stepHeading(failureStep)}</span></div>
+              {failureStep ? <p>{failureStep.objective}</p> : null}
+              <div><h3>Evidence</h3><p className="muted">{evidenceSummary(run.failure.evidenceRefs.length)} Artifact identifiers and contents remain server-side.</p></div>
             </>
           ) : <p className="muted">No terminal or attention failure is recorded on the run.</p>}
         </div>
@@ -108,20 +121,27 @@ export default async function RunDetailPage({
           <h2>Checkpoint</h2>
           {run.checkpoint ? (
             <>
-              <div className="row"><span>Current node</span><strong>{run.checkpoint.currentNodeId}</strong></div>
+              <div className="row"><span>Current step</span><strong>{stepHeading(currentStep)}</strong></div>
               <div className="row"><span>Attempt</span><span>{run.checkpoint.attempt}</span></div>
               <div className="row"><span>Repeated state count</span><span>{run.checkpoint.fingerprintRepeatCount}</span></div>
               <div className="row"><span>Updated</span><span className="muted">{run.checkpoint.updatedAt}</span></div>
-              <div><h3>Completed nodes</h3>{run.checkpoint.completedNodeIds.length === 0 ? <p className="muted">None yet.</p> : <ul>{run.checkpoint.completedNodeIds.map((nodeId) => <li key={nodeId}><code>{nodeId}</code></li>)}</ul>}</div>
-              {run.checkpoint.lastFailure ? <div><h3>Last checkpoint failure</h3><p><strong>{run.checkpoint.lastFailure.code}</strong>{run.checkpoint.lastFailure.nodeId ? ` at ${run.checkpoint.lastFailure.nodeId}` : ""}</p></div> : null}
-              <div><h3>Checkpoint evidence</h3>{run.checkpoint.evidenceRefs.length === 0 ? <p className="muted">None recorded.</p> : <ul>{run.checkpoint.evidenceRefs.map((ref) => <li key={ref}><code>{ref}</code></li>)}</ul>}</div>
+              <div>
+                <h3>Completed steps</h3>
+                {completedSteps.length === 0 ? (
+                  <p className="muted">{run.checkpoint.completedNodeIds.length === 0 ? "None yet." : `${run.checkpoint.completedNodeIds.length} completed step(s); semantic labels are temporarily unavailable.`}</p>
+                ) : (
+                  <ul>{completedSteps.map((step) => <li key={step.step}><strong>Step {step.step} · {step.kind}</strong> — {step.objective}</li>)}</ul>
+                )}
+              </div>
+              {run.checkpoint.lastFailure ? <div><h3>Last checkpoint failure</h3><p><strong>{run.checkpoint.lastFailure.code}</strong>{failureStep ? ` at Step ${failureStep.step}` : ""}</p></div> : null}
+              <div><h3>Checkpoint evidence</h3><p className="muted">{evidenceSummary(run.checkpoint.evidenceRefs.length)} Artifact identifiers and contents remain server-side.</p></div>
             </>
           ) : <p className="muted">No checkpoint has been persisted for this run.</p>}
         </div>
       </section>
 
       <section className="card" style={{ marginTop: 18 }}>
-        <p className="muted">This view intentionally excludes runtime variables, raw provider/browser error messages, page fingerprints, cookies, Browser Profile data, BYOK secrets, workload tokens, evidence contents, and model chain-of-thought.</p>
+        <p className="muted">This view intentionally excludes internal workflow/node identifiers from the rendered diagnostics, runtime variables, raw provider/browser errors, selectors, page fingerprints, artifact references and contents, cookies, Browser Profile data, BYOK secrets, workload tokens, and model chain-of-thought.</p>
       </section>
     </>
   );

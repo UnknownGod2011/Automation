@@ -24,52 +24,57 @@ sign in -> dashboard -> create -> cloud capture -> persisted Browser Profile + t
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head `3b86b7a4bc1640d0391769984230b251c73ea6ba` (`Fix strict scheduled checkpoint typing`) is green on GitHub Actions CI #218.
+- Incoming head `67c8a1aedcd8161ddbdc484c2c6cacf37113565a` (`Add durable scheduled capture inputs`) is green on GitHub Actions CI #219.
 - GitHub Actions on the exact outgoing head remains authoritative. No pass is claimed until that exact-head run completes successfully.
 
-## 2026-08-22 — durable non-secret scheduled inputs for captured typing
+## 2026-08-22 — semantic run diagnostics + server-owned resume boundary
 
-The vertical-path audit found the remaining product gap behind privacy-preserving captured typing. Production capture intentionally never persists a raw typed value and emits unresolved `capture_input_N` bindings instead. Fresh Test can supply those values per run, but a published recurring automation previously had no durable value source. A workflow could therefore pass Fresh Test and still enter a real scheduled occurrence without the value needed by its TYPE node.
+The vertical-path audit found that the user-facing run page still rendered internal workflow node IDs and artifact-reference strings. That made a failed real run difficult to understand (`submit`, `node_7`, opaque evidence paths) and contradicted the product direction of keeping durable platform identities server-owned. The explicit HUMAN continuation form also sent the paused node ID back through a hidden browser form field even though the server can resolve that state itself.
 
-Publishing now has an explicit scheduled runtime-input boundary for these compiler-generated capture bindings. The workflow derives the exact unresolved `capture_input_N` set from the immutable graph. If any are required, publication fails before Scheduler activation unless every required key has a bounded string value and the caller explicitly acknowledges that those values are non-secret. Extra keys, non-string values, oversized values, and missing values fail closed.
+`RunDetailService` now projects the immutable workflow into a bounded semantic run-progress view containing only step ordinal, node kind, and node objective for the current, completed, and failed steps. The projection deliberately excludes selectors, input/output bindings, captured/default values, verification expected values/descriptions, retry-code lists, workflow/node IDs, Browser Profile data, and provider/browser credentials. If workflow storage is temporarily unavailable or the immutable graph cannot be safely mapped, durable status/checkpoint diagnostics remain available while semantic display and HUMAN eligibility fail closed.
 
-The resulting `scheduledNonSecretInputs` live on the tenant/user-owned automation record and are deliberately omitted from sanitized control-plane summaries. They are ordinary configuration, not a secret store. The authenticated Next.js publish form shows the required synthetic keys, requires explicit acknowledgement, and warns that passwords, OTPs, API keys, tokens, and other secrets must not be entered. Target-site authentication remains in the Browser Profile; provider credentials remain in the AgentCore Identity/BYOK vault.
+The Next.js run page uses this semantic projection instead of rendering internal node IDs. Evidence is shown only as a protected item count; raw artifact references and evidence contents are no longer rendered into the browser. This does not remove evidence authority from the execution/checkpoint records and does not change persistence or verification behavior.
 
-`ScheduledRunCoordinator` validates the published workflow against the persisted scheduled input set before browser/profile/model work. It then seeds checkpoints in this precedence order: immutable graph `initialVariables` -> persisted scheduled non-secret inputs -> explicit invocation runtime variables. This preserves the existing test/local override seam while making normal Scheduler delivery independent of user-device state. A legacy ACTIVE automation whose graph requires a capture input but lacks the new durable configuration fails `NOT_CONFIGURED` before browser allocation instead of executing with an unbound value.
+Explicit HUMAN continuation is also more server-owned. The browser now submits only the run action. The authenticated Next.js server reloads the latest run detail, confirms `humanResumeEligible`, derives the paused node from matching run/checkpoint state, and only then sends the existing expected-node guard to the trusted control plane. Stale/mismatched state fails closed before resume submission. Runtime continues to revalidate the durable run, immutable workflow, claim, lease, and node boundary before browser/model execution.
 
 ### Review: security, tenancy, idempotency, concurrency, retry, verification, cost, observability, recovery
 
-- **Security:** only explicitly acknowledged non-secret strings may use this storage path. Values are bounded to 64 required keys, 4,096 characters per value, and 32,768 characters total in core validation. Secrets remain outside normal automation records. Control-plane summaries do not return configured values.
-- **Tenant isolation:** values are part of the existing tenant/user-scoped `AutomationRecord`; AWS persistence therefore uses the same scoped DynamoDB partition and ownership checks. The browser cannot submit tenant/user identity.
-- **Idempotency/concurrency:** Scheduler occurrence identity and automation locking are unchanged. Duplicate deliveries read the same durable published configuration and still converge on one run. Publish validates inputs before Scheduler activation; the existing DynamoDB/Scheduler non-atomicity limitation remains unchanged.
-- **Retry/timeout:** no new retry loop or timeout layer was added. A missing/invalid scheduled input is deterministic `NOT_CONFIGURED`, not transient retry material.
-- **Side-effect verification:** unchanged. Inputs affect node execution only after the normal deterministic/reasoned action boundary and existing verification-before-success checks.
-- **Cost:** no new AWS resource or read is required. The bounded input map rides on the AutomationRecord already loaded by scheduled preflight; cost is only a modest bounded increase in that existing DynamoDB item size.
-- **Observability:** failure is represented by the existing sanitized `NOT_CONFIGURED` run failure code. Values are not added to logs, metrics, emails, or diagnostics.
-- **User recovery:** newly published workflows cannot reach this failure because publish is gated. Legacy/malformed records fail before browser compute and can be corrected by republishing a tested workflow with explicit scheduled inputs.
+- **Security:** rendered diagnostics no longer disclose internal node IDs or artifact-reference strings. Semantic projection is a closed display schema of ordinal/kind/objective only. Resume-node identity is no longer browser-selected.
+- **Tenant isolation:** `RunDetailService` still loads the run/checkpoint/workflow through the authenticated tenant/user scope and rejects cross-automation access before semantic projection.
+- **Idempotency/concurrency:** human-resolution claim/lease behavior is unchanged. The web route reloads current durable state immediately before the idempotent resolution command, reducing stale-page ambiguity without adding a second authority.
+- **Retry/timeout:** no new retry loop, timeout, browser call, model call, or queue is introduced. Workflow-store display failure is non-authoritative and does not retry execution.
+- **Side-effect verification:** unchanged. The semantic view is read-only and cannot authorize or execute a workflow action.
+- **Cost:** one immutable workflow read already existed in production run detail for HUMAN eligibility. Semantic projection reuses that read; there is no new AWS resource or N+1 history cost.
+- **Observability:** execution/checkpoint evidence remains durable. The UI exposes counts and semantic location rather than opaque storage keys; raw errors and evidence content remain excluded.
+- **User recovery:** a paused user now sees an understandable semantic step/objective. Explicit HUMAN continuation still uses the existing durable claim/lease/heartbeat/reconciliation machinery, while target-auth repair remains the separate bounded Live View path.
 
 ### Validation added
 
-- Core unit tests prove only unresolved compiler-generated capture keys are required, while preseeded capture values and arbitrary application bindings are ignored by this persistence boundary.
-- Validation tests reject missing, extra, non-string, and oversized scheduled values.
-- Local product lifecycle now proves a fresh test can use one per-run value while published scheduled execution later uses a different explicitly configured non-secret default without the scheduler payload supplying runtime variables.
-- Publish tests prove missing acknowledgement, missing required values, and unrelated keys are rejected before Scheduler activation.
-- Coordinator tests prove scheduled defaults reach READY and human-blocked checkpoints, explicit invocation values can override defaults, and legacy ACTIVE workflows with missing required configuration fail before a checkpoint/browser run is started.
-- Web parsing tests prove acknowledged string-only JSON is accepted while malformed, non-string, and unacknowledged persisted values are rejected.
+- Core tests prove semantic current/completed/failure mapping and prove selectors, arbitrary binding names, initial values, verification expectations, raw failure text, variables, and fingerprints do not enter the semantic diagnostic response.
+- Core tests prove workflow-store failure preserves run/checkpoint diagnostics while omitting semantic display and HUMAN eligibility.
+- Existing tenant/automation isolation, checkpoint-identity, malformed evidence, and authenticated HTTP routing tests remain.
+- Web tests prove the resume node is resolved from matching authenticated run/checkpoint state and fails closed for mismatched or ineligible state.
+- Next.js rendering no longer displays raw node IDs or artifact references and its HUMAN form carries no expected-node hidden field.
 - Exact-head GitHub Actions must still prove strict TypeScript/Next.js builds, all production packaging/deployment contracts, and the full test suite.
+
+## 2026-08-22 — durable non-secret scheduled inputs for captured typing
+
+Production capture intentionally never persists raw typed values and emits unresolved `capture_input_N` bindings instead. Fresh Test can supply those values per run, but recurring execution previously had no durable value source. Publishing now requires explicit bounded non-secret defaults for every unresolved compiler-generated capture input that a scheduled workflow needs.
+
+`scheduledNonSecretInputs` remain tenant/user-owned ordinary automation configuration and are omitted from sanitized summaries. The product requires explicit acknowledgement that these values are safe to persist and warns against passwords, OTPs, API keys, tokens, or other secrets. Scheduled preflight validates the required set before browser/model allocation and seeds variables in this precedence order: immutable graph `initialVariables` -> persisted scheduled non-secret inputs -> explicit invocation overrides. Legacy ACTIVE records missing required inputs fail `NOT_CONFIGURED` before browser compute.
 
 ## Current release/deployment state
 
 The repository has deterministic production packages for AgentCore Runtime, control-plane/capture/dispatcher Lambda entrypoints, and the Next.js standalone Lambda. Release artifacts are uploaded create-only to a versioned S3 bucket and deployed by exact `VersionId`. The protected deployment workflow validates source before acquiring short-lived AWS credentials through GitHub OIDC, deploys stacks in dependency order, retains no GitHub Actions artifacts, and runs a public/auth-boundary smoke after deployment.
 
-The intended production AWS path is: Cognito sign-in -> BYOK -> Live View capture -> compile/inspect -> AgentCore fresh test -> publish with schedule + any explicitly non-secret recurring capture inputs -> EventBridge scheduled dispatch -> AgentCore Browser/OpenAI execution -> verification -> run history/SES -> bounded human attention -> secure target-auth takeover/resume.
+The intended production AWS path is: Cognito sign-in -> BYOK -> Live View capture -> compile/inspect -> AgentCore fresh test -> publish with schedule + any explicitly non-secret recurring capture inputs -> EventBridge scheduled dispatch -> AgentCore Browser/OpenAI execution -> verification -> semantic run history/SES -> bounded human attention -> secure target-auth takeover/resume.
 
 ## Next product milestones
 
 1. Run the protected deployment workflow and require the live public/auth smoke gate to pass against the real AWS environment.
-2. Execute the controlled interactive vertical demo from `outputs.webOrigin`: Cognito sign-in -> BYOK -> Live View capture in a separate tab -> start recording from the product tab -> compile/inspect -> supply Fresh Test runtime inputs -> fresh test -> publish with explicitly non-secret recurring values where needed -> scheduled execution -> verification/history/email -> target-auth takeover/resume.
-3. If the demo genuinely requires a recurring **secret** typed value outside target-site authentication, add a distinct vault-reference runtime-input contract. Never place the secret value itself in `scheduledNonSecretInputs`, workflow JSON, normal DynamoDB configuration, logs, or UI responses.
-4. Fix concrete defects exposed by the live environment before adding more infrastructure or recovery depth.
+2. Execute the controlled interactive vertical demo from `outputs.webOrigin`: Cognito sign-in -> BYOK -> Live View capture in a separate tab -> start recording from the product tab -> compile/inspect -> supply Fresh Test runtime inputs -> fresh test -> publish with explicitly non-secret recurring values where needed -> scheduled execution -> semantic run diagnostics/history/email -> target-auth takeover/resume.
+3. Fix concrete defects exposed by the live environment before adding more infrastructure or recovery depth.
+4. If the demo genuinely requires a recurring **secret** typed value outside target-site authentication, add a distinct vault-reference runtime-input contract. Never place the secret value itself in `scheduledNonSecretInputs`, workflow JSON, normal DynamoDB configuration, logs, or UI responses.
 5. If the vertical slice is repeatable, add a minimal authenticated live-cloud smoke using a dedicated test identity and short-lived credentials without retaining secret-bearing Actions artifacts.
 6. Add Google federation/adapters only after the AWS vertical slice is demonstrated.
 

@@ -1,4 +1,4 @@
-import type { RunCheckpoint, RunFailure, RunRecord } from "@automation/contracts";
+import type { RunCheckpoint, RunFailure, RunRecord, WorkflowGraph, WorkflowNode } from "@automation/contracts";
 import { ControlPlaneError } from "./control-plane.js";
 import type {
   AuthenticatedControlPlaneContext,
@@ -30,6 +30,18 @@ export interface RunCheckpointView {
   updatedAt: string;
 }
 
+export interface RunSemanticStepView {
+  step: number;
+  kind: WorkflowNode["kind"];
+  objective: string;
+}
+
+export interface RunSemanticProgressView {
+  current?: RunSemanticStepView;
+  completed: readonly RunSemanticStepView[];
+  failure?: RunSemanticStepView;
+}
+
 export interface RunDetailView {
   runId: string;
   automationId: string;
@@ -41,6 +53,7 @@ export interface RunDetailView {
   currentNodeId?: string;
   failure?: RunFailureView;
   checkpoint?: RunCheckpointView;
+  semantic?: RunSemanticProgressView;
   needsHumanAttention: boolean;
   /** Read-only UX hint. Runtime validation remains the execution authority. */
   humanResumeEligible: boolean;
@@ -49,6 +62,7 @@ export interface RunDetailView {
 const MAX_REFERENCE_COUNT = 100;
 const MAX_REFERENCE_LENGTH = 512;
 const MAX_NODE_COUNT = 2_000;
+const MAX_DISPLAY_TEXT_LENGTH = 4_096;
 
 function token(value: string, name: string): string {
   const trimmed = value.trim();
@@ -93,10 +107,72 @@ function checkpointView(checkpoint: RunCheckpoint): RunCheckpointView {
   };
 }
 
+function orderedNodeIds(graph: WorkflowGraph): readonly string[] {
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  const queue = [graph.entryNodeId];
+  while (queue.length > 0) {
+    const nodeId = queue.shift()!;
+    if (seen.has(nodeId)) continue;
+    seen.add(nodeId);
+    ordered.push(nodeId);
+    for (const successor of graph.nodes[nodeId]?.next ?? []) {
+      if (!seen.has(successor)) queue.push(successor);
+    }
+  }
+  for (const nodeId of Object.keys(graph.nodes).sort()) {
+    if (!seen.has(nodeId)) ordered.push(nodeId);
+  }
+  return ordered;
+}
+
+function semanticProgress(
+  graph: WorkflowGraph,
+  run: RunRecord,
+  checkpoint: RunCheckpoint | null,
+): RunSemanticProgressView | undefined {
+  if (graph.automationId !== run.automationId || graph.version !== run.workflowVersion) return undefined;
+  const orderedIds = orderedNodeIds(graph);
+  if (orderedIds.length === 0 || orderedIds.length > MAX_NODE_COUNT) return undefined;
+  const stepByNodeId = new Map(orderedIds.map((nodeId, index) => [nodeId, index + 1] as const));
+
+  const stepView = (nodeId: string | undefined): RunSemanticStepView | undefined => {
+    if (!nodeId) return undefined;
+    const node = graph.nodes[nodeId];
+    const step = stepByNodeId.get(nodeId);
+    if (!node || !step || !node.objective.trim() || node.objective.length > MAX_DISPLAY_TEXT_LENGTH) return undefined;
+    return { step, kind: node.kind, objective: node.objective };
+  };
+
+  const currentNodeId = checkpoint?.currentNodeId ?? run.currentNodeId;
+  const current = stepView(currentNodeId);
+  if (currentNodeId && !current) return undefined;
+
+  const completed: RunSemanticStepView[] = [];
+  for (const completedNodeId of checkpoint?.completedNodeIds ?? []) {
+    const view = stepView(completedNodeId);
+    if (!view) return undefined;
+    completed.push(view);
+  }
+
+  const failureNodeId = checkpoint?.lastFailure?.nodeId ?? run.failure?.nodeId;
+  const failure = stepView(failureNodeId);
+  if (failureNodeId && !failure) return undefined;
+
+  return {
+    ...(current ? { current } : {}),
+    completed,
+    ...(failure ? { failure } : {}),
+  };
+}
+
 /**
  * Read-only user-facing run diagnostics. The view intentionally excludes workflow
  * variables, raw failure messages, state fingerprints, browser/profile state,
- * provider payloads, and evidence contents.
+ * provider payloads, and evidence contents. When the immutable workflow is
+ * available, semantic progress contains only step ordinal, kind, and objective;
+ * selectors, bindings, expected values, and internal graph identifiers remain out
+ * of that user-facing semantic projection.
  */
 export class RunDetailService {
   constructor(
@@ -127,30 +203,37 @@ export class RunDetailService {
       throw new ControlPlaneError("CONFLICT", "run checkpoint identity is invalid");
     }
 
-    let humanResumeEligible = false;
+    let graph: WorkflowGraph | null = null;
+    if (this.workflows) {
+      try {
+        const loaded = await this.workflows.get(scope, run.automationId, run.workflowVersion);
+        if (loaded && loaded.automationId === run.automationId && loaded.version === run.workflowVersion) {
+          graph = loaded;
+        }
+      } catch {
+        // Run status/checkpoint diagnostics remain available during workflow-store
+        // outages. Semantic display and HUMAN eligibility fail closed instead.
+        graph = null;
+      }
+    }
+
     const nodeStateMatches = !run.currentNodeId || run.currentNodeId === checkpoint?.currentNodeId;
+    let humanResumeEligible = false;
     if (
       run.status === "WAITING_FOR_HUMAN" &&
       checkpoint &&
       nodeStateMatches &&
-      this.workflows
+      graph
     ) {
-      try {
-        const graph = await this.workflows.get(scope, run.automationId, run.workflowVersion);
-        if (graph && graph.automationId === run.automationId && graph.version === run.workflowVersion) {
-          const node = graph.nodes[checkpoint.currentNodeId];
-          const successors = node?.next ?? [];
-          humanResumeEligible =
-            node?.kind === "HUMAN" &&
-            successors.length === 1 &&
-            Boolean(successors[0] && graph.nodes[successors[0]]);
-        }
-      } catch {
-        // Diagnostics remain useful during workflow-store outages. The Runtime
-        // revalidates the immutable graph before any resume side effect.
-        humanResumeEligible = false;
-      }
+      const node = graph.nodes[checkpoint.currentNodeId];
+      const successors = node?.next ?? [];
+      humanResumeEligible =
+        node?.kind === "HUMAN" &&
+        successors.length === 1 &&
+        Boolean(successors[0] && graph.nodes[successors[0]]);
     }
+
+    const semantic = graph ? semanticProgress(graph, run, checkpoint) : undefined;
 
     return {
       runId: run.runId,
@@ -163,6 +246,7 @@ export class RunDetailService {
       ...(run.currentNodeId ? { currentNodeId: run.currentNodeId } : {}),
       ...(run.failure ? { failure: failureView(run.failure) } : {}),
       ...(checkpoint ? { checkpoint: checkpointView(checkpoint) } : {}),
+      ...(semantic ? { semantic } : {}),
       needsHumanAttention: run.status === "WAITING_FOR_HUMAN",
       humanResumeEligible,
     };
