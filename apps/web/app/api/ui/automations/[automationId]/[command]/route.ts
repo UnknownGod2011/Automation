@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { serverResolvedCaptureSessionId } from "../../../../../../lib/capture-command-state";
 import { createCaptureLiveViewHandoff } from "../../../../../../lib/capture-live-view-handoff";
 import { WebControlPlaneError } from "../../../../../../lib/control-plane-client";
+import { parseFreshTestRuntimeInputForm } from "../../../../../../lib/fresh-test-input-form";
 import { isSameOriginMutation } from "../../../../../../lib/mutation-security";
 import { freshTestRunId, serverResolvedPublishWorkflowVersion, workflowIdForAutomation } from "../../../../../../lib/product-flow-identities";
 import { scheduleFromFormData } from "../../../../../../lib/schedule-form";
@@ -35,8 +36,10 @@ export async function POST(request: Request, context: { params: Promise<{ automa
       return redirectBack(request, automationId, "compiled");
     }
     if (command === "test") {
-      const rawVariables = String(form.get("runtimeVariables") ?? "").trim(); let runtimeVariables: Record<string, unknown> | undefined;
-      if (rawVariables) { const parsed: unknown = JSON.parse(rawVariables); if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return redirectBack(request, automationId, "invalid-input"); runtimeVariables = parsed as Record<string, unknown>; }
+      const workflow = await client.workflow(automationId);
+      if (!workflow) return redirectBack(request, automationId, "invalid-input");
+      const runtimeVariables = parseFreshTestRuntimeInputForm(form, workflow.runtimeInputs);
+      if (runtimeVariables === null) return redirectBack(request, automationId, "invalid-input");
       await client.command(automationId, "test", { runId: freshTestRunId(), ...(runtimeVariables ? { runtimeVariables } : {}) });
       return redirectBack(request, automationId, "tested");
     }

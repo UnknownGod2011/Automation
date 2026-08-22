@@ -18,39 +18,39 @@ sign in with email or Google -> dashboard -> create -> cloud capture -> persiste
 - Publishing requires a successful `FRESH_TEST` for the latest immutable workflow version; successful scheduled/legacy runs do not authorize publication.
 - Product-facing recurrence input is normalized into validated EventBridge `rate(...)` / `cron(...)` expressions before Scheduler mutation.
 - Scheduled execution checkpoints are seeded before browser startup from immutable graph variables, bounded persisted non-secret scheduled capture inputs, and any explicit invocation override.
-- Optional Google federation preserves `email_verified` into Cognito so the existing trusted SES recipient resolver does not need to weaken its verification requirement.
+- Optional Google federation preserves `email_verified` into Cognito, and the controlled demo includes a read-only check for one Google-linked verified Cognito user before SES evidence is trusted.
 - Deep human-resume claim/lease/heartbeat/reconciliation machinery exists and remains parked unless a demonstrated vertical defect requires it.
 
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head `a3ab424c53bd8e605d9ee42d3f28287e09deeaf1` (`Preserve Google email verification`) is green on GitHub Actions CI #224.
-- This run adds a live, read-only operator verification for the actual Google-federated Cognito user before SES notification evidence is trusted. GitHub Actions on the exact outgoing head remains authoritative; no pass is claimed until that run completes successfully.
+- Incoming head `bbac0d4ed3d4c302a939aa54c1d4ad515df9d08d` (`Verify live Google notification identity`) is green on GitHub Actions CI #225.
+- This run narrows the product Fresh Test form so browser-submitted runtime JSON cannot introduce arbitrary internal workflow variable names. GitHub Actions on the exact outgoing head remains authoritative; no pass is claimed until that run completes successfully.
 
-## 2026-08-22 — verify live Google federation notification readiness
+## 2026-08-22 — restrict Fresh Test runtime input to captured requirements
 
-CI already proves the Cognito Google IdP maps `email_verified`, but deterministic template validation cannot prove a real federated user record was created with the expected provider linkage and verified-email state. That matters because the production SES resolver intentionally refuses unverified Cognito email addresses.
+The live-demo path still exposed a product/security seam: workflow inspection deliberately reveals only unresolved compiler-generated `capture_input_N` placeholders, but the Fresh Test form accepted an arbitrary JSON object and forwarded every key as a runtime variable. A normal user should not need or be able to guess internal binding names, and a tampered browser form should not be able to inject unrelated workflow variables through the product UX.
 
-`scripts/verify-google-demo-user.sh` now provides a bounded read-only check for the controlled AWS vertical demo. It consumes the immutable deployment result plus the signed-in user's email, resolves only the deployed Cognito User Pool ID, performs one filtered `ListUsers` lookup, and succeeds only when exactly one enabled user matches the requested email, has `email_verified=true`, and carries a Google identity-provider link. It deliberately does not print the Cognito subject, provider tokens, Google tokens, OAuth credentials, BYOK material, Browser Profile state, or any execution capability.
+The authenticated web mutation route now reloads the latest trusted workflow inspection before starting a fresh test. `parseFreshTestRuntimeInputForm` accepts only the exact unresolved `capture_input_N` keys required by that workflow. Missing keys, additional/forged keys, malformed JSON, non-string values, duplicate form fields, malformed trusted requirements, values over 4,096 characters, or aggregate values over 32,768 characters fail before the cloud fresh-test command is sent. When the compiled workflow requires no capture input, a blank field or `{}` remains valid but arbitrary variables are rejected.
 
-The demo runbook now requires this check after the first successful Google sign-in and before Google-backed SES notification evidence is trusted. Native Cognito email sign-in remains unchanged.
+The lower-level provider-neutral fresh-test API still supports explicit runtime variables for trusted programmatic callers. This change intentionally narrows only the human-facing Next.js product form, which already shows the exact privacy-safe capture placeholders and JSON example in the semantic workflow inspection.
 
 ### Review: security, tenancy, idempotency, concurrency, retry, verification, cost, observability, recovery
 
-- **Security:** the command is read-only and validates a bounded plain email before any AWS call, preventing filter injection. It never accepts or prints authentication tokens or Cognito `sub` values.
-- **Tenant isolation:** tenant identity is still deployment-owned. This operator check is scoped to the exact deployed user pool and has no application execution authority.
-- **Idempotency/concurrency:** repeated verification is side-effect free. Ambiguous duplicate user matches fail closed rather than guessing which record should receive notifications.
-- **Retry/timeout:** no application retry loop changes. AWS CLI/network failures propagate as verification failure; they are not converted into notification readiness.
-- **Side-effect verification:** workflow effect verification is unchanged. This verifies only notification-recipient readiness for the live demo.
-- **Cost:** one CloudFormation output read and one bounded Cognito `ListUsers` query when the operator explicitly runs the check.
-- **Observability/privacy:** success output is fixed and does not echo the email, subject ID, identities payload, or secret-bearing data.
-- **User recovery:** Google-authenticated users can be validated before relying on SES attention/recovery messages, making a missing verification mapping a visible deployment defect instead of a silent notification failure.
+- **Security:** the browser can no longer use the Fresh Test form to submit arbitrary workflow variable names; only trusted workflow-inspection `capture_input_N` requirements are accepted. Raw values remain per-run checkpoint material and are not added to automation summaries, logs, emails, or metrics.
+- **Tenant isolation:** the allowed-key set comes from `client.workflow(automationId)` under the authenticated Cognito-derived scope. Tenant/user identity is still never taken from the form.
+- **Idempotency/concurrency:** the server still creates a unique fresh-test run ID for each intentional submission. A workflow changed between page render and submit is re-read server-side, so stale input shapes fail closed instead of targeting an older graph implicitly.
+- **Retry/timeout:** no retry layer or timeout changed. Invalid input is rejected before AgentCore Browser/model execution.
+- **Side-effect verification:** unchanged. The same immutable workflow and verification contracts remain authoritative once a fresh test starts.
+- **Cost:** one workflow-inspection read is added to an intentional Fresh Test submission; invalid/malformed submissions are stopped before cloud execution cost.
+- **Observability/privacy:** no new metric dimension or log payload is introduced. Values are deliberately absent from diagnostics and notifications.
+- **User recovery:** invalid or stale Fresh Test input returns the existing bounded `invalid-input` UX rather than creating a cloud run with unintended variables.
 
 ### Validation added
 
-- New `scripts/test-verify-google-demo-user.sh` uses a fake AWS CLI and proves success for one enabled Google-linked verified user.
-- Negative coverage rejects unverified email, native/non-Google identity, ambiguous matches, and malformed email before any AWS call.
-- CI runs the new contract alongside the existing Cognito federation, packaging, release, deployment, live-smoke, OIDC, type/build, and full test gates.
+- New web unit coverage accepts the exact required capture-input set and intentionally empty string values.
+- Negative tests reject missing/extra keys, arbitrary names when no inputs are required, malformed JSON, non-string values, duplicate fields, malformed/duplicate trusted requirements, per-value overflow, and aggregate overflow.
+- Exact-head GitHub Actions must still pass deterministic lock verification, frozen install, strict type/Next.js build checks, all production packaging/deployment/demo/OIDC contracts, and the complete test suite.
 
 ## Current release/deployment state
 
