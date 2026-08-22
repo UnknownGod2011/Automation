@@ -7,6 +7,13 @@ trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/bin"
 AWS_LOG="$W/aws.log"
 
+browser_template="$ROOT_DIR/infra/aws/agentcore-browser.yaml"
+[[ -f "$browser_template" ]]
+grep -q 'Type: AWS::BedrockAgentCore::BrowserCustom' "$browser_template"
+grep -q 'NetworkMode: VPC' "$browser_template"
+grep -q 'SecurityGroups: !Ref SecurityGroupIds' "$browser_template"
+grep -q 'Subnets: !Ref SubnetIds' "$browser_template"
+
 cat >"$W/bin/aws" <<'AWS'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -41,6 +48,8 @@ if [[ " $* " == *' cloudformation describe-stacks '* ]]; then
     shift
   done
   case "$query" in
+    *BrowserId*) echo 'AutomationBrowser-ABCDEF1234' ;;
+    *BrowserArn*) echo 'arn:aws:bedrock-agentcore:ap-south-1:123456789012:browser-custom/AutomationBrowser-ABCDEF1234' ;;
     *WebOrigin*) echo 'https://web.lambda-url.ap-south-1.on.aws/' ;;
     *CognitoIssuer*) echo 'https://cognito-idp.ap-south-1.amazonaws.com/pool' ;;
     *CognitoAppClientId*) echo client ;;
@@ -71,7 +80,7 @@ cat >"$W/release.json" <<'JSON'
 JSON
 
 cat >"$W/env.json" <<'JSON'
-{"schemaVersion":1,"region":"ap-south-1","stackPrefix":"automation-dev","parameters":{"web":{"ReservedConcurrency":3},"auth":{"UserPoolDomainPrefix":"automation-dev-test"},"runtime":{"EnvironmentName":"dev","AutomationTenantId":"tenant","StateTableName":"state","ArtifactBucketName":"artifacts","AgentCoreBrowserIdentifier":"AutomationBrowser-ABCDEF1234","AgentCoreBrowserResourceArn":"arn:aws:bedrock-agentcore:ap-south-1:123456789012:browser-custom/AutomationBrowser-ABCDEF1234","OpenAiByokModel":"gpt-5-mini"},"scheduling":{"EnvironmentName":"dev"},"controlPlaneService":{"EnvironmentName":"dev","StateTableName":"state","ArtifactBucketName":"artifacts","TenantId":"tenant"},"observability":{"EnvironmentName":"dev","SesFromIdentityArn":"arn:aws:ses:ap-south-1:123456789012:identity/example.test"}}}
+{"schemaVersion":1,"region":"ap-south-1","stackPrefix":"automation-dev","parameters":{"browser":{"EnvironmentName":"dev","BrowserName":"AutomationBrowser","SecurityGroupIds":"sg-12345678","SubnetIds":"subnet-12345678"},"web":{"ReservedConcurrency":3},"auth":{"UserPoolDomainPrefix":"automation-dev-test"},"runtime":{"EnvironmentName":"dev","AutomationTenantId":"tenant","StateTableName":"state","ArtifactBucketName":"artifacts","OpenAiByokModel":"gpt-5-mini"},"scheduling":{"EnvironmentName":"dev"},"controlPlaneService":{"EnvironmentName":"dev","StateTableName":"state","ArtifactBucketName":"artifacts","TenantId":"tenant"},"observability":{"EnvironmentName":"dev","SesFromIdentityArn":"arn:aws:ses:ap-south-1:123456789012:identity/example.test"}}}
 JSON
 
 result="$W/result.json"
@@ -89,18 +98,16 @@ result = json.load(open(sys.argv[1]))
 assert result['outputs']['webOrigin'] == 'https://web.lambda-url.ap-south-1.on.aws'
 assert result['outputs']['agentCoreBrowserIdentifier'] == 'AutomationBrowser-ABCDEF1234'
 assert result['outputs']['agentCoreBrowserArn'] == 'arn:aws:bedrock-agentcore:ap-south-1:123456789012:browser-custom/AutomationBrowser-ABCDEF1234'
+assert result['stacks']['agentCoreBrowser'] == 'automation-dev-browser'
 assert result['stacks']['web'] == 'automation-dev-web'
 
 calls = [shlex.split(line) for line in open(sys.argv[2])]
-assert 'bedrock-agentcore-control' in calls[0]
-assert 'get-browser' in calls[0]
-assert calls[0][calls[0].index('--browser-id') + 1] == 'AutomationBrowser-ABCDEF1234'
-
 deploys = [call for call in calls if 'cloudformation' in call and 'deploy' in call]
 def value(call, option):
     return call[call.index(option) + 1]
 
 assert [value(call, '--stack-name') for call in deploys] == [
+    'automation-dev-browser',
     'automation-dev-web',
     'automation-dev-auth',
     'automation-dev-runtime',
@@ -110,22 +117,55 @@ assert [value(call, '--stack-name') for call in deploys] == [
     'automation-dev-web',
     'automation-dev-observability',
 ]
-assert 'WebCallbackUrl=https://web.lambda-url.ap-south-1.on.aws/api/auth/callback' in deploys[1]
-assert 'WebLogoutUrl=https://web.lambda-url.ap-south-1.on.aws/' in deploys[1]
-assert 'ControlPlaneUrl=https://api.example' in deploys[6]
-assert 'CognitoAppClientId=client' in deploys[6]
-assert 'AgentCoreBrowserIdentifier=AutomationBrowser-ABCDEF1234' in deploys[4]
+browser_deploy = deploys[0]
+assert value(browser_deploy, '--template-file').endswith('/infra/aws/agentcore-browser.yaml')
+assert 'BrowserName=AutomationBrowser' in browser_deploy
+assert 'SecurityGroupIds=sg-12345678' in browser_deploy
+assert 'SubnetIds=subnet-12345678' in browser_deploy
+
+inspect_index = next(i for i, call in enumerate(calls) if 'bedrock-agentcore-control' in call and 'get-browser' in call)
+web_deploy_index = next(i for i, call in enumerate(calls) if 'cloudformation' in call and 'deploy' in call and value(call, '--stack-name') == 'automation-dev-web')
+assert inspect_index < web_deploy_index
+inspect = calls[inspect_index]
+assert inspect[inspect.index('--browser-id') + 1] == 'AutomationBrowser-ABCDEF1234'
+
+runtime_deploy = deploys[3]
+assert 'AgentCoreBrowserIdentifier=AutomationBrowser-ABCDEF1234' in runtime_deploy
+assert 'AgentCoreBrowserResourceArn=arn:aws:bedrock-agentcore:ap-south-1:123456789012:browser-custom/AutomationBrowser-ABCDEF1234' in runtime_deploy
+assert 'AgentCoreBrowserIdentifier=AutomationBrowser-ABCDEF1234' in deploys[5]
+assert 'WebCallbackUrl=https://web.lambda-url.ap-south-1.on.aws/api/auth/callback' in deploys[2]
+assert 'WebLogoutUrl=https://web.lambda-url.ap-south-1.on.aws/' in deploys[2]
+assert 'ControlPlaneUrl=https://api.example' in deploys[7]
+assert 'CognitoAppClientId=client' in deploys[7]
 PY
 
-# A VPC browser is a protected-deployment prerequisite. Public mode must fail
-# before the first CloudFormation mutation.
+# Browser VPC inputs are validated before any AWS mutation.
+python3 - "$W/env.json" "$W/bad-network.json" <<'PY'
+import json
+import sys
+x = json.load(open(sys.argv[1]))
+x['parameters']['browser']['SecurityGroupIds'] = 'not-a-security-group'
+json.dump(x, open(sys.argv[2], 'w'))
+PY
+: >"$AWS_LOG"
+if bash "$ROOT_DIR/scripts/deploy-aws-release.sh" \
+  --manifest "$W/release.json" \
+  --environment "$W/bad-network.json" \
+  --output "$W/bad-network-result.json" >/dev/null 2>&1; then
+  echo 'expected invalid browser VPC identifiers to fail' >&2
+  exit 1
+fi
+[[ ! -s "$AWS_LOG" ]]
+
+# Even though the Browser template is fixed to VPC mode, live service state is verified
+# before any application stack is deployed.
 : >"$AWS_LOG"
 export FAKE_BROWSER_MODE=PUBLIC
 if bash "$ROOT_DIR/scripts/deploy-aws-release.sh" \
   --manifest "$W/release.json" \
   --environment "$W/env.json" \
   --output "$W/public.json" >/dev/null 2>&1; then
-  echo 'expected public browser deployment to fail' >&2
+  echo 'expected public browser service state to fail' >&2
   exit 1
 fi
 unset FAKE_BROWSER_MODE
@@ -133,49 +173,32 @@ python3 - "$AWS_LOG" <<'PY'
 import shlex
 import sys
 calls = [shlex.split(line) for line in open(sys.argv[1])]
-assert len(calls) == 1
-assert 'bedrock-agentcore-control' in calls[0]
-assert not any('cloudformation' in call for call in calls)
+deploys = [call for call in calls if 'cloudformation' in call and 'deploy' in call]
+assert len(deploys) == 1
+assert deploys[0][deploys[0].index('--stack-name') + 1] == 'automation-dev-browser'
+assert any('bedrock-agentcore-control' in call and 'get-browser' in call for call in calls)
 PY
 
-# The AWS-managed browser is rejected locally before any AWS call; production must
-# opt into a deployment-owned custom Browser whose network configuration we can verify.
-python3 - "$W/env.json" "$W/managed.json" <<'PY'
+# Browser identity is stack-derived and cannot be independently overridden in Runtime
+# or the control-plane service.
+for section in runtime controlPlaneService; do
+  python3 - "$W/env.json" "$W/browser-override-$section.json" "$section" <<'PY'
 import json
 import sys
 x = json.load(open(sys.argv[1]))
-x['parameters']['runtime']['AgentCoreBrowserIdentifier'] = 'aws.browser.v1'
-x['parameters']['runtime']['AgentCoreBrowserResourceArn'] = 'arn:aws:bedrock-agentcore:ap-south-1:aws:browser/aws.browser.v1'
+x['parameters'][sys.argv[3]]['AgentCoreBrowserIdentifier'] = 'OtherBrowser-ZYXWVUTSRQ'
 json.dump(x, open(sys.argv[2], 'w'))
 PY
-: >"$AWS_LOG"
-if bash "$ROOT_DIR/scripts/deploy-aws-release.sh" \
-  --manifest "$W/release.json" \
-  --environment "$W/managed.json" \
-  --output "$W/managed-result.json" >/dev/null 2>&1; then
-  echo 'expected managed browser deployment to fail' >&2
-  exit 1
-fi
-[[ ! -s "$AWS_LOG" ]]
-
-# Browser identity for the control plane is derived from the verified runtime browser
-# and cannot be independently overridden by environment configuration.
-python3 - "$W/env.json" "$W/browser-override.json" <<'PY'
-import json
-import sys
-x = json.load(open(sys.argv[1]))
-x['parameters']['controlPlaneService']['AgentCoreBrowserIdentifier'] = 'OtherBrowser-ZYXWVUTSRQ'
-json.dump(x, open(sys.argv[2], 'w'))
-PY
-: >"$AWS_LOG"
-if bash "$ROOT_DIR/scripts/deploy-aws-release.sh" \
-  --manifest "$W/release.json" \
-  --environment "$W/browser-override.json" \
-  --output "$W/browser-override-result.json" >/dev/null 2>&1; then
-  echo 'expected derived browser override to fail' >&2
-  exit 1
-fi
-[[ ! -s "$AWS_LOG" ]]
+  : >"$AWS_LOG"
+  if bash "$ROOT_DIR/scripts/deploy-aws-release.sh" \
+    --manifest "$W/release.json" \
+    --environment "$W/browser-override-$section.json" \
+    --output "$W/browser-override-result-$section.json" >/dev/null 2>&1; then
+    echo 'expected derived browser override to fail' >&2
+    exit 1
+  fi
+  [[ ! -s "$AWS_LOG" ]]
+done
 
 # Existing derived-value protection remains intact.
 python3 - "$W/env.json" "$W/bad.json" <<'PY'

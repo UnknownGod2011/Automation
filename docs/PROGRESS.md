@@ -24,49 +24,52 @@ sign in with email or Google -> dashboard -> create -> cloud capture -> persiste
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head `84a535feabb668de4e25a7beb074187124882c77` (`Block private cloud browser targets`) is green on GitHub Actions CI #230.
-- This slice makes the protected AWS deployment path require and verify a deployment-owned VPC custom AgentCore Browser before any CloudFormation mutation. GitHub Actions on the exact new head remains authoritative; no pass is claimed until deterministic lock verification, frozen install, strict type/build checks, production packaging/deployment contracts, and the full test suite complete successfully.
+- Incoming head `c486d33c500875156c0cd10cdb1bddbcc2e8b909` (`Require VPC AgentCore Browser deployment`) is green on GitHub Actions CI #231.
+- This slice removes the manual pre-provisioned Browser dependency by provisioning the VPC custom AgentCore Browser in CloudFormation and deriving its exact identity into the rest of the deployment. GitHub Actions on the exact new head remains authoritative; no pass is claimed until deterministic lock verification, frozen install, strict type/build checks, production packaging/deployment contracts, and the full test suite complete successfully.
 
-## 2026-08-22 — require a VPC custom AgentCore Browser for protected deployment
+## 2026-08-22 — provision the protected VPC AgentCore Browser in the release deployment
 
-The preceding application-layer target policy rejects explicit localhost/private/link-local/control-plane destinations before Browser Profile allocation. That remains useful, but it cannot stop DNS rebinding or a public page redirecting toward an internal address. The protected AWS release path previously still accepted the AWS-managed `aws.browser.v1` browser and did not inspect the live Browser network configuration before deployment.
+The preceding slice correctly required a deployment-owned custom AgentCore Browser in VPC mode, but it still expected operators to create that Browser out-of-band and paste its generated ID/ARN into deployment configuration. That left the protected vertical deployment dependent on a manually created cloud resource and made the release definition less reproducible than the Runtime, Scheduler, control plane, and web stacks.
 
-The ordered deployment script now requires `parameters.runtime.AgentCoreBrowserIdentifier` and `AgentCoreBrowserResourceArn` to identify the same account-owned custom AgentCore Browser in the deployment region. The AWS-managed browser is rejected by the protected deployer. Before the first CloudFormation mutation, the deployer performs a read-only `bedrock-agentcore-control get-browser` and requires the returned identity to match exactly, status to be `READY`, `networkConfiguration.networkMode` to be `VPC`, and the VPC configuration to contain non-empty security-group and subnet lists.
+AWS CloudFormation now exposes `AWS::BedrockAgentCore::BrowserCustom`, including VPC network configuration and stable `BrowserId`/`BrowserArn` outputs. The release deployer now owns that resource through `infra/aws/agentcore-browser.yaml`.
 
-The browser identity is then treated as derived deployment authority: the same verified identifier is supplied to the control-plane stack, and environment configuration cannot independently override the control-plane Browser identifier. The final non-secret deployment result also records the exact verified Browser identifier and ARN for operational traceability.
+Environment configuration supplies only the intended Browser name plus existing VPC security-group/subnet IDs. `NetworkMode` is fixed to `VPC` in the template and cannot be selected from environment JSON. The deployer creates/updates the Browser stack first, derives the returned Browser ID/ARN from CloudFormation outputs, validates their shape/region, then performs a read-only `bedrock-agentcore-control get-browser` and requires the live resource to be `READY`, still report `VPC`, and retain non-empty VPC security-group/subnet configuration before any application stack receives Browser authority.
 
-This is intentionally a prerequisite rather than a claim that `VPC` mode alone proves safe internet egress. The actual VPC route tables, security groups, DNS behavior, firewall/proxy controls, and any allow/deny policy still need live validation to ensure private/link-local/control-plane destinations remain unreachable after DNS resolution and redirects.
+The derived Browser identity is supplied to both AgentCore Runtime and the control-plane service. Environment configuration is forbidden from independently overriding `AgentCoreBrowserIdentifier` or `AgentCoreBrowserResourceArn`. The deployment result records the non-secret Browser stack name plus exact Browser ID/ARN for operational correlation.
+
+This closes a product/deployment seam; it does not claim that VPC mode alone provides complete SSRF containment. Route tables, DNS behavior, security groups, network ACLs, firewall/proxy controls, and redirect-time resolution still require live validation.
 
 ### Review: security, tenancy, idempotency, concurrency, retry, verification, cost, observability, recovery
 
-- **Security:** protected deployments no longer accept the service-managed public Browser. The live custom Browser identity, readiness, and VPC network mode are checked before infrastructure mutation. This adds a second deployment/network layer behind the provider-neutral target URL guard without weakening either boundary.
-- **Tenant isolation:** unchanged. The Browser is deployment-owned infrastructure; automation/run ownership remains tenant/user scoped in application state. The control plane and execution plane are now forced to use the same verified Browser identifier.
-- **Idempotency/concurrency:** unchanged. Browser inspection is read-only and occurs before stack mutation. Exact deployment reruns continue to rely on CloudFormation idempotency and immutable release artifacts.
-- **Retry/timeout:** no new retry loop was added. If Browser inspection is unavailable, mismatched, not READY, or not VPC-backed, deployment fails closed rather than guessing.
-- **Side-effect verification:** workflow effect verification is unchanged. This slice only constrains the cloud Browser resource through which effects are executed.
-- **Cost:** one bounded control-plane Browser lookup is added per deployment. A rejected configuration fails before CloudFormation changes or browser/model execution cost.
-- **Observability:** the deployment result records only the non-secret Browser ID/ARN. It does not expose Browser Profiles, session IDs, Live View credentials, BYOK material, or workload tokens.
-- **User recovery:** unchanged. Existing target-auth takeover/resume continues to use the same deployment Browser/Profile boundary.
+- **Security:** the protected release no longer accepts a manually pasted Browser identity or public Browser mode. Browser authority is stack-derived from a template hard-coded to VPC mode, then independently checked against the AgentCore control plane before downstream deployment.
+- **Tenant isolation:** unchanged. The Browser is deployment-owned shared infrastructure; automations, profiles, runs, credentials, and human-resolution state remain tenant/user scoped. Runtime and control plane receive the same derived Browser ID.
+- **Idempotency/concurrency:** Browser lifecycle now inherits CloudFormation idempotency. Re-running an unchanged release/environment converges on the same Browser stack. Network-configuration changes may replace the Browser as defined by AWS; downstream stacks receive the newly derived identity only after readiness validation.
+- **Retry/timeout:** no retry loop was added. Invalid VPC identifiers fail locally before AWS access; Browser creation/update or readiness uncertainty fails the deployment rather than being guessed.
+- **Side-effect verification:** workflow verification semantics are unchanged. This slice only provisions the execution Browser boundary.
+- **Cost:** one CloudFormation Browser resource and one read-only Browser inspection are added to deployment. Browser/model session cost remains execution-driven; a Browser readiness failure stops before the rest of the application stacks are changed in that run.
+- **Observability:** deployment output records only stack name and Browser ID/ARN. Browser Profiles, sessions, Live View URLs, BYOK secrets, workload tokens, and browser contents remain excluded.
+- **User recovery:** unchanged. Capture, fresh/scheduled execution, and target-auth takeover/resume automatically use the same deployment-derived Browser.
 
 ### Validation added
 
-- The no-cloud deployment contract now supplies a realistic custom AgentCore Browser ID/ARN and verifies Browser inspection happens before the first CloudFormation deploy.
-- A `READY` VPC browser with non-empty security groups/subnets is accepted and its identifier is derived into the control-plane deployment.
-- A `PUBLIC` browser fails before any CloudFormation mutation.
-- The AWS-managed `aws.browser.v1` path fails locally before any AWS call.
-- An environment attempt to independently override the control-plane Browser identifier fails before any AWS call.
-- Existing derived callback/stack-output protections remain covered.
+- The no-cloud deployment contract statically requires `AWS::BedrockAgentCore::BrowserCustom`, `NetworkMode: VPC`, and the configured VPC security-group/subnet inputs.
+- Deployment order now begins with the Browser stack and verifies live Browser state before web/auth/runtime/application stacks.
+- Browser ID/ARN are derived from stack outputs and forwarded to both Runtime and control plane.
+- Invalid security-group/subnet identifiers fail before any AWS call.
+- A simulated live `PUBLIC` Browser state fails after the isolated Browser stack and before any application stack deployment.
+- Runtime/control-plane attempts to override the derived Browser identifier fail before AWS access.
+- Existing callback, artifact-version, release-ordering, packaging, and deployment-derived-value protections remain covered.
 
 ## Current release/deployment state
 
-The repository has deterministic production packages for AgentCore Runtime, control-plane/capture/dispatcher Lambda entrypoints, and the Next.js standalone Lambda. Release artifacts are uploaded create-only to a versioned S3 bucket and deployed by exact `VersionId`. The protected deployment workflow validates source before acquiring short-lived AWS credentials through GitHub OIDC, deploys stacks in dependency order, retains no GitHub Actions artifacts, and runs a public/auth-boundary smoke after deployment.
+The repository has deterministic production packages for AgentCore Runtime, control-plane/capture/dispatcher Lambda entrypoints, and the Next.js standalone Lambda. Release artifacts are uploaded create-only to a versioned S3 bucket and deployed by exact `VersionId`. The protected deployment workflow validates source before acquiring short-lived AWS credentials through GitHub OIDC, provisions the VPC custom AgentCore Browser, deploys application stacks in dependency order, retains no GitHub Actions artifacts, and runs a public/auth-boundary smoke after deployment.
 
 The intended AWS path is: Cognito email or optional Google sign-in -> BYOK -> Live View capture -> compile/inspect -> AgentCore Fresh Test submission -> automatically observed durable Fresh Test result -> publish with schedule + explicitly non-secret recurring capture inputs -> EventBridge scheduled dispatch -> AgentCore Browser/OpenAI execution -> verification -> semantic run history/SES -> bounded human attention -> secure target-auth takeover/resume.
 
 ## Next product milestones
 
-1. Require exact-head CI for this VPC-browser deployment slice; fix only root-caused failures without weakening checks.
-2. Configure a real custom AgentCore Browser in VPC mode with deployment-owned subnets/security groups and run the protected deployment workflow; require the live public/auth smoke gate to pass.
+1. Require exact-head CI for this Browser-provisioning slice; fix only root-caused failures without weakening checks.
+2. Run the protected deployment workflow with real VPC subnet/security-group IDs; require Browser creation/readiness validation and the live public/auth smoke gate to pass.
 3. Validate the live Browser network path against private/link-local/control-plane destinations after DNS resolution and redirects. If VPC routing/security groups alone cannot enforce the required internet/private separation, add an explicit egress proxy/firewall or domain allowlist before broad arbitrary-host production use.
 4. Exercise a Fresh Test that intentionally runs longer than 30 seconds and verify the request returns promptly, the page follows durable run state, and the final result appears without manual refresh.
 5. Execute the controlled interactive vertical demo from `outputs.webOrigin`: sign in -> BYOK -> Live View capture -> compile/inspect -> Fresh Test -> publish -> scheduled execution -> semantic diagnostics/history/email -> target-auth takeover/resume.
@@ -75,7 +78,8 @@ The intended AWS path is: Cognito email or optional Google sign-in -> BYOK -> Li
 
 ## Parked limitations / known risks
 
-- VPC Browser mode is now required by the protected deployer, but the repository cannot prove an environment's route tables, DNS controls, security groups, firewall/proxy behavior, or redirect-time destination resolution without live AWS validation. Do not treat `networkMode=VPC` by itself as complete SSRF containment.
+- VPC Browser mode is deployment-enforced, but the repository cannot prove an environment's route tables, DNS controls, security groups, network ACLs, firewall/proxy behavior, or redirect-time destination resolution without live AWS validation. Do not treat `networkMode=VPC` by itself as complete SSRF containment.
+- Changing Browser VPC networking can require replacement of the custom Browser. Deployment must validate Browser readiness before downstream stacks switch to the new identity; existing long-lived Browser Profile compatibility should be checked in the real environment before production network migrations.
 - Application-layer target validation blocks explicit private/local hosts but cannot by itself stop DNS rebinding or redirect-to-private behavior; retain it as defense in depth.
 - Background Fresh Test duplicate suppression is process-local; durable run occurrence identity and the automation lease remain the cross-process authority. Harden only if live Runtime replacement demonstrates a concrete duplicate-start defect.
 - Fresh Test page polling is bounded to five minutes; longer tests remain valid and can be followed through manual refresh/run diagnostics.

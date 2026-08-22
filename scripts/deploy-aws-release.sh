@@ -84,32 +84,31 @@ for name in ('agentCoreRuntime', 'controlPlaneService', 'webApp'):
 parameters = e.get('parameters')
 if not isinstance(parameters, dict):
     raise SystemExit('parameters must be object')
-for section in ('web', 'auth', 'runtime', 'scheduling', 'controlPlaneService'):
+for section in ('browser', 'web', 'auth', 'runtime', 'scheduling', 'controlPlaneService'):
     if not isinstance(parameters.get(section), dict):
         raise SystemExit(f'parameters.{section} must be object')
 if 'observability' in parameters and not isinstance(parameters['observability'], dict):
     raise SystemExit('invalid observability parameters')
 
-runtime = parameters['runtime']
-browser_id = runtime.get('AgentCoreBrowserIdentifier')
-browser_arn = runtime.get('AgentCoreBrowserResourceArn')
-custom_id_pattern = r'[a-zA-Z][a-zA-Z0-9_]{0,47}-[a-zA-Z0-9]{10}'
-if not isinstance(browser_id, str) or not re.fullmatch(custom_id_pattern, browser_id):
-    raise SystemExit('parameters.runtime.AgentCoreBrowserIdentifier must identify a custom AgentCore Browser')
-if browser_id == 'aws.browser.v1':
-    raise SystemExit('the protected deployment path does not allow the AWS-managed public browser')
-if not isinstance(browser_arn, str):
-    raise SystemExit('parameters.runtime.AgentCoreBrowserResourceArn is required')
-arn_pattern = (
-    r'arn:aws(?:-[^:]+)?:bedrock-agentcore:'
-    + re.escape(region)
-    + r':[0-9]{12}:browser-custom/'
-    + re.escape(browser_id)
-)
-if not re.fullmatch(arn_pattern, browser_arn):
-    raise SystemExit('parameters.runtime.AgentCoreBrowserResourceArn must match the custom browser id and deployment region')
+browser = parameters['browser']
+browser_name = browser.get('BrowserName')
+if not isinstance(browser_name, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,47}', browser_name):
+    raise SystemExit('parameters.browser.BrowserName must be a valid AgentCore Browser name')
+
+def validate_csv(value, pattern, label):
+    if not isinstance(value, str) or not value:
+        raise SystemExit(f'parameters.browser.{label} is required')
+    items = value.split(',')
+    if not 1 <= len(items) <= 16 or any(
+        item != item.strip() or not re.fullmatch(pattern, item) for item in items
+    ):
+        raise SystemExit(f'parameters.browser.{label} must be a comma-separated list of 1-16 valid identifiers')
+
+validate_csv(browser.get('SecurityGroupIds'), r'sg-[0-9A-Za-z]{8,17}', 'SecurityGroupIds')
+validate_csv(browser.get('SubnetIds'), r'subnet-[0-9A-Za-z]{8,17}', 'SubnetIds')
 
 reserved = {
+    'browser': {'NetworkMode'},
     'web': {
         'WebCodeBucket', 'WebCodeObjectKey', 'WebCodeObjectVersion',
         'ControlPlaneUrl', 'CognitoDomain', 'CognitoAppClientId', 'WebOrigin',
@@ -117,7 +116,7 @@ reserved = {
     'auth': {'ControlPlaneLambdaArn', 'WebCallbackUrl', 'WebLogoutUrl'},
     'runtime': {
         'RuntimeCodeBucket', 'RuntimeCodePrefix', 'RuntimeCodeVersionId',
-        'CognitoUserPoolId',
+        'CognitoUserPoolId', 'AgentCoreBrowserIdentifier', 'AgentCoreBrowserResourceArn',
     },
     'scheduling': {
         'AgentRuntimeArn', 'DispatcherCodeBucket', 'DispatcherCodeObjectKey',
@@ -150,56 +149,22 @@ for section, values in parameters.items():
 print(f'RELEASE_ID={release_id}')
 print(f'REGION={region}')
 print(f'STACK_PREFIX={prefix}')
-print(f'BROWSER_ID={browser_id}')
-print(f'BROWSER_ARN={browser_arn}')
 PY
 
 release_id=""
 region=""
 stack_prefix=""
-browser_id=""
-browser_arn=""
 while IFS='=' read -r key value; do
   case "$key" in
     RELEASE_ID) release_id="$value" ;;
     REGION) region="$value" ;;
     STACK_PREFIX) stack_prefix="$value" ;;
-    BROWSER_ID) browser_id="$value" ;;
-    BROWSER_ARN) browser_arn="$value" ;;
   esac
 done <"$meta"
 
 aws_args=(--region "$region")
 
-# A public AgentCore Browser is not an acceptable boundary for arbitrary user-selected
-# websites. Verify the exact deployment-owned custom Browser before mutating any stack.
-aws "${aws_args[@]}" bedrock-agentcore-control get-browser \
-  --browser-id "$browser_id" \
-  --output json >"$browser_state"
-python3 - "$browser_state" "$browser_id" "$browser_arn" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-state = json.loads(Path(sys.argv[1]).read_text())
-expected_id = sys.argv[2]
-expected_arn = sys.argv[3]
-if state.get('browserId') != expected_id or state.get('browserArn') != expected_arn:
-    raise SystemExit('AgentCore Browser identity does not match deployment configuration')
-if state.get('status') != 'READY':
-    raise SystemExit('AgentCore Browser must be READY before deployment')
-network = state.get('networkConfiguration')
-if not isinstance(network, dict) or network.get('networkMode') != 'VPC':
-    raise SystemExit('AgentCore Browser must use VPC network mode for protected deployment')
-vpc = network.get('vpcConfig')
-if not isinstance(vpc, dict):
-    raise SystemExit('AgentCore Browser VPC configuration is missing')
-for key in ('securityGroups', 'subnets'):
-    value = vpc.get(key)
-    if not isinstance(value, list) or not value or not all(isinstance(item, str) and item for item in value):
-        raise SystemExit(f'AgentCore Browser VPC {key} must be non-empty')
-PY
-
+browser_stack="$stack_prefix-browser"
 web_stack="$stack_prefix-web"
 auth_stack="$stack_prefix-auth"
 runtime_stack="$stack_prefix-runtime"
@@ -258,6 +223,57 @@ stack_output() {
   printf '%s' "$value"
 }
 
+# Provision the deployment-owned custom Browser itself. The CloudFormation resource is
+# hard-coded to VPC mode, so public Browser mode cannot be selected by environment JSON.
+mapfile -t browser_env < <(load_params browser)
+cf_deploy "$browser_stack" infra/aws/agentcore-browser.yaml "${browser_env[@]}"
+browser_id="$(stack_output "$browser_stack" BrowserId)"
+browser_arn="$(stack_output "$browser_stack" BrowserArn)"
+python3 - "$browser_id" "$browser_arn" "$region" <<'PY'
+import re
+import sys
+
+browser_id, browser_arn, region = sys.argv[1:]
+if not re.fullmatch(r'[a-zA-Z][a-zA-Z0-9_]{0,47}-[a-zA-Z0-9]{10}', browser_id):
+    raise SystemExit('browser stack returned invalid custom Browser ID')
+pattern = (
+    r'arn:aws(?:-[^:]+)?:bedrock-agentcore:'
+    + re.escape(region)
+    + r':[0-9]{12}:browser-custom/'
+    + re.escape(browser_id)
+)
+if not re.fullmatch(pattern, browser_arn):
+    raise SystemExit('browser stack returned mismatched custom Browser ARN')
+PY
+
+# Verify the actual service state before any application stack receives Browser authority.
+aws "${aws_args[@]}" bedrock-agentcore-control get-browser \
+  --browser-id "$browser_id" \
+  --output json >"$browser_state"
+python3 - "$browser_state" "$browser_id" "$browser_arn" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state = json.loads(Path(sys.argv[1]).read_text())
+expected_id = sys.argv[2]
+expected_arn = sys.argv[3]
+if state.get('browserId') != expected_id or state.get('browserArn') != expected_arn:
+    raise SystemExit('AgentCore Browser identity does not match deployed browser stack')
+if state.get('status') != 'READY':
+    raise SystemExit('AgentCore Browser must be READY before application deployment')
+network = state.get('networkConfiguration')
+if not isinstance(network, dict) or network.get('networkMode') != 'VPC':
+    raise SystemExit('AgentCore Browser must use VPC network mode for protected deployment')
+vpc = network.get('vpcConfig')
+if not isinstance(vpc, dict):
+    raise SystemExit('AgentCore Browser VPC configuration is missing')
+for key in ('securityGroups', 'subnets'):
+    value = vpc.get(key)
+    if not isinstance(value, list) or not value or not all(isinstance(item, str) and item for item in value):
+        raise SystemExit(f'AgentCore Browser VPC {key} must be non-empty')
+PY
+
 mapfile -t web_env < <(load_params web)
 mapfile -t web_release < <(manifest_params webApp)
 cf_deploy "$web_stack" infra/aws/web-app.yaml "${web_env[@]}" "${web_release[@]}"
@@ -294,7 +310,9 @@ mapfile -t runtime_release < <(manifest_params agentCoreRuntime)
 cf_deploy "$runtime_stack" infra/aws/agentcore-runtime.yaml \
   "${runtime_env[@]}" \
   "${runtime_release[@]}" \
-  "CognitoUserPoolId=$user_pool"
+  "CognitoUserPoolId=$user_pool" \
+  "AgentCoreBrowserIdentifier=$browser_id" \
+  "AgentCoreBrowserResourceArn=$browser_arn"
 runtime_arn="$(stack_output "$runtime_stack" AgentRuntimeArn)"
 runtime_role="$(stack_output "$runtime_stack" AgentRuntimeExecutionRoleArn)"
 
@@ -373,6 +391,7 @@ tmp="$output.tmp"
 RELEASE_ID="$release_id" \
 REGION="$region" \
 PREFIX="$stack_prefix" \
+BROWSER_STACK="$browser_stack" \
 WEB_STACK="$web_stack" \
 AUTH_STACK="$auth_stack" \
 RUNTIME_STACK="$runtime_stack" \
@@ -398,6 +417,7 @@ print(json.dumps({
     'region': os.environ['REGION'],
     'stackPrefix': os.environ['PREFIX'],
     'stacks': {
+        'agentCoreBrowser': os.environ['BROWSER_STACK'],
         'web': os.environ['WEB_STACK'],
         'auth': os.environ['AUTH_STACK'],
         'agentCoreRuntime': os.environ['RUNTIME_STACK'],
