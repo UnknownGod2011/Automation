@@ -17,7 +17,11 @@ The environment JSON contains deployment configuration only. Web callback/logout
   "stackPrefix": "automation-prod",
   "parameters": {
     "web": { "ReservedConcurrency": 5, "MemorySize": 1024 },
-    "auth": { "UserPoolDomainPrefix": "automation-prod-example" },
+    "auth": {
+      "UserPoolDomainPrefix": "automation-prod-example",
+      "GoogleClientId": "1234567890-example.apps.googleusercontent.com",
+      "GoogleClientSecretArn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:automation/google-oauth-example"
+    },
     "runtime": {
       "EnvironmentName": "prod",
       "AutomationTenantId": "tenant-prod",
@@ -36,6 +40,14 @@ The environment JSON contains deployment configuration only. Web callback/logout
   }
 }
 ```
+
+## Optional Google sign-in
+
+Native Cognito email sign-in is always available. Google federation is optional and is enabled only when both `GoogleClientId` and `GoogleClientSecretArn` are present in `parameters.auth`; supplying only one fails the CloudFormation rule instead of silently creating a partial identity configuration.
+
+Create the Google OAuth web client separately and configure its redirect URI for the Cognito managed-login domain according to Cognito/Google requirements. Store the OAuth client secret as the entire `SecretString` of an AWS Secrets Manager secret. Put only that secret's ARN in `AUTOMATION_AWS_ENVIRONMENT_JSON`; never put the client secret itself in GitHub variables, the deployment JSON, CloudFormation parameters, Lambda environment variables, or repository files.
+
+`control-plane-auth.yaml` resolves the client secret through a versionless Secrets Manager dynamic reference when it creates the conditional `AWS::Cognito::UserPoolIdentityProvider`. The deployment principal therefore needs narrowly scoped `secretsmanager:GetSecretValue` access to that configured secret in addition to the existing CloudFormation permissions. CloudFormation keeps the resolved secret out of stack parameters/logs, while Cognito necessarily receives it as the external IdP credential. Omitting both Google parameters preserves the email-only deployment path.
 
 ## Deployment order and web security
 

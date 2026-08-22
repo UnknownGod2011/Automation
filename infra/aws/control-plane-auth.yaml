@@ -16,9 +16,36 @@ Parameters:
     Type: String
     AllowedPattern: '^[a-z0-9-]{1,63}$'
     Description: Globally unique Cognito managed-login domain prefix in this region.
+  GoogleClientId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[A-Za-z0-9._-]+\.apps\.googleusercontent\.com$'
+    Description: Optional Google OAuth web client ID. Leave empty together with GoogleClientSecretArn to keep Cognito email sign-in only.
+  GoogleClientSecretArn:
+    Type: String
+    Default: ''
+    Description: Optional same-account Secrets Manager ARN whose entire SecretString is the Google OAuth client secret. The secret value is never a stack parameter.
+
+Rules:
+  GoogleFederationParameters:
+    Assertions:
+      - Assert:
+          Fn::Or:
+            - Fn::And:
+                - Fn::Not:
+                    - Fn::Equals: [!Ref GoogleClientId, '']
+                - Fn::Not:
+                    - Fn::Equals: [!Ref GoogleClientSecretArn, '']
+            - Fn::And:
+                - Fn::Equals: [!Ref GoogleClientId, '']
+                - Fn::Equals: [!Ref GoogleClientSecretArn, '']
+        AssertDescription: GoogleClientId and GoogleClientSecretArn must either both be configured or both be empty.
 
 Conditions:
   HasControlPlaneLambda: !Not [!Equals [!Ref ControlPlaneLambdaArn, '']]
+  HasGoogleFederation: !And
+    - !Not [!Equals [!Ref GoogleClientId, '']]
+    - !Not [!Equals [!Ref GoogleClientSecretArn, '']]
 
 Resources:
   AutomationUserPool:
@@ -42,6 +69,21 @@ Resources:
           RequireUppercase: true
           TemporaryPasswordValidityDays: 7
 
+  AutomationGoogleIdentityProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Condition: HasGoogleFederation
+    Properties:
+      UserPoolId: !Ref AutomationUserPool
+      ProviderName: Google
+      ProviderType: Google
+      ProviderDetails:
+        authorize_scopes: 'email profile openid'
+        client_id: !Ref GoogleClientId
+        client_secret: !Sub '{{resolve:secretsmanager:${GoogleClientSecretArn}:SecretString}}'
+      AttributeMapping:
+        email: email
+        name: name
+
   AutomationWebClient:
     Type: AWS::Cognito::UserPoolClient
     Properties:
@@ -63,6 +105,7 @@ Resources:
         - !Ref WebLogoutUrl
       SupportedIdentityProviders:
         - COGNITO
+        - !If [HasGoogleFederation, !Ref AutomationGoogleIdentityProvider, !Ref 'AWS::NoValue']
       AccessTokenValidity: 1
       IdTokenValidity: 1
       RefreshTokenValidity: 30
@@ -151,5 +194,7 @@ Outputs:
     Description: Trusted user-directory source for scheduled notification recipient resolution.
   CognitoDomain:
     Value: !Sub 'https://${UserPoolDomainPrefix}.auth.${AWS::Region}.amazoncognito.com'
+  GoogleFederationEnabled:
+    Value: !If [HasGoogleFederation, 'true', 'false']
   RequiredWebEnvironment:
     Value: 'AUTOMATION_CONTROL_PLANE_URL, AUTOMATION_COGNITO_DOMAIN, AWS_COGNITO_APP_CLIENT_ID, AUTOMATION_WEB_ORIGIN'

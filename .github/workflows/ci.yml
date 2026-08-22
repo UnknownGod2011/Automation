@@ -43,6 +43,9 @@ jobs:
       - name: Verify web hosting security contract
         shell: bash
         run: bash scripts/test-web-hosting-contract.sh
+      - name: Verify Cognito Google federation contract
+        shell: bash
+        run: bash scripts/test-cognito-google-federation.sh
       - name: Verify AWS release artifact contract
         shell: bash
         run: bash scripts/test-release-aws-artifacts.sh
