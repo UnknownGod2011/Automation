@@ -53,15 +53,23 @@ The existing schedule lifecycle already provides the correct production fence fo
 
 ### Regression coverage
 
-New tests prove:
+Tests prove:
 
 - only non-executing authoring states (`DRAFT`, `COMPILING`, `READY_TO_TEST`, `READY_TO_PUBLISH`, `DISABLED`) permit capture;
 - executable, in-flight, and human-attention states remain rejected;
 - a disabled published automation can accept a new capture while preserving its published version, schedule, Browser Profile reference, and previous scheduled-input metadata during authoring;
 - an active published automation still cannot accept capture;
-- a successfully tested but not yet published automation can return to capture for correction.
+- a successfully tested but not yet published automation can return to capture for correction;
+- each immutable compile still requires a newly accepted capture.
 
-Exact-head GitHub Actions remains authoritative. This slice is not considered validated until CI completes on the final published commit.
+### CI #242 root cause and corrective boundary
+
+The normal product commit `51bf7daf51828713981a93429b7d3f085ea26698` reached GitHub Actions CI #242. Deterministic lock verification, frozen install, `pnpm check`, all production package builds, and every AWS deployment/release/demo/OIDC contract passed. The full test run then exposed exactly two stale assertions in the pre-existing `workflow-authoring-state.test.ts`:
+
+- it still expected `READY_TO_PUBLISH` and `DISABLED` to be rejected even though this slice deliberately makes those non-executing states revision-capable;
+- it still matched the previous `pre-publish workflow-authoring state` error text rather than the new `non-executing workflow-authoring state` contract.
+
+The new workflow-revision tests themselves passed. The corrective change updates only those stale assertions and this progress record; production behavior and CI strictness are unchanged. Exact-head GitHub Actions remains authoritative, so the corrective head is not considered validated until its CI run completes successfully.
 
 ## Known production risks intentionally left visible
 
