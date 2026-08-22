@@ -1,7 +1,7 @@
 import type { CaptureTrace } from "@automation/contracts";
 import type { OwnershipScope } from "./index.js";
 
-export type CaptureSessionStatus = "STARTED" | "COMPLETED";
+export type CaptureSessionStatus = "STARTED" | "COMPLETED" | "CANCELED";
 
 export interface CaptureSessionRecord {
   tenantId: string;
@@ -15,6 +15,7 @@ export interface CaptureSessionRecord {
   status: CaptureSessionStatus;
   traceId?: string;
   completedAt?: string;
+  canceledAt?: string;
 }
 
 export interface CaptureSessionStore {
@@ -128,6 +129,9 @@ export class CaptureCompletionService {
       }
       return { traceId: record.traceId, replayed: true, cleanupPending: false };
     }
+    if (record.status === "CANCELED") {
+      throw new Error("capture session was canceled before completion");
+    }
 
     const now = this.now();
     if (new Date(record.expiresAt).getTime() <= now.getTime()) {
@@ -180,8 +184,8 @@ export class InMemoryCaptureSessionStore implements CaptureSessionStore {
   private readonly records = new Map<string, CaptureSessionRecord>();
 
   async putStarted(record: CaptureSessionRecord): Promise<void> {
-    if (record.status !== "STARTED" || record.traceId || record.completedAt) {
-      throw new Error("new capture session must be STARTED without completion metadata");
+    if (record.status !== "STARTED" || record.traceId || record.completedAt || record.canceledAt) {
+      throw new Error("new capture session must be STARTED without terminal metadata");
     }
     const scope = { tenantId: record.tenantId, userId: record.userId };
     const recordKey = key(scope, record.captureSessionId);
@@ -208,6 +212,7 @@ export class InMemoryCaptureSessionStore implements CaptureSessionStore {
       if (record.traceId !== traceId) throw new Error("capture session completion conflict");
       return "REPLAY";
     }
+    if (record.status !== "STARTED") throw new Error("capture session is not active");
     this.records.set(recordKey, {
       ...record,
       status: "COMPLETED",

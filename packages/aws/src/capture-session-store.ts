@@ -45,7 +45,7 @@ export class AwsDynamoCaptureSessionStore implements CaptureSessionStore {
   }
 
   async putStarted(record: CaptureSessionRecord): Promise<void> {
-    if (record.status !== "STARTED" || record.traceId || record.completedAt) throw new Error("new capture session must be STARTED without completion metadata");
+    if (record.status !== "STARTED" || record.traceId || record.completedAt || record.canceledAt) throw new Error("new capture session must be STARTED without terminal metadata");
     const scope = { tenantId: record.tenantId, userId: record.userId };
     await this.client.send(new TransactWriteCommand({
       TransactItems: [
@@ -91,6 +91,35 @@ export class AwsDynamoCaptureSessionStore implements CaptureSessionStore {
     return record.status === "STARTED" ? record : null;
   }
 
+  async cancel(scope: OwnershipScope, captureSessionId: string, canceledAt: string): Promise<"CANCELED" | "REPLAY"> {
+    const existing = await this.get(scope, captureSessionId);
+    if (!existing) throw new Error("capture session not found");
+    if (existing.status === "CANCELED") return "REPLAY";
+    if (existing.status !== "STARTED") throw new Error("capture session is not active");
+    const canceled: CaptureSessionRecord = { ...existing, status: "CANCELED", canceledAt };
+    try {
+      await this.client.send(new TransactWriteCommand({
+        TransactItems: [
+          { Put: { TableName: this.tableName, Item: { pk: scopePk(scope), sk: sessionSk(captureSessionId), entity: "CaptureSession", record: structuredClone(canceled) }, ConditionExpression: "#record.#status = :started", ExpressionAttributeNames: { "#record": "record", "#status": "status" }, ExpressionAttributeValues: { ":started": "STARTED" } } },
+          {
+            Delete: {
+              TableName: this.tableName,
+              Key: { pk: scopePk(scope), sk: currentSk(existing.automationId) },
+              ConditionExpression: "captureSessionId = :captureSessionId",
+              ExpressionAttributeValues: { ":captureSessionId": captureSessionId },
+            },
+          },
+        ],
+      }));
+      return "CANCELED";
+    } catch (error) {
+      if (!conditionalFailure(error)) throw error;
+      const winner = await this.get(scope, captureSessionId);
+      if (winner?.status === "CANCELED") return "REPLAY";
+      throw new Error("capture session cancellation conflict");
+    }
+  }
+
   async complete(scope: OwnershipScope, captureSessionId: string, traceId: string, completedAt: string): Promise<"COMPLETED" | "REPLAY"> {
     const existing = await this.get(scope, captureSessionId);
     if (!existing) throw new Error("capture session not found");
@@ -98,6 +127,7 @@ export class AwsDynamoCaptureSessionStore implements CaptureSessionStore {
       if (existing.traceId !== traceId) throw new Error("capture session completion conflict");
       return "REPLAY";
     }
+    if (existing.status !== "STARTED") throw new Error("capture session is not active");
     const completed: CaptureSessionRecord = { ...existing, status: "COMPLETED", traceId, completedAt };
     try {
       await this.client.send(new TransactWriteCommand({

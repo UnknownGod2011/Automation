@@ -8,7 +8,7 @@ import { InMemoryCaptureSessionStore, type CaptureSessionRecord } from "./captur
 import {
   CaptureAwareControlPlaneHttpHandler,
   CaptureRecordingControlPlaneService,
-  type ActiveCaptureSessionReader,
+  type ActiveCaptureSessionStore,
   type CaptureCollectionTaskStarter,
   type ControlPlaneHttpHandlerPort,
 } from "./capture-recording.js";
@@ -29,27 +29,47 @@ const record: CaptureSessionRecord = {
 };
 
 async function setup(taskStarter?: CaptureCollectionTaskStarter) {
-  const sessions = new InMemoryCaptureSessionStore();
+  const durableSessions = new InMemoryCaptureSessionStore();
   const controls = new InMemoryCaptureCollectionControlStore();
-  await sessions.putStarted(record);
+  await durableSessions.putStarted(record);
   await controls.putInitial(initialCaptureCollectionControlRecord({
     scope: owner,
     automationId: record.automationId,
     captureSessionId: record.captureSessionId,
     updatedAt: record.startedAt,
   }));
-  const active: ActiveCaptureSessionReader = {
+  let activeRecord: CaptureSessionRecord | null = structuredClone(record);
+  const sessions: ActiveCaptureSessionStore = {
     async activeForAutomation(scope, automationId) {
       if (scope.tenantId !== owner.tenantId || scope.userId !== owner.userId || automationId !== record.automationId) return null;
-      return structuredClone(record);
+      return activeRecord ? structuredClone(activeRecord) : null;
+    },
+    async cancel(scope, captureSessionId, canceledAt) {
+      if (scope.tenantId !== owner.tenantId || scope.userId !== owner.userId || captureSessionId !== record.captureSessionId) {
+        throw new Error("capture session not found");
+      }
+      if (!activeRecord) return "REPLAY";
+      activeRecord = { ...activeRecord, status: "CANCELED", canceledAt };
+      return "CANCELED";
     },
   };
   const control = new CaptureCollectionControlService(
-    sessions,
+    durableSessions,
     controls,
     () => new Date("2026-08-21T00:10:00.000Z"),
   );
-  return { service: new CaptureRecordingControlPlaneService(active, control, taskStarter), controls };
+  const stop = vi.fn(async () => undefined);
+  return {
+    service: new CaptureRecordingControlPlaneService(
+      sessions,
+      control,
+      taskStarter,
+      { stop },
+      () => new Date("2026-08-21T00:20:00.000Z"),
+    ),
+    controls,
+    stop,
+  };
 }
 
 describe("CaptureRecordingControlPlaneService", () => {
@@ -115,6 +135,42 @@ describe("CaptureRecordingControlPlaneService", () => {
     expect(start).toHaveBeenCalledTimes(2);
   });
 
+  it("durably cancels the active capture before stopping its ephemeral browser", async () => {
+    const events: string[] = [];
+    let activeRecord: CaptureSessionRecord | null = structuredClone(record);
+    const sessions: ActiveCaptureSessionStore = {
+      async activeForAutomation() { return activeRecord ? structuredClone(activeRecord) : null; },
+      async cancel(_scope, _captureSessionId, canceledAt) {
+        events.push("cancel-durable");
+        activeRecord = { ...record, status: "CANCELED", canceledAt };
+        return "CANCELED";
+      },
+    };
+    const durableSessions = new InMemoryCaptureSessionStore();
+    const controls = new InMemoryCaptureCollectionControlStore();
+    await durableSessions.putStarted(record);
+    await controls.putInitial(initialCaptureCollectionControlRecord({ scope: owner, automationId: "auto-1", captureSessionId: "capture-1", updatedAt: record.startedAt }));
+    const service = new CaptureRecordingControlPlaneService(
+      sessions,
+      new CaptureCollectionControlService(durableSessions, controls),
+      undefined,
+      { async stop() { events.push("stop-browser"); } },
+      () => new Date("2026-08-21T00:20:00.000Z"),
+    );
+
+    await expect(service.cancel(owner, "auto-1")).resolves.toEqual({ kind: "CANCELED", cleanupPending: false });
+    expect(events).toEqual(["cancel-durable", "stop-browser"]);
+    await expect(service.state(owner, "auto-1")).resolves.toEqual({ kind: "NONE" });
+  });
+
+  it("keeps cancellation authoritative when browser cleanup fails", async () => {
+    const { service, stop } = await setup();
+    stop.mockRejectedValueOnce(new Error("stop uncertain"));
+
+    await expect(service.cancel(owner, "auto-1")).resolves.toEqual({ kind: "CANCELED", cleanupPending: true });
+    await expect(service.state(owner, "auto-1")).resolves.toEqual({ kind: "NONE" });
+  });
+
   it("rejects cross-tenant and stale-session commands before changing control state", async () => {
     const { service, controls } = await setup();
 
@@ -151,6 +207,21 @@ describe("CaptureAwareControlPlaneHttpHandler", () => {
     expect(started.status).toBe(200);
     expect(started.body).toMatchObject({ kind: "ACTIVE", phase: "WORKFLOW" });
     expect(delegated).toEqual({ status: 204, body: null });
+  });
+
+  it("cancels the server-resolved active capture without accepting a browser-supplied session id", async () => {
+    const { service } = await setup();
+    const base: ControlPlaneHttpHandlerPort = { async handle() { return { status: 404, body: null }; } };
+    const handler = new CaptureAwareControlPlaneHttpHandler(base, service);
+
+    const response = await handler.handle({
+      method: "POST",
+      path: "/v1/automations/auto-1/capture-recording/cancel",
+      body: { captureSessionId: "forged-capture" },
+    }, { scope: owner });
+
+    expect(response).toEqual({ status: 200, body: { kind: "CANCELED", cleanupPending: false } });
+    await expect(service.state(owner, "auto-1")).resolves.toEqual({ kind: "NONE" });
   });
 
   it("returns sanitized conflicts instead of provider or browser state", async () => {

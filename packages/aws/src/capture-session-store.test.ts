@@ -75,6 +75,34 @@ describe("AwsDynamoCaptureSessionStore", () => {
     await expect(store.activeForAutomation(scope, "auto-1")).resolves.toBeNull();
   });
 
+  it("atomically cancels the active session and releases only its exact current-capture claim", async () => {
+    const client = new FakeClient();
+    client.responses.push(item(record), {});
+    const store = new AwsDynamoCaptureSessionStore(client, "state-table");
+
+    await expect(store.cancel(scope, "capture-1", "2026-08-20T00:08:00.000Z")).resolves.toBe("CANCELED");
+    const transaction = client.commands[1] as { input?: { TransactItems?: Array<{ Put?: { Item?: Record<string, unknown> }; Delete?: { ConditionExpression?: string; ExpressionAttributeValues?: Record<string, unknown> } }> } };
+    expect(transaction.input?.TransactItems).toHaveLength(2);
+    expect(transaction.input?.TransactItems?.[0]?.Put?.Item).toMatchObject({
+      record: expect.objectContaining({ status: "CANCELED", canceledAt: "2026-08-20T00:08:00.000Z" }),
+    });
+    expect(transaction.input?.TransactItems?.[1]?.Delete?.ConditionExpression).toBe("captureSessionId = :captureSessionId");
+    expect(transaction.input?.TransactItems?.[1]?.Delete?.ExpressionAttributeValues).toEqual({ ":captureSessionId": "capture-1" });
+  });
+
+  it("classifies a lost conditional cancellation race as replay only for a canceled winner", async () => {
+    const client = new FakeClient();
+    const conditional = Object.assign(new Error("lost race"), { name: "TransactionCanceledException" });
+    client.responses.push(
+      item(record),
+      conditional,
+      item({ ...record, status: "CANCELED", canceledAt: "2026-08-20T00:08:00.000Z" }),
+    );
+    const store = new AwsDynamoCaptureSessionStore(client, "state-table");
+
+    await expect(store.cancel(scope, "capture-1", "2026-08-20T00:08:00.000Z")).resolves.toBe("REPLAY");
+  });
+
   it("atomically commits completion, latest-trace pointer, and release of the exact current-capture claim", async () => {
     const client = new FakeClient();
     client.responses.push(item(record), {});

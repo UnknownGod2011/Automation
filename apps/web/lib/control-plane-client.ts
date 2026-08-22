@@ -1,5 +1,6 @@
 import type {
   AutomationSummaryView,
+  CaptureCancellationResult,
   CaptureRecordingView,
   CaptureStartResult,
   DashboardView,
@@ -187,6 +188,12 @@ export class WebControlPlaneClient {
   async finishCaptureRecording(automationId: string, captureSessionId: string): Promise<CaptureRecordingView> {
     return this.request(`/v1/automations/${encodeURIComponent(automationId)}/capture-recording/finish`, {
       method: "POST", body: JSON.stringify({ captureSessionId }),
+    });
+  }
+
+  async cancelCaptureRecording(automationId: string): Promise<CaptureCancellationResult> {
+    return this.request(`/v1/automations/${encodeURIComponent(automationId)}/capture-recording/cancel`, {
+      method: "POST", body: "{}",
     });
   }
 

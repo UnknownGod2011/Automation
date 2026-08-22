@@ -85,13 +85,17 @@ describe("WebControlPlaneClient", () => {
   });
 
   it("routes capture recording state and commands through authenticated server requests", async () => {
-    const fetchImpl = vi.fn<FetchLike>(async () => new Response(JSON.stringify({
-      kind: "ACTIVE",
-      captureSessionId: "capture-1",
-      phase: "WORKFLOW",
-      finishRequested: false,
-      expiresAt: "2026-08-21T10:00:00.000Z",
-    }), { status: 200 }));
+    const fetchImpl = vi.fn<FetchLike>(async (input) => new Response(JSON.stringify(
+      String(input).endsWith("/cancel")
+        ? { kind: "CANCELED", cleanupPending: true }
+        : {
+            kind: "ACTIVE",
+            captureSessionId: "capture-1",
+            phase: "WORKFLOW",
+            finishRequested: false,
+            expiresAt: "2026-08-21T10:00:00.000Z",
+          },
+    ), { status: 200 }));
     const client = new WebControlPlaneClient(
       { baseUrl: "https://control.example.test", bearerToken: "request-token" },
       fetchImpl,
@@ -100,6 +104,7 @@ describe("WebControlPlaneClient", () => {
     await client.captureRecording("customer/demo");
     await client.startCaptureRecording("customer/demo", "capture-1");
     await client.finishCaptureRecording("customer/demo", "capture-1");
+    await expect(client.cancelCaptureRecording("customer/demo")).resolves.toEqual({ kind: "CANCELED", cleanupPending: true });
 
     expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(
       "https://control.example.test/v1/automations/customer%2Fdemo/capture-recording",
@@ -112,6 +117,10 @@ describe("WebControlPlaneClient", () => {
     expect(String(fetchImpl.mock.calls[2]?.[0])).toBe(
       "https://control.example.test/v1/automations/customer%2Fdemo/capture-recording/finish",
     );
+    expect(String(fetchImpl.mock.calls[3]?.[0])).toBe(
+      "https://control.example.test/v1/automations/customer%2Fdemo/capture-recording/cancel",
+    );
+    expect(fetchImpl.mock.calls[3]?.[1]?.body).toBe("{}");
   });
 
   it("routes schedule lifecycle commands through the authenticated control plane", async () => {

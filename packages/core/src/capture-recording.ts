@@ -1,4 +1,4 @@
-import type { CaptureSessionRecord } from "./capture-completion.js";
+import type { CaptureSessionFinalizer, CaptureSessionRecord } from "./capture-completion.js";
 import type { CaptureCollectionControlService } from "./capture-control.js";
 import { ControlPlaneError } from "./control-plane.js";
 import type {
@@ -10,6 +10,14 @@ import type { OwnershipScope } from "./index.js";
 
 export interface ActiveCaptureSessionReader {
   activeForAutomation(scope: OwnershipScope, automationId: string): Promise<CaptureSessionRecord | null>;
+}
+
+export interface ActiveCaptureSessionStore extends ActiveCaptureSessionReader {
+  cancel(
+    scope: OwnershipScope,
+    captureSessionId: string,
+    canceledAt: string,
+  ): Promise<"CANCELED" | "REPLAY">;
 }
 
 export interface CaptureCollectionTaskStarter {
@@ -30,6 +38,10 @@ export type CaptureRecordingView =
       expiresAt: string;
     };
 
+export type CaptureCancellationResult =
+  | { kind: "NONE" }
+  | { kind: "CANCELED"; cleanupPending: boolean };
+
 export interface CaptureRecordingCommand {
   scope: OwnershipScope;
   automationId: string;
@@ -45,9 +57,11 @@ function token(value: string, name: string): string {
 
 export class CaptureRecordingControlPlaneService {
   constructor(
-    private readonly sessions: ActiveCaptureSessionReader,
+    private readonly sessions: ActiveCaptureSessionStore,
     private readonly controls: Pick<CaptureCollectionControlService, "getState" | "startWorkflow" | "finish">,
     private readonly taskStarter?: CaptureCollectionTaskStarter,
+    private readonly finalizer?: Pick<CaptureSessionFinalizer, "stop">,
+    private readonly now: () => Date = () => new Date(),
   ) {}
 
   private async current(command: { scope: OwnershipScope; automationId: string }): Promise<CaptureSessionRecord | null> {
@@ -140,6 +154,28 @@ export class CaptureRecordingControlPlaneService {
       throw new ControlPlaneError("CONFLICT", "capture finish could not be requested");
     }
   }
+
+  async cancel(scope: OwnershipScope, automationId: string): Promise<CaptureCancellationResult> {
+    const record = await this.current({ scope, automationId });
+    if (!record) return { kind: "NONE" };
+    try {
+      // Cancellation becomes durable before browser cleanup. A racing capture worker therefore
+      // cannot later persist a profile/trace after the user has explicitly abandoned the session.
+      await this.sessions.cancel(scope, record.captureSessionId, this.now().toISOString());
+      let cleanupPending = false;
+      if (this.finalizer) {
+        try {
+          await this.finalizer.stop(scope, record);
+        } catch {
+          cleanupPending = true;
+        }
+      }
+      return { kind: "CANCELED", cleanupPending };
+    } catch (error) {
+      if (error instanceof ControlPlaneError) throw error;
+      throw new ControlPlaneError("CONFLICT", "capture could not be canceled");
+    }
+  }
 }
 
 export interface ControlPlaneHttpHandlerPort {
@@ -197,6 +233,9 @@ export class CaptureAwareControlPlaneHttpHandler implements ControlPlaneHttpHand
     try {
       if (request.method === "GET" && route.length === 4) {
         return { status: 200, body: await this.capture.state(context.scope, automationId) };
+      }
+      if (request.method === "POST" && route.length === 5 && route[4] === "cancel") {
+        return { status: 200, body: await this.capture.cancel(context.scope, automationId) };
       }
       if (request.method === "POST" && route.length === 5 && (route[4] === "start" || route[4] === "finish")) {
         const body = bodyObject(request.body);

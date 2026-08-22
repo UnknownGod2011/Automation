@@ -10,7 +10,7 @@ import { parseScheduledInputForm } from "../../../../../../lib/scheduled-input-f
 import { createAuthenticatedWebControlPlaneClient, WebAuthError } from "../../../../../../lib/server-auth";
 
 function redirectBack(request: Request, automationId: string, notice: string): NextResponse { return NextResponse.redirect(new URL(`/automations/${encodeURIComponent(automationId)}?notice=${encodeURIComponent(notice)}`, request.url), 303); }
-const COMMANDS = ["capture", "record-workflow", "finish-capture", "compile", "test", "publish", "schedule", "pause", "resume", "disable"] as const;
+const COMMANDS = ["capture", "record-workflow", "finish-capture", "cancel-capture", "compile", "test", "publish", "schedule", "pause", "resume", "disable"] as const;
 
 export async function POST(request: Request, context: { params: Promise<{ automationId: string; command: string }> }): Promise<Response> {
   if (!isSameOriginMutation(request.url, request.headers)) return new NextResponse("Forbidden", { status: 403 });
@@ -22,6 +22,10 @@ export async function POST(request: Request, context: { params: Promise<{ automa
     if (command === "capture") {
       const result = await client.capture(automationId); if (result.kind === "NOT_CONFIGURED") return redirectBack(request, automationId, "not-configured");
       try { return createCaptureLiveViewHandoff(automationId, result.liveViewUrl); } catch { return redirectBack(request, automationId, "request-failed"); }
+    }
+    if (command === "cancel-capture") {
+      await client.cancelCaptureRecording(automationId);
+      return redirectBack(request, automationId, "capture-canceled");
     }
     if (command === "record-workflow" || command === "finish-capture") {
       const recording = await client.captureRecording(automationId); const captureSessionId = serverResolvedCaptureSessionId(recording, command);

@@ -8,63 +8,69 @@ Recovery/crash machinery is intentionally parked unless an end-to-end correctnes
 
 ## Incoming validation
 
-- Incoming branch head: `b1917e6de47a5a1c7b290e909a1d3a6453aeae72` (`Show truthful automation lifecycle status`).
-- GitHub Actions CI #236 completed successfully on that exact head before this slice began.
+- Incoming branch head: `03793684a4411d2df2608d9b53993208cc08a456` (`Prevent duplicate active cloud captures`).
+- GitHub Actions CI #237 completed successfully on that exact head before this slice began.
 - The PR remains open, draft, and unmerged.
 - Deterministic pnpm lock verification, frozen installation, strict TypeScript/Next.js validation, production packaging, AWS release/deployment/demo/OIDC contracts, and the full test suite are mandatory gates.
 
-## This slice — prevent duplicate active cloud captures
+## This slice — cancel and restart an abandoned cloud capture
 
-### Defect found
+### Product defect found
 
-The production capture starter allocated an AgentCore Browser session before establishing whether the same tenant/user/automation already had a live `STARTED` capture. A repeated capture request (double click, stale page, transport retry, or two workers racing) could therefore allocate another browser session and overwrite the durable current-capture pointer. That creates unnecessary AgentCore cost and, under a race, ambiguous capture ownership until one session times out.
+The new active-capture concurrency guard correctly prevents a second authoritative capture while an unexpired `STARTED` capture exists. That exposed a user-facing dead end: if the user accidentally closes or loses the short-lived Live View capability, the platform intentionally cannot reconstruct that signed URL, but it also had no explicit way to abandon the durable active capture. The user could therefore be blocked from starting over until the old session expired.
 
 ### Changes
 
-- `AgentCoreCaptureSessionStarter` now performs a strongly-consistent active-capture preflight when the configured durable store supports `activeForAutomation`.
-  - A matching unexpired `STARTED` capture rejects **before** browser allocation, Live View signing, or control-state mutation.
-  - An expired capture does not permanently block a replacement.
-  - Durable tenant/user/automation identity and expiry are revalidated before the preflight can suppress or allow browser compute.
-- `AwsDynamoCaptureSessionStore.putStarted` now treats the current-capture pointer as a per-automation concurrency claim.
-  - The pointer stores `expiresAt`.
-  - A conditional transaction permits a new pointer only when none exists, a legacy pointer lacks the new expiry field, or the previous pointer has expired.
-  - Concurrent starts that both pass preflight can no longer both become durable winners; a loser fails the transaction and the starter cleans up its newly-created browser session through the existing failure path.
-- Capture completion now removes the **exact matching** current-capture pointer in the same DynamoDB transaction that commits the completed session and latest-trace pointer. A completion cannot delete another capture's claim.
+- Capture sessions now have an explicit terminal `CANCELED` state with a bounded cancellation timestamp.
+- The capture-recording control plane exposes an authenticated, server-resolved cancellation command.
+  - The browser does not submit a capture-session ID for cancellation.
+  - The service resolves the tenant/user/automation-scoped active capture from durable state.
+  - Cancellation is persisted before browser cleanup is attempted, so a racing collector cannot later turn an abandoned capture into an accepted profile/trace.
+- `AwsDynamoCaptureSessionStore.cancel` atomically:
+  - transitions the exact `STARTED` session to `CANCELED`; and
+  - releases only that session's current-capture pointer.
+  Conditional contention is classified by a strongly consistent read; only a durable canceled winner is replay-safe.
+- Capture completion now rejects a canceled session before Browser Profile persistence or trace acceptance.
+- The authenticated Next.js product now exposes **Cancel capture & start over** while capture is active and Finish has not been requested. The action contains no internal capture/session/profile identifier.
+- After cancellation, the durable capture slot is immediately available for a replacement capture. Partial workflow evidence is not accepted as a completed capture.
 
 ### Security / tenancy
 
-- Capture concurrency is scoped by the existing tenant/user-derived DynamoDB partition and automation-specific current pointer.
-- The preflight never exposes browser session IDs, Browser Profile refs, or Live View capability URLs.
-- Cross-tenant automation objects are still rejected before AgentCore compute.
-- No new secret, token, cookie, target-site credential, or browser state is persisted.
+- Cancellation authority comes from the authenticated tenant/user scope plus the automation route; the browser cannot choose an internal capture-session ID.
+- Browser session IDs, Browser Profile references, Live View URLs, cookies, captured input values, BYOK keys, and workload tokens remain server-side.
+- A canceled capture cannot later persist its profile/trace through `CaptureCompletionService`.
+- The product continues to avoid persisting or reconstructing the Live View capability itself.
 
 ### Idempotency / concurrency
 
-- Sequential duplicate capture launches are rejected before AgentCore allocation.
-- Simultaneous launches may both briefly allocate before the DynamoDB transaction resolves the race, but only one can become the durable current capture; the losing starter follows the existing cleanup path. This bounds the race without adding another recovery subsystem.
-- Completion releases only the matching current pointer, preventing an old worker from clearing a newer capture claim.
-- Legacy current-pointer records remain replaceable. The strongly-consistent starter preflight still prevents replacement of a genuinely live legacy session under normal sequential delivery.
+- The durable transition and current-pointer release happen in one DynamoDB transaction.
+- A completion/cancellation race has a single durable winner. Completion requires `STARTED`; cancellation requires `STARTED`; neither can silently overwrite the other terminal state.
+- Exact repeated cancellation is safe at the persistence boundary. The user-facing route resolves the current capture server-side, so once cancellation has released the pointer a later request simply sees no active capture rather than targeting stale browser identity.
+- The existing duplicate-start guard continues to prevent two authoritative active captures.
 
 ### Retry / timeout / verification
 
-- Capture retry behavior is unchanged after a session becomes authoritative. Recording start/finish commands retain their existing replay semantics.
-- Expired capture state may be replaced; unexpired active state is authoritative.
-- Workflow side-effect verification and execution retries are unchanged by this slice.
+- Cancellation adds no retry loop and does not alter workflow execution retries or side-effect verification.
+- Capture Finish remains the only path that saves the authenticated Browser Profile and accepts the trace. Cancel deliberately does not make partial workflow evidence compilable.
+- Browser cleanup after durable cancellation is best-effort and non-authoritative; durable cancellation remains final even if cleanup is uncertain.
 
 ### Cost / observability / user recovery
 
-- The primary cost win is avoiding needless AgentCore Browser allocation and Live View signing for repeated capture launches.
-- No new AWS resource, queue, model call, metric dimension, or dependency is introduced.
-- If a user loses the Live View capability for an unexpired active capture, the platform intentionally does not reconstruct or persist that signed capability. The existing session can be finished/expire, then a new capture can be started. Persisting Live View credentials would weaken the security boundary.
+- Users no longer need to wait for an abandoned capture to expire before restarting, which removes a real capture UX dead end.
+- The durable claim is released immediately, avoiding repeated failed attempts to allocate a replacement capture.
+- If the control-plane composition cannot confirm browser stop after cancellation, the abandoned AgentCore Browser session may remain until its existing bounded session expiry. That is a visible cost limitation, not execution authority; it does not block a replacement capture or allow the canceled collector to complete.
+- No new AWS resource, queue, model call, metric dimension, dependency, or recovery subsystem is introduced.
 
 ### Regression coverage
 
 Changed tests prove:
 
-- a second live capture is rejected before another AgentCore Browser allocation;
-- an expired durable capture can be replaced;
-- the DynamoDB current pointer carries expiry and a conditional concurrency claim;
-- capture completion atomically writes completion/latest-trace state and releases only the exact matching current-capture claim.
+- durable cancellation occurs before browser cleanup;
+- cancellation remains authoritative when cleanup is uncertain;
+- the HTTP cancellation route ignores forged capture-session identity and uses authenticated durable state;
+- DynamoDB cancellation atomically marks the session canceled and releases only its exact current-capture claim;
+- a lost conditional cancellation race is replay-safe only when the durable winner is canceled;
+- the authenticated web client calls the cancellation route without an internal capture-session ID.
 
 Exact-head GitHub Actions remains authoritative. This change must not be considered validated until CI completes successfully on the published commit.
 
@@ -72,6 +78,7 @@ Exact-head GitHub Actions remains authoritative. This change must not be conside
 
 - VPC-mode AgentCore Browser is required by deployment, but real subnet/route/DNS/security-group/firewall policy still needs live proof that private/link-local/control-plane targets stay unreachable after DNS resolution and redirects.
 - Live AWS/Cognito/Google/SES/AgentCore integrations are structurally tested with fakes and deployment contracts but still need the controlled real environment demonstration.
+- An abandoned browser may survive until its bounded AgentCore session expiry if post-cancellation cleanup is uncertain; durable cancellation still prevents its trace/profile from becoming authoritative.
 - Same-provider BYOK key rotation remains opt-in; the platform does not rotate keys to evade provider quotas/rate limits.
 - Recurring secret typed workflow inputs remain unsupported by design; if the live product needs them, they require vault-backed secret references rather than ordinary automation metadata.
 - DynamoDB and EventBridge Scheduler cannot be updated in one transaction; lifecycle ordering is fail-closed but reconciliation after partial infrastructure failure remains an operational concern.
@@ -84,7 +91,7 @@ Run the protected real AWS deployment and controlled vertical demonstration usin
 1. deploy immutable artifacts and pass the live public/auth smoke;
 2. sign in through Cognito/Google and verify the trusted notification identity;
 3. configure BYOK;
-4. start one Live View capture, authenticate, record, finish, compile, and inspect;
+4. start one Live View capture, authenticate, verify **Cancel capture & start over** once with an intentionally abandoned handoff, then complete a replacement capture, compile, and inspect;
 5. run a Fresh Test lasting more than 30 seconds and verify asynchronous UI progression to its durable result;
 6. approve/publish with recurrence/timezone and any explicitly non-secret recurring inputs;
 7. observe Scheduler → SQS → Step Functions → AgentCore Runtime execution, verification, history, CloudWatch, and SES;
