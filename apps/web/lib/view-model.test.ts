@@ -4,6 +4,7 @@ import {
   automationPhase,
   formatSchedule,
   latestFreshTestFeedback,
+  runHistoryStatusDetail,
   runKindLabel,
   runTone,
 } from "./view-model.js";
@@ -61,6 +62,22 @@ describe("web view model", () => {
     expect(runKindLabel(run({ runKind: "FRESH_TEST" }))).toBe("Fresh test");
     expect(runKindLabel(run({ runKind: "SCHEDULED" }))).toBe("Scheduled run");
     expect(runKindLabel(run({}))).toBe("Run");
+  });
+
+  it("renders user-facing history status without durable run or node identifiers", () => {
+    expect(runHistoryStatusDetail(run({ status: "SUCCEEDED", runId: "secret-run", currentNodeId: "internal-node" }))).toBe(
+      "Verified successfully",
+    );
+    expect(
+      runHistoryStatusDetail(
+        run({ status: "WAITING_FOR_HUMAN", failureCode: "TARGET_AUTH_REQUIRED", currentNodeId: "login-node" }),
+      ),
+    ).toBe("Needs attention · TARGET_AUTH_REQUIRED");
+    expect(runHistoryStatusDetail(run({ status: "FAILED", failureCode: "EFFECT_NOT_VERIFIED" }))).toBe(
+      "Failed · EFFECT_NOT_VERIFIED",
+    );
+    expect(runHistoryStatusDetail(run({ status: "PREFLIGHT" }))).toBe("Preparing cloud execution");
+    expect(runHistoryStatusDetail(run({ status: "RUNNING" }))).toBe("Execution in progress");
   });
 
   it("turns the latest fresh-test outcome into an actionable correction state", () => {

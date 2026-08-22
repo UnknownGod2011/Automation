@@ -24,10 +24,30 @@ sign in -> dashboard -> create -> cloud capture -> persisted Browser Profile + t
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head `67c8a1aedcd8161ddbdc484c2c6cacf37113565a` (`Add durable scheduled capture inputs`) is green on GitHub Actions CI #219.
-- Normal product commit `4d681e1667f59fd532349ab0bb635314acbbde91` (`Add semantic run diagnostics`) reached CI #220. Deterministic lock verification and `pnpm install --frozen-lockfile` passed. `pnpm check` then stopped on three test-only TS2783 duplicate-property diagnostics in the new `run-detail.test.ts` fixture helper (`id`, `kind`, `objective` were explicitly assigned and then repeated by a spread). Production code was not implicated; packaging and tests were correctly skipped after the strict type-check failure.
-- The single corrective change replaces that fixture spread with an explicit typed test-node builder. No TypeScript rule, CI gate, runtime behavior, or security boundary is weakened.
-- GitHub Actions on the exact outgoing corrective head remains authoritative. No pass is claimed until that exact-head run completes successfully.
+- Incoming head `fdffe30bc161d428748cc662745433c978aac171` (`Fix semantic run diagnostic fixture`) is green on GitHub Actions CI #221. Deterministic lock verification, frozen installation, strict `pnpm check`, production packaging/deployment contracts, and the full test suite all passed on that exact head.
+- This run adds a product-facing run-history sanitation change on top of that green head. GitHub Actions on the exact outgoing head remains authoritative; no pass is claimed until that run completes successfully.
+
+## 2026-08-22 — sanitized run-history overview
+
+The vertical-path audit found one remaining inconsistency in the automation overview: individual run diagnostics had already moved to semantic workflow steps, but the automation's run-history list still printed raw durable `runId` values and the current workflow `nodeId`. Those identifiers are useful to the platform and routing layer, but they are not useful user-facing status information and made the overview feel like an internal debugging surface.
+
+The Next.js automation page now labels entries by run purpose and immutable workflow version, keeps the opaque run ID only in the server-generated diagnostics URL, and replaces raw current-node display with a closed user-facing execution-state summary. Success is shown as verified, active runs as preparing/in progress, failed or human-attention runs show only the existing bounded failure code, and no internal node identifier is rendered.
+
+### Review: security, tenancy, idempotency, concurrency, retry, verification, cost, observability, recovery
+
+- **Security:** raw run/node identifiers are removed from visible history text. Failure display remains limited to the existing classified failure code; raw provider/browser errors remain excluded.
+- **Tenant isolation:** unchanged. History is still loaded only through authenticated tenant/user-scoped control-plane routes.
+- **Idempotency/concurrency:** unchanged. The display helper has no execution authority and does not mutate durable run state.
+- **Retry/timeout:** unchanged. No retry loop, browser/model call, queue, or timeout is added.
+- **Side-effect verification:** unchanged. A succeeded row is described as verified only because durable run success already requires the execution verifier path.
+- **Cost:** no new AWS read or resource. The view reuses the run summaries already loaded by the automation detail page.
+- **Observability:** correlation identifiers remain durable for logs/diagnostics and remain part of server routing; they are simply no longer printed as primary user-facing labels.
+- **User recovery:** attention rows still link to the existing semantic run-detail page, which contains the bounded HUMAN/target-auth repair actions.
+
+### Validation added
+
+- Web view-model tests cover success, preflight/running, classified failure, and human-attention summaries without depending on run/node IDs.
+- Exact-head GitHub Actions must prove strict TypeScript/Next.js validation, all production package/deployment contracts, and the full test suite.
 
 ## 2026-08-22 — semantic run diagnostics + server-owned resume boundary
 
@@ -57,7 +77,7 @@ Explicit HUMAN continuation is also more server-owned. The browser now submits o
 - Existing tenant/automation isolation, checkpoint-identity, malformed evidence, and authenticated HTTP routing tests remain.
 - Web tests prove the resume node is resolved from matching authenticated run/checkpoint state and fails closed for mismatched or ineligible state.
 - Next.js rendering no longer displays raw node IDs or artifact references and its HUMAN form carries no expected-node hidden field.
-- Exact-head GitHub Actions must still prove strict TypeScript/Next.js builds, all production packaging/deployment contracts, and the full test suite.
+- CI #221 is green on the exact corrective head `fdffe30bc161d428748cc662745433c978aac171`.
 
 ## 2026-08-22 — durable non-secret scheduled inputs for captured typing
 

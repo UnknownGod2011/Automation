@@ -24,6 +24,18 @@ export function runKindLabel(run: Pick<RunSummaryView, "runKind">): string {
   return "Run";
 }
 
+export function runHistoryStatusDetail(run: Pick<RunSummaryView, "status" | "failureCode">): string {
+  if (run.status === "SUCCEEDED") return "Verified successfully";
+  if (run.status === "WAITING_FOR_HUMAN") {
+    return run.failureCode ? `Needs attention · ${run.failureCode}` : "Paused safely for attention";
+  }
+  if (run.status === "FAILED") return run.failureCode ? `Failed · ${run.failureCode}` : "Execution failed";
+  if (run.status === "CANCELED") return "Canceled";
+  if (run.status === "SKIPPED") return run.failureCode ? `Skipped · ${run.failureCode}` : "Skipped";
+  if (run.status === "QUEUED" || run.status === "PREFLIGHT") return "Preparing cloud execution";
+  return "Execution in progress";
+}
+
 export type FreshTestFeedback =
   | { kind: "NONE" }
   | { kind: "RUNNING" | "PASSED" | "NEEDS_ATTENTION" | "NEEDS_CORRECTION"; run: RunSummaryView };
