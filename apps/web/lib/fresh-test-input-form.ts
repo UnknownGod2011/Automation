@@ -15,7 +15,7 @@ export interface FreshTestRuntimeInputRequirement {
 export function parseFreshTestRuntimeInputForm(
   form: FormData,
   requirements: readonly FreshTestRuntimeInputRequirement[],
-): Readonly<Record<string, string>> | null {
+): Readonly<Record<string, string>> | null | undefined {
   if (requirements.length > MAX_RUNTIME_INPUTS) return null;
 
   const allowed = new Set<string>();

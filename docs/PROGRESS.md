@@ -25,7 +25,8 @@ sign in with email or Google -> dashboard -> create -> cloud capture -> persiste
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
 - Incoming head `bbac0d4ed3d4c302a939aa54c1d4ad515df9d08d` (`Verify live Google notification identity`) is green on GitHub Actions CI #225.
-- This run narrows the product Fresh Test form so browser-submitted runtime JSON cannot introduce arbitrary internal workflow variable names. GitHub Actions on the exact outgoing head remains authoritative; no pass is claimed until that run completes successfully.
+- Normal implementation head `76c8fd22bc74fd98e00cc25fae577944b472cdd0` reached deterministic lock verification and frozen installation successfully, then CI #226 failed strict web type-checking because the parser intentionally returned `undefined` for “no inputs required” while its return annotation omitted `undefined`. Production behavior was not implicated.
+- The single corrective commit changes only that return contract plus this validation record. GitHub Actions on the exact corrective head remains authoritative; no pass is claimed until it completes successfully.
 
 ## 2026-08-22 — restrict Fresh Test runtime input to captured requirements
 
@@ -50,6 +51,7 @@ The lower-level provider-neutral fresh-test API still supports explicit runtime 
 
 - New web unit coverage accepts the exact required capture-input set and intentionally empty string values.
 - Negative tests reject missing/extra keys, arbitrary names when no inputs are required, malformed JSON, non-string values, duplicate fields, malformed/duplicate trusted requirements, per-value overflow, and aggregate overflow.
+- CI #226 root cause was a strict TypeScript return-annotation mismatch only: `undefined` was an intentional value for “no inputs required” but missing from the declared union. The corrective change adds it explicitly; no runtime behavior or compiler setting is weakened.
 - Exact-head GitHub Actions must still pass deterministic lock verification, frozen install, strict type/Next.js build checks, all production packaging/deployment/demo/OIDC contracts, and the complete test suite.
 
 ## Current release/deployment state
