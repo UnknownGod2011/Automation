@@ -18,36 +18,39 @@ sign in with email or Google -> dashboard -> create -> cloud capture -> persiste
 - Publishing requires a successful `FRESH_TEST` for the latest immutable workflow version; successful scheduled/legacy runs do not authorize publication.
 - Product-facing recurrence input is normalized into validated EventBridge `rate(...)` / `cron(...)` expressions before Scheduler mutation.
 - Scheduled execution checkpoints are seeded before browser startup from immutable graph variables, bounded persisted non-secret scheduled capture inputs, and any explicit invocation override.
+- Optional Google federation preserves `email_verified` into Cognito so the existing trusted SES recipient resolver does not need to weaken its verification requirement.
 - Deep human-resume claim/lease/heartbeat/reconciliation machinery exists and remains parked unless a demonstrated vertical defect requires it.
 
 ## Incoming validation
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
-- Incoming head `661d26651b13dc3af2fbd7c13019088ab6198e3a` (`Add optional Google sign-in federation`) is green on GitHub Actions CI #223.
-- This run fixes Google-federated email verification propagation needed by the existing trusted SES recipient resolver. GitHub Actions on the exact outgoing head remains authoritative; no pass is claimed until that run completes successfully.
+- Incoming head `a3ab424c53bd8e605d9ee42d3f28287e09deeaf1` (`Preserve Google email verification`) is green on GitHub Actions CI #224.
+- This run adds a live, read-only operator verification for the actual Google-federated Cognito user before SES notification evidence is trusted. GitHub Actions on the exact outgoing head remains authoritative; no pass is claimed until that run completes successfully.
 
-## 2026-08-22 — preserve Google email verification for notifications
+## 2026-08-22 — verify live Google federation notification readiness
 
-The live-deployment audit found a concrete integration defect in the new Google federation path. Cognito mapped Google's `email` claim but not its `email_verified` claim. AWS documents that mapped federated email addresses are unverified by default unless verification status is explicitly mapped from the external IdP. The production notification recipient resolver intentionally rejects unverified Cognito email addresses, so a Google user could sign in successfully yet fail to receive the run-success, run-failure, or human-attention email promised by the product lifecycle.
+CI already proves the Cognito Google IdP maps `email_verified`, but deterministic template validation cannot prove a real federated user record was created with the expected provider linkage and verified-email state. That matters because the production SES resolver intentionally refuses unverified Cognito email addresses.
 
-`infra/aws/control-plane-auth.yaml` now maps `email_verified: email_verified` from Google into the Cognito user profile alongside the existing email/name mappings. This preserves the trust boundary rather than weakening the resolver to accept unverified addresses. Native Cognito email sign-in remains unchanged.
+`scripts/verify-google-demo-user.sh` now provides a bounded read-only check for the controlled AWS vertical demo. It consumes the immutable deployment result plus the signed-in user's email, resolves only the deployed Cognito User Pool ID, performs one filtered `ListUsers` lookup, and succeeds only when exactly one enabled user matches the requested email, has `email_verified=true`, and carries a Google identity-provider link. It deliberately does not print the Cognito subject, provider tokens, Google tokens, OAuth credentials, BYOK material, Browser Profile state, or any execution capability.
+
+The demo runbook now requires this check after the first successful Google sign-in and before Google-backed SES notification evidence is trusted. Native Cognito email sign-in remains unchanged.
 
 ### Review: security, tenancy, idempotency, concurrency, retry, verification, cost, observability, recovery
 
-- **Security:** notification routing still requires a verified Cognito email. The fix propagates Google's verification claim instead of bypassing verification or trusting an address from the scheduled payload.
-- **Tenant isolation:** unchanged. Cognito `sub` remains the trusted user identifier and tenant identity remains deployment-owned; the email directory lookup is still scoped to that identity.
-- **Idempotency/concurrency:** identity-provider attribute mapping is deployment configuration only and has no run/browser execution authority.
-- **Retry/timeout:** unchanged. No new application retry loop, timeout, browser call, model call, or queue is introduced.
-- **Side-effect verification:** unchanged. Workflow effect verification remains authoritative for automation success.
-- **Cost:** no additional steady-state AWS resource or request is added; the existing Cognito user record simply contains its federated verification status.
-- **Observability:** scheduled and human-resume SES/CloudWatch reporting can now use the same trusted directory path for Google users as native Cognito users without exposing provider tokens.
-- **User recovery:** a Google-authenticated owner can receive the existing bounded failure/human-attention notifications instead of silently losing that recovery signal.
+- **Security:** the command is read-only and validates a bounded plain email before any AWS call, preventing filter injection. It never accepts or prints authentication tokens or Cognito `sub` values.
+- **Tenant isolation:** tenant identity is still deployment-owned. This operator check is scoped to the exact deployed user pool and has no application execution authority.
+- **Idempotency/concurrency:** repeated verification is side-effect free. Ambiguous duplicate user matches fail closed rather than guessing which record should receive notifications.
+- **Retry/timeout:** no application retry loop changes. AWS CLI/network failures propagate as verification failure; they are not converted into notification readiness.
+- **Side-effect verification:** workflow effect verification is unchanged. This verifies only notification-recipient readiness for the live demo.
+- **Cost:** one CloudFormation output read and one bounded Cognito `ListUsers` query when the operator explicitly runs the check.
+- **Observability/privacy:** success output is fixed and does not echo the email, subject ID, identities payload, or secret-bearing data.
+- **User recovery:** Google-authenticated users can be validated before relying on SES attention/recovery messages, making a missing verification mapping a visible deployment defect instead of a silent notification failure.
 
 ### Validation added
 
-- The no-cloud Cognito Google federation contract now requires `email_verified: email_verified` exactly once in the IdP mapping.
-- Existing checks still require the conditional Google IdP, exact OAuth scopes, native Cognito support, Secrets Manager dynamic-reference boundary, and absence of a plaintext Google client-secret parameter.
-- Exact-head GitHub Actions must still pass deterministic lock verification, frozen install, strict type/build checks, production packaging/deployment/demo/OIDC contracts, and the complete test suite.
+- New `scripts/test-verify-google-demo-user.sh` uses a fake AWS CLI and proves success for one enabled Google-linked verified user.
+- Negative coverage rejects unverified email, native/non-Google identity, ambiguous matches, and malformed email before any AWS call.
+- CI runs the new contract alongside the existing Cognito federation, packaging, release, deployment, live-smoke, OIDC, type/build, and full test gates.
 
 ## Current release/deployment state
 
@@ -58,7 +61,7 @@ The intended AWS path is: Cognito email or optional Google sign-in -> BYOK -> Li
 ## Next product milestones
 
 1. Run the protected deployment workflow and require the live public/auth smoke gate to pass against a real AWS environment.
-2. If Google sign-in is part of the demo, create the Google OAuth client and Secrets Manager secret, deploy with only its client ID + secret ARN, and verify the resulting federated Cognito user has both `email` and `email_verified=true` before relying on SES notification evidence.
+2. If Google sign-in is part of the demo, create the Google OAuth client and Secrets Manager secret, deploy with only its client ID + secret ARN, complete one real Google sign-in, then run `scripts/verify-google-demo-user.sh` before relying on SES evidence.
 3. Execute the controlled interactive vertical demo from `outputs.webOrigin`: sign in -> BYOK -> Live View capture -> compile/inspect -> fresh test -> publish -> scheduled execution -> semantic diagnostics/history/email -> target-auth takeover/resume.
 4. Fix concrete defects exposed by the live environment before adding more infrastructure or recovery depth.
 5. If the demo genuinely requires a recurring secret typed value outside target-site authentication, add a distinct vault-reference runtime-input contract; never place the secret itself in scheduled plaintext inputs.
@@ -67,7 +70,7 @@ The intended AWS path is: Cognito email or optional Google sign-in -> BYOK -> Li
 ## Parked limitations / known risks
 
 - Live OpenAI, SES, Cognito, AgentCore Browser/Profile/Runtime behavior still requires real AWS validation; deterministic CI and anonymous deployment smoke are not substitutes for a real authenticated lifecycle.
-- Google federation still requires a real Google OAuth web client and a Secrets Manager secret; CI validates the infrastructure contract but cannot prove a live external OAuth exchange without those deployment-owned credentials.
+- Google federation still requires a real Google OAuth web client and a Secrets Manager secret; CI validates the infrastructure and verification tooling but cannot prove a live external OAuth exchange without deployment-owned credentials.
 - Capture structural verification is intentionally coarse and content-redacted. Highly dynamic pages may require recapture or a future explicit user-authored effect assertion; do not silently weaken verification.
 - Plaintext scheduled non-secret inputs intentionally solve only reusable non-secret captured typing. Secret recurring values need a separate vault-reference resolver before they are schedulable.
 - DynamoDB automation state and EventBridge Scheduler state cannot be atomically committed; current lifecycle ordering fails closed and live deployment should validate reconciliation behavior before additional hardening.

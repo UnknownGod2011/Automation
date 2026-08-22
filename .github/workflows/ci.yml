@@ -46,6 +46,9 @@ jobs:
       - name: Verify Cognito Google federation contract
         shell: bash
         run: bash scripts/test-cognito-google-federation.sh
+      - name: Verify live Google demo-user contract
+        shell: bash
+        run: bash scripts/test-verify-google-demo-user.sh
       - name: Verify AWS release artifact contract
         shell: bash
         run: bash scripts/test-release-aws-artifacts.sh
