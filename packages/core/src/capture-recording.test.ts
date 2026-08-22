@@ -42,13 +42,13 @@ async function setup(taskStarter?: CaptureCollectionTaskStarter) {
   const sessions: ActiveCaptureSessionStore = {
     async activeForAutomation(scope, automationId) {
       if (scope.tenantId !== owner.tenantId || scope.userId !== owner.userId || automationId !== record.automationId) return null;
-      return activeRecord ? structuredClone(activeRecord) : null;
+      return activeRecord?.status === "STARTED" ? structuredClone(activeRecord) : null;
     },
     async cancel(scope, captureSessionId, canceledAt) {
       if (scope.tenantId !== owner.tenantId || scope.userId !== owner.userId || captureSessionId !== record.captureSessionId) {
         throw new Error("capture session not found");
       }
-      if (!activeRecord) return "REPLAY";
+      if (!activeRecord || activeRecord.status === "CANCELED") return "REPLAY";
       activeRecord = { ...activeRecord, status: "CANCELED", canceledAt };
       return "CANCELED";
     },
@@ -139,7 +139,7 @@ describe("CaptureRecordingControlPlaneService", () => {
     const events: string[] = [];
     let activeRecord: CaptureSessionRecord | null = structuredClone(record);
     const sessions: ActiveCaptureSessionStore = {
-      async activeForAutomation() { return activeRecord ? structuredClone(activeRecord) : null; },
+      async activeForAutomation() { return activeRecord?.status === "STARTED" ? structuredClone(activeRecord) : null; },
       async cancel(_scope, _captureSessionId, canceledAt) {
         events.push("cancel-durable");
         activeRecord = { ...record, status: "CANCELED", canceledAt };
