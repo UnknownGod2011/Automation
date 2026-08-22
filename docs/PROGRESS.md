@@ -8,55 +8,60 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end corre
 
 ## Incoming validation
 
-- Incoming PR #1 head: `c154ea59d47b265303b35116e2bcd9e679df786b` (`Align capture controls with revision lifecycle`).
-- GitHub Actions CI #244 completed successfully on that exact head before this slice began.
+- Incoming PR #1 head: `a8333ca5a45709450f938d95dd8524a9697aeaae` (`Follow human resume run outcomes`).
+- GitHub Actions CI #245 completed successfully on that exact head before this slice began.
 - PR #1 remains open, draft, mergeable, and unmerged.
 - Deterministic pnpm lock verification, frozen installation, strict TypeScript/Next.js validation, production packaging, AWS release/deployment/demo/OIDC contracts, and the full test suite remain mandatory gates.
 
-## This slice — automatically follow durable run state after resume/repair
+## This slice — keep capture compilation identity server-side
 
-### Product defect closed
+### Product/security defect closed
 
-Human continuation and target-auth repair already execute asynchronously through AgentCore Runtime, but the run diagnostics page still told the user to manually refresh after `Continue workflow` or `Save repaired session & resume`. That made the final bounded-failure → human-repair → successful-resume lifecycle feel incomplete even though the durable execution machinery was already correct.
+The product already removed manual trace/workflow identifiers from the user-facing Compile form, but the authenticated automation summary still exposed the latest durable `traceId`, and the Next.js server read that identifier back only to echo it into `POST /compile`. The user could not normally edit that value, but the web/control-plane boundary still carried an internal durable capture identity that the control plane already knew authoritatively.
+
+Compile now resolves both the latest completed capture and the stable workflow identity entirely inside the trusted control plane. The browser/web layer only requests “compile this automation.”
 
 ### Changes
 
-- Added a small web-only run-status polling policy with a 5-second cadence and a hard 5-minute maximum window.
-- Active durable run states (`QUEUED`, `PREFLIGHT`, `RUNNING`, `RETRYING`) are followed automatically.
-- A `WAITING_FOR_HUMAN` run is polled only after a trusted `resume-submitted` or `takeover-finished` server notice. Ordinary paused runs do not create background polling traffic.
-- Terminal states (`SUCCEEDED`, `FAILED`, `CANCELED`, `SKIPPED`) stop polling immediately even if the original success notice remains in the URL.
-- Added a client `RunStatusPoller` that refreshes only the current server-rendered run view; it does not call execution, browser, model, evidence, or recovery APIs directly.
-- Updated run diagnostics copy so successful resume/repair submission explains that the page will follow durable state automatically rather than asking for manual refresh.
+- `LatestCompletedCaptureView` now exposes only `completedAt`, which is sufficient for compile-readiness UX.
+- The control plane still validates that a completion record contains a real trace ID internally, but it no longer serializes that ID into dashboard/automation summaries.
+- `AutomationControlPlaneService.compileAutomation()` now:
+  - resolves the authenticated automation under tenant/user scope;
+  - loads the latest durable completed capture under that same scope;
+  - rejects missing/corrupt completion state before compilation;
+  - supplies the server-owned trace ID to the lifecycle compiler;
+  - derives the workflow identity from the authenticated automation ID.
+- `POST /v1/automations/:automationId/compile` accepts no trace/workflow authority from request JSON.
+- The Next.js compile action now sends an empty command body and no longer reloads a public trace ID.
 
 ### Security / tenant isolation
 
-- Polling only refreshes the already-authenticated run page. The browser receives no tenant/user authority, workflow node ID, resolution ID, Browser Profile reference, session ID, BYOK credential, workload token, evidence reference, or provider/browser error detail.
-- The authenticated server and control plane continue to re-resolve tenant/user/run ownership on every refresh.
-- The poller is presentation-only and cannot create a run, claim a resolution, acquire a lease, start browser/model work, or mutate durable state.
+- A browser or stale/tampered web request can no longer select a capture trace or workflow ID for compilation.
+- Tenant/user scope remains exclusively the authenticated control-plane context; the durable capture lookup uses the same ownership scope as the automation lookup.
+- Browser session IDs, Browser Profile references, capture-session IDs, trace IDs, BYOK material, workload tokens, and provider/browser errors remain outside the compile-facing browser contract.
+- The trusted capture-worker ingestion/completion boundary still retains internal trace identity where it is operationally required; this change only removes that identity from the end-user control-plane view/command.
 
-### Idempotency / concurrency / retry / timeout / verification
+### Idempotency / concurrency / retry / verification
 
-- Existing human-resolution claim IDs, execution leases, heartbeat fencing, immutable workflow versions, bounded workflow retries, and side-effect verification remain the execution authority.
-- Refreshing diagnostics is read-only and does not redeliver the resume/takeover POST command.
-- The polling window is bounded to 60 attempts at 5 seconds each (5 minutes), preventing an unbounded browser refresh loop if Runtime remains slow or unavailable.
-- A run that pauses again stops automatic polling unless a new trusted resume/repair submission occurs.
+- The existing durable latest-completed-capture pointer remains the capture authority; no read-then-write authority or new race was introduced.
+- The lifecycle compiler's existing authoring-state/version gates remain final authority against replaying an already-consumed capture or compiling while published execution is active.
+- Compilation itself does not execute website side effects. Browser/model retry, execution leases, schedule idempotency, and verification behavior are unchanged.
+- No retry loop or fallback is added if capture state is absent or corrupt; compilation fails closed.
 
-### Cost / observability / recovery
+### Cost / observability / user recovery
 
-- The only added cost is bounded authenticated control-plane read traffic while a run is actively progressing after user intervention.
-- No new AWS resource, SDK dependency, DynamoDB record, queue, model call, browser session, metric dimension, retained Actions artifact, or recovery subsystem was added.
-- The change improves the user recovery loop by making the terminal result visible automatically after a successful human action.
+- No AWS resource, SDK dependency, table, bucket, queue, browser session, model call, metric dimension, or retained Actions artifact was added.
+- Compile performs the authoritative capture-state read in the control plane rather than making the web layer obtain and echo the same identity; cloud cost is effectively unchanged.
+- User recovery remains simple: finish a trusted capture first, then retry Compile. Provider/internal details remain sanitized.
 
 ### Regression coverage
 
-Web tests now prove:
+Core/control-plane tests now prove:
 
-- active execution states poll;
-- an untouched `WAITING_FOR_HUMAN` run does not poll;
-- a paused run polls after a trusted resume or takeover-completion submission;
-- failed resume/takeover notices do not poll;
-- terminal states stop polling even when the original submission notice is still present;
-- the polling window remains exactly bounded to five minutes.
+- compile readiness exposes completion time but not the durable trace ID, Browser session ID, or Browser Profile reference;
+- compilation resolves the trusted trace and stable workflow identity server-side;
+- compilation fails before lifecycle work when no completed capture exists;
+- spoofed `traceId`, `workflowId`, tenant, or user fields in the HTTP request cannot alter compile authority.
 
 Exact-head GitHub Actions is authoritative. This slice is not considered validated until CI completes successfully on the final published commit.
 
@@ -78,9 +83,9 @@ Run the protected real AWS deployment and controlled vertical demonstration usin
 1. deploy immutable artifacts and pass the live public/auth smoke;
 2. sign in through Cognito/Google and verify the trusted notification identity;
 3. configure BYOK;
-4. complete Live View capture, compile, inspect, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
+4. complete Live View capture, compile from the server-owned latest capture, inspect, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
 5. publish with recurrence/timezone and any explicitly non-secret recurring inputs;
 6. observe Scheduler → SQS → Step Functions → AgentCore Runtime execution, verification, history, CloudWatch, and SES;
-7. deliberately expire target authentication, use bounded secure Live View repair, submit resume, and confirm this diagnostics page automatically follows the run through its terminal post-resume outcome.
+7. deliberately expire target authentication, use bounded secure Live View repair, submit resume, and confirm the diagnostics page automatically follows the run through its terminal post-resume outcome.
 
 Further engineering should be driven primarily by concrete failures from that live path, not additional recovery micro-hardening.

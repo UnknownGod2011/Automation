@@ -160,6 +160,21 @@ async function setup() {
   return { automations, runs, lifecycle, captureSessions, captureState, scheduleLifecycle, service, record };
 }
 
+async function completeCapture(captureState: InMemoryCaptureSessionStore, traceId = "trace-ready-1") {
+  await captureState.putStarted({
+    tenantId: owner.tenantId,
+    userId: owner.userId,
+    automationId: "auto-1",
+    captureSessionId: "capture-1",
+    browserSessionId: "browser-session-secret",
+    browserProfileRef: "profile-secret-server-ref",
+    startedAt: "2026-08-19T12:00:00.000Z",
+    expiresAt: "2026-08-19T13:00:00.000Z",
+    status: "STARTED",
+  });
+  await captureState.complete(owner, "capture-1", traceId, "2026-08-19T12:10:00.000Z");
+}
+
 describe("AutomationControlPlaneService", () => {
   it("returns dashboard-safe automation data without server-owned browser profile references", async () => {
     const { runs, service } = await setup();
@@ -218,34 +233,40 @@ describe("AutomationControlPlaneService", () => {
     expect(JSON.stringify(scheduledDashboard)).not.toContain(scheduledOccurrence);
   });
 
-  it("surfaces only safe latest-completed capture metadata for compile readiness", async () => {
+  it("surfaces only completion time while keeping capture identities server-side", async () => {
     const { captureState, service } = await setup();
-    await captureState.putStarted({
-      tenantId: owner.tenantId,
-      userId: owner.userId,
-      automationId: "auto-1",
-      captureSessionId: "capture-1",
-      browserSessionId: "browser-session-secret",
-      browserProfileRef: "profile-secret-server-ref",
-      startedAt: "2026-08-19T12:00:00.000Z",
-      expiresAt: "2026-08-19T13:00:00.000Z",
-      status: "STARTED",
-    });
-    await captureState.complete(
-      owner,
-      "capture-1",
-      "trace-ready-1",
-      "2026-08-19T12:10:00.000Z",
-    );
+    await completeCapture(captureState);
 
     const summary = await service.getAutomation(owner, "auto-1");
 
     expect(summary.latestCompletedCapture).toEqual({
-      traceId: "trace-ready-1",
       completedAt: "2026-08-19T12:10:00.000Z",
     });
+    expect(JSON.stringify(summary)).not.toContain("trace-ready-1");
     expect(JSON.stringify(summary)).not.toContain("browser-session-secret");
     expect(JSON.stringify(summary)).not.toContain("profile-secret-server-ref");
+  });
+
+  it("resolves compile trace and workflow identity from trusted durable state", async () => {
+    const { captureState, service, lifecycle } = await setup();
+    await completeCapture(captureState, "trace-authority-1");
+
+    await expect(service.compileAutomation(owner, "auto-1")).resolves.toEqual(graph());
+    expect(lifecycle.compile).toHaveBeenCalledWith({
+      scope: owner,
+      automationId: "auto-1",
+      traceId: "trace-authority-1",
+      workflowId: "auto-1",
+    });
+  });
+
+  it("requires a trusted completed capture before compilation", async () => {
+    const { service, lifecycle } = await setup();
+
+    await expect(service.compileAutomation(owner, "auto-1")).rejects.toEqual(
+      expect.objectContaining({ code: "CONFLICT" }),
+    );
+    expect(lifecycle.compile).not.toHaveBeenCalled();
   });
 
   it("keeps tenant scope server-side and cannot read another tenant automation", async () => {
@@ -359,6 +380,36 @@ describe("AutomationControlPlaneHttpHandler", () => {
       status: 503,
       body: { kind: "NOT_CONFIGURED", reason: "AgentCore capture is not configured" },
     });
+  });
+
+  it("resolves compile authority server-side and ignores spoofed capture identities", async () => {
+    const { service, captureState, lifecycle } = await setup();
+    await completeCapture(captureState, "trace-trusted-1");
+    const handler = new AutomationControlPlaneHttpHandler(service);
+
+    const response = await handler.handle(
+      {
+        method: "POST",
+        path: "/v1/automations/auto-1/compile",
+        body: {
+          traceId: "trace-attacker",
+          workflowId: "workflow-attacker",
+          tenantId: attacker.tenantId,
+          userId: attacker.userId,
+        },
+      },
+      { scope: owner },
+    );
+
+    expect(response.status).toBe(200);
+    expect(lifecycle.compile).toHaveBeenCalledWith({
+      scope: owner,
+      automationId: "auto-1",
+      traceId: "trace-trusted-1",
+      workflowId: "auto-1",
+    });
+    expect(JSON.stringify(response.body)).not.toContain("trace-attacker");
+    expect(JSON.stringify(response.body)).not.toContain("workflow-attacker");
   });
 
   it("sanitizes unexpected service failures instead of returning raw exception text", async () => {

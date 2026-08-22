@@ -4,7 +4,7 @@ import { createCaptureLiveViewHandoff } from "../../../../../../lib/capture-live
 import { WebControlPlaneError } from "../../../../../../lib/control-plane-client";
 import { parseFreshTestRuntimeInputForm } from "../../../../../../lib/fresh-test-input-form";
 import { isSameOriginMutation } from "../../../../../../lib/mutation-security";
-import { freshTestRunId, serverResolvedPublishWorkflowVersion, workflowIdForAutomation } from "../../../../../../lib/product-flow-identities";
+import { freshTestRunId, serverResolvedPublishWorkflowVersion } from "../../../../../../lib/product-flow-identities";
 import { scheduleFromFormData } from "../../../../../../lib/schedule-form";
 import { parseScheduledInputForm } from "../../../../../../lib/scheduled-input-form";
 import { createAuthenticatedWebControlPlaneClient, WebAuthError } from "../../../../../../lib/server-auth";
@@ -34,9 +34,7 @@ export async function POST(request: Request, context: { params: Promise<{ automa
       await client.finishCaptureRecording(automationId, captureSessionId); return redirectBack(request, automationId, "capture-finishing");
     }
     if (command === "compile") {
-      const automation = await client.automation(automationId); const traceId = automation.latestCompletedCapture?.traceId;
-      if (!traceId) return redirectBack(request, automationId, "invalid-input");
-      await client.command(automationId, "compile", { traceId, workflowId: workflowIdForAutomation(automationId) });
+      await client.command(automationId, "compile", {});
       return redirectBack(request, automationId, "compiled");
     }
     if (command === "test") {

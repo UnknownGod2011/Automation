@@ -21,7 +21,7 @@ import type {
 export const CONTROL_PLANE_CAPABILITY_STATES = ["CONFIGURED", "LOCAL_MOCK", "NOT_CONFIGURED"] as const;
 export type ControlPlaneCapabilityState = (typeof CONTROL_PLANE_CAPABILITY_STATES)[number];
 export interface ControlPlaneCapabilities { auth: ControlPlaneCapabilityState; capture: ControlPlaneCapabilityState; cloudExecution: ControlPlaneCapabilityState; scheduling: ControlPlaneCapabilityState; notifications: ControlPlaneCapabilityState; }
-export interface LatestCompletedCaptureView { traceId: string; completedAt: string; }
+export interface LatestCompletedCaptureView { completedAt: string; }
 export interface AutomationSummaryView {
   automationId: string; name: string; websiteUrl: string; objective: string; status: AutomationStatus;
   publishedWorkflowVersion?: number; schedule?: AutomationSchedule; notifyOnSuccess: boolean; notifyOnFailure: boolean;
@@ -33,7 +33,6 @@ export interface RunSummaryView {
 }
 export interface DashboardView { capabilities: ControlPlaneCapabilities; automations: readonly AutomationSummaryView[]; }
 export interface CreateAutomationCommand { automationId: string; name: string; websiteUrl: string; objective: string; consentAcknowledged: boolean; notifyOnSuccess?: boolean; notifyOnFailure?: boolean; }
-export interface CompileAutomationCommand { traceId: string; workflowId: string; }
 export interface TestAutomationCommand { runId: string; runtimeVariables?: Readonly<Record<string, unknown>>; }
 export interface PublishAutomationCommand {
   workflowVersion: number;
@@ -76,10 +75,14 @@ function toRunSummary(run: RunRecord): RunSummaryView {
     ...(run.startedAt ? { startedAt: run.startedAt } : {}), ...(run.finishedAt ? { finishedAt: run.finishedAt } : {}),
     ...(run.currentNodeId ? { currentNodeId: run.currentNodeId } : {}), ...(run.failure ? { failureCode: run.failure.code } : {}), runKind: classifyRunKind(run) };
 }
-function toLatestCompletedCapture(record: CaptureSessionRecord | null): LatestCompletedCaptureView | undefined {
-  if (!record) return undefined;
+function completedCapture(record: CaptureSessionRecord | null): CaptureSessionRecord | null {
+  if (!record) return null;
   if (record.status !== "COMPLETED" || !record.traceId || !record.completedAt) throw new ControlPlaneError("CONFLICT", "capture completion state is invalid");
-  return { traceId: record.traceId, completedAt: record.completedAt };
+  return record;
+}
+function toLatestCompletedCapture(record: CaptureSessionRecord | null): LatestCompletedCaptureView | undefined {
+  const completed = completedCapture(record);
+  return completed ? { completedAt: completed.completedAt! } : undefined;
 }
 function toAutomationSummary(record: AutomationRecord, runs: readonly RunRecord[], latestCapture: CaptureSessionRecord | null = null): AutomationSummaryView {
   const lastRun = [...runs].sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt))[0];
@@ -145,9 +148,14 @@ export class AutomationControlPlaneService {
     try { const persisted = await this.dependencies.lifecycle.persistCapture({ scope, trace }); return { traceId: persisted.traceId }; }
     catch { throw new ControlPlaneError("CONFLICT", "capture trace could not be accepted"); }
   }
-  async compileAutomation(scope: OwnershipScope, automationId: string, command: CompileAutomationCommand): Promise<WorkflowGraph> {
-    try { return await this.dependencies.lifecycle.compile({ scope, automationId: requireToken(automationId, "automationId"), traceId: requireToken(command.traceId, "traceId"), workflowId: requireToken(command.workflowId, "workflowId") }); }
-    catch { throw new ControlPlaneError("CONFLICT", "automation could not be compiled from this capture"); }
+  async compileAutomation(scope: OwnershipScope, automationId: string): Promise<WorkflowGraph> {
+    const id = requireToken(automationId, "automationId");
+    const automation = await this.dependencies.automations.get(scope, id);
+    if (!automation) throw new ControlPlaneError("NOT_FOUND", "automation not found");
+    const capture = completedCapture(await this.dependencies.captureState.latestCompletedForAutomation(scope, id));
+    if (!capture) throw new ControlPlaneError("CONFLICT", "a completed capture is required before compilation");
+    try { return await this.dependencies.lifecycle.compile({ scope, automationId: id, traceId: capture.traceId!, workflowId: id }); }
+    catch { throw new ControlPlaneError("CONFLICT", "automation could not be compiled from the latest capture"); }
   }
   async runFreshTest(scope: OwnershipScope, automationId: string, command: TestAutomationCommand): Promise<FreshTestExecutionResult> {
     const request: FreshTestRunRequest = { scope, automationId: requireToken(automationId, "automationId"), runId: requireToken(command.runId, "runId"), ...(command.runtimeVariables ? { runtimeVariables: structuredClone(command.runtimeVariables) } : {}) };

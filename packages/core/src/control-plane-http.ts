@@ -3,7 +3,6 @@ import type { OwnershipScope } from "./index.js";
 import {
   AutomationControlPlaneService,
   ControlPlaneError,
-  type CompileAutomationCommand,
   type CreateAutomationCommand,
   type CreateCredentialCommand,
   type PublishAutomationCommand,
@@ -69,7 +68,7 @@ export class AutomationControlPlaneHttpHandler {
       if (request.method === "GET" && parts.length === 3) return { status: 200, body: await this.service.getAutomation(context.scope, automationId) };
       if (request.method === "POST" && parts[3] === "capture" && parts.length === 4) { const result = await this.service.beginCapture(context.scope, automationId); return result.kind === "READY" ? { status: 201, body: result } : { status: 503, body: result }; }
       if (request.method === "POST" && parts[3] === "capture-trace" && parts.length === 4) { const body = jsonObject(request.body); const trace = body.trace as CaptureTrace | undefined; if (!trace) throw new ControlPlaneError("BAD_REQUEST", "trace is required"); return { status: 202, body: await this.service.ingestCapture(context.scope, trace) }; }
-      if (request.method === "POST" && parts[3] === "compile" && parts.length === 4) { const body = jsonObject(request.body); const command: CompileAutomationCommand = { traceId: stringField(body, "traceId"), workflowId: stringField(body, "workflowId") }; return { status: 200, body: await this.service.compileAutomation(context.scope, automationId, command) }; }
+      if (request.method === "POST" && parts[3] === "compile" && parts.length === 4) return { status: 200, body: await this.service.compileAutomation(context.scope, automationId) };
       if (request.method === "POST" && parts[3] === "test" && parts.length === 4) {
         const body = jsonObject(request.body); const runtimeVariables = body.runtimeVariables;
         if (runtimeVariables !== undefined && (!runtimeVariables || typeof runtimeVariables !== "object" || Array.isArray(runtimeVariables))) throw new ControlPlaneError("BAD_REQUEST", "runtimeVariables must be a JSON object");
