@@ -100,19 +100,21 @@ function harness() {
 }
 
 describe("workflow authoring state", () => {
-  it("allows capture only in non-published authoring states", () => {
+  it("allows capture only in non-executing authoring states", () => {
     expect(canAuthorWorkflowCapture("DRAFT")).toBe(true);
     expect(canAuthorWorkflowCapture("COMPILING")).toBe(true);
     expect(canAuthorWorkflowCapture("READY_TO_TEST")).toBe(true);
+    expect(canAuthorWorkflowCapture("READY_TO_PUBLISH")).toBe(true);
+    expect(canAuthorWorkflowCapture("DISABLED")).toBe(true);
 
-    expect(canAuthorWorkflowCapture("READY_TO_PUBLISH")).toBe(false);
+    expect(canAuthorWorkflowCapture("CAPTURING")).toBe(false);
+    expect(canAuthorWorkflowCapture("TESTING")).toBe(false);
     expect(canAuthorWorkflowCapture("ACTIVE")).toBe(false);
     expect(canAuthorWorkflowCapture("RUNNING")).toBe(false);
     expect(canAuthorWorkflowCapture("PAUSED")).toBe(false);
     expect(canAuthorWorkflowCapture("NEEDS_AUTH")).toBe(false);
     expect(canAuthorWorkflowCapture("NEEDS_API_KEY")).toBe(false);
     expect(canAuthorWorkflowCapture("NEEDS_ATTENTION")).toBe(false);
-    expect(canAuthorWorkflowCapture("DISABLED")).toBe(false);
   });
 
   it("requires a newly accepted capture before each immutable compile", async () => {
@@ -177,7 +179,7 @@ describe("workflow authoring state", () => {
 
     const replacement = trace(draft.browserProfileRef!, "trace-replacement");
     await expect(h.service.persistCapture({ scope: owner, trace: replacement })).rejects.toThrow(
-      "pre-publish workflow-authoring state",
+      "non-executing workflow-authoring state",
     );
     expect(await h.captures.get(owner, draft.automationId, replacement.traceId)).toBeNull();
     expect((await h.automations.get(owner, draft.automationId))?.status).toBe("ACTIVE");
