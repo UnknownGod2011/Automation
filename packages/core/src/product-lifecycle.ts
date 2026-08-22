@@ -109,6 +109,21 @@ export interface AutomationProductLifecycleDependencies {
   lockTtlMs?: number;
 }
 
+const WORKFLOW_CAPTURE_AUTHORING_STATUSES = new Set<AutomationRecord["status"]>([
+  "DRAFT",
+  "COMPILING",
+  "READY_TO_TEST",
+]);
+
+/**
+ * Capture/recompile is intentionally a pre-publish authoring operation. Published and
+ * human-attention states need an explicit revision workflow that coordinates Scheduler and
+ * in-flight execution rather than silently replacing the active automation state.
+ */
+export function canAuthorWorkflowCapture(status: AutomationRecord["status"]): boolean {
+  return WORKFLOW_CAPTURE_AUTHORING_STATUSES.has(status);
+}
+
 function nonEmpty(value: string, name: string): string {
   const trimmed = value.trim();
   if (!trimmed) throw new Error(`${name} is required`);
@@ -176,6 +191,9 @@ export class AutomationProductLifecycleService {
   async persistCapture(request: PersistCaptureRequest): Promise<CaptureTrace> {
     assertCaptureTrace(request.trace);
     const automation = await this.requireAutomation(request.scope, request.trace.automationId);
+    if (!canAuthorWorkflowCapture(automation.status)) {
+      throw new Error("automation must be in a pre-publish workflow-authoring state before accepting a capture");
+    }
     this.assertTraceOwnership(request.scope, automation, request.trace);
     if (!automation.browserProfileRef || automation.browserProfileRef !== request.trace.browserProfileRef) throw new Error("capture trace browser profile does not match the automation");
     if (!(await this.dependencies.profiles.exists(request.scope, automation.browserProfileRef))) throw new Error("capture trace references an unavailable browser profile");
@@ -186,6 +204,9 @@ export class AutomationProductLifecycleService {
 
   async compile(request: CompileAutomationRequest): Promise<WorkflowGraph> {
     const automation = await this.requireAutomation(request.scope, request.automationId);
+    if (automation.status !== "COMPILING") {
+      throw new Error("automation must be COMPILING before workflow compilation");
+    }
     const trace = await this.dependencies.captures.get(request.scope, request.automationId, request.traceId);
     if (!trace) throw new Error(`capture trace '${request.traceId}' does not exist in ownership scope`);
     this.assertTraceOwnership(request.scope, automation, trace);

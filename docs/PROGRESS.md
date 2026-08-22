@@ -8,66 +8,65 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end corre
 
 ## Incoming validation
 
-- Incoming branch head: `5528e578a5636b837d0d20cae9bd383d8a6652bc` (`Fix capture cancellation test authority`).
-- GitHub Actions CI #239 completed successfully on that exact head before this slice began.
+- Incoming PR #1 head: `2d540488d8feed6bdc1acea39309bca283f7feda` (`Align Fresh Test input UX with workflow requirements`).
+- GitHub Actions CI #240 completed successfully on that exact head before this slice began.
 - PR #1 remains open, draft, mergeable, and unmerged.
 - Deterministic pnpm lock verification, frozen installation, strict TypeScript/Next.js validation, production packaging, AWS release/deployment/demo/OIDC contracts, and the full test suite remain mandatory gates.
 
-## This slice — align Fresh Test input UX with trusted workflow requirements
+## This slice — fence workflow authoring from published execution
 
-### Product defect found
+### Product correctness defect found
 
-The Fresh Test mutation boundary already accepts only the exact unresolved compiler-generated `capture_input_N` keys exposed by trusted workflow inspection. The automation page, however, still rendered a generic optional JSON field with an example such as `{"customer":"Acme"}`. That example is not a valid input unless the immutable workflow happens to require that exact internal variable, so the normal UI could actively guide a real user into a request the server correctly rejects.
+Capture persistence and workflow compilation previously trusted trace/workflow ownership but did not validate the automation lifecycle state. A published `ACTIVE` automation could therefore accept another completed capture, become `COMPILING`, compile an immutable replacement graph, and become `READY_TO_TEST` while its existing EventBridge schedule remained live. Compilation could also be repeated from `READY_TO_TEST` without a newly accepted capture, manufacturing additional immutable versions from already-consumed authoring evidence.
 
-This is especially important for the protected AWS demo because privacy-preserving capture deliberately replaces typed values with synthetic runtime inputs. The UI must tell the user exactly which captured values are needed rather than suggesting arbitrary variables.
+That is an unsafe product boundary rather than a recovery edge case: durable control-plane state could stop describing the still-configured production schedule, and a user could accidentally begin editing a live automation without an explicit revision workflow.
 
 ### Changes
 
-- `fresh-test-input-form` now derives both parsing authority and user-facing presentation from one closed trusted requirement set.
-- The helper validates the same constraints for display and submission:
-  - at most 64 requirements;
-  - only `capture_input_N` names;
-  - no duplicates.
-- When runtime values are required, the Fresh Test page renders a JSON example containing exactly those trusted keys and marks the field required.
-- When the immutable workflow requires no unresolved captured inputs, the arbitrary runtime JSON textarea is omitted entirely.
-- Malformed trusted workflow requirements fail closed in the UI and suppress Fresh Test submission until the workflow is recompiled rather than presenting an unsafe or impossible form.
-- The page explicitly states that Fresh Test values are per-run material that can enter durable checkpoint state and must not contain passwords, OTPs, API keys, tokens, or other authentication secrets. Target-site sign-in remains in the Browser Profile.
+- Added the provider-neutral `canAuthorWorkflowCapture()` policy.
+- Workflow capture is currently allowed only in the non-published authoring states `DRAFT`, `COMPILING`, and `READY_TO_TEST`.
+- `persistCapture()` revalidates that policy before immutable trace persistence or automation-state mutation.
+- `compile()` now requires the durable automation to be exactly `COMPILING`, making each immutable compile consume a newly accepted capture boundary instead of permitting repeated compilation from `READY_TO_TEST` or published states.
+- The AWS `AgentCoreCaptureSessionStarter` applies the same policy before Browser allocation, Live View signing, profile parsing, or durable capture-session creation. Published/running/paused/human-attention automations therefore do not spend AgentCore Browser compute merely to fail later.
+- `READY_TO_PUBLISH` is deliberately not editable through Capture in this slice. A future “revise published/tested workflow” feature must be explicit and coordinate schedule state and any in-flight execution instead of relying on accidental state mutation.
 
-### Security / tenancy
+### Security / tenant isolation
 
-- No new workflow variable namespace is exposed. The browser sees only the same privacy-safe `capture_input_N` names already surfaced by sanitized workflow inspection.
-- Tenant/user ownership continues to come exclusively from authenticated control-plane context.
-- The UI still cannot submit arbitrary workflow variables because the server reloads trusted workflow inspection immediately before parsing the form.
-- BYOK keys, workload tokens, Browser Profile references, session identifiers, selectors, captured values, and verification expectations remain excluded.
+- Tenant/user ownership checks remain unchanged and occur independently from the new lifecycle-state policy.
+- The AWS capture gate runs after ownership validation but before any AgentCore allocation or signed Live View capability is produced.
+- No new identifiers, Browser Profile references, session capabilities, BYOK material, workflow inputs, or secrets are exposed.
+- The policy is provider-neutral in core; AWS merely consumes it before provider compute.
 
-### Idempotency / concurrency / retry / verification
+### Idempotency / concurrency / retry / side-effect verification
 
-- This slice does not change execution identity, automation locking, retry budgets, model/browser calls, side-effect verification, Scheduler behavior, or human recovery.
-- Fresh Test run IDs remain server-generated and each intentional submission remains separately idempotent through the existing durable occurrence key.
-- The change eliminates a client/server contract mismatch before AgentCore Browser/model allocation, so invalid input no longer needs a failed cloud submission to teach the user the accepted shape.
+- Existing duplicate active-capture claims, immutable trace/version writes, scheduled occurrence idempotency, automation execution leases, bounded retries, and verification-before-success are unchanged.
+- The change closes an accidental cross-system transition: authoring can no longer mutate an `ACTIVE`/`PAUSED`/`RUNNING` automation while Scheduler remains configured for the published version.
+- There is no new retry loop, lease/outbox/recovery state, or browser/model execution path.
+- A proper post-publish revision workflow remains intentionally separate because DynamoDB automation state and EventBridge Scheduler cannot be changed atomically; inventing one here would broaden the slice and reintroduce the exact partial-state risk this gate removes.
 
 ### Cost / observability / user recovery
 
-- No AWS resource, SDK dependency, queue, database read, metric dimension, or model/browser call was added.
-- Validating/displaying the same trusted requirements already loaded with workflow inspection has effectively zero incremental cloud cost.
-- User recovery is clearer: if the compiled requirement projection itself is invalid, the product tells the user to recompile rather than repeatedly submitting impossible Fresh Tests.
+- Rejected production captures now fail before AgentCore Browser allocation and Live View signing, avoiding unnecessary cloud-session cost.
+- No AWS resource, SDK dependency, database schema, metric dimension, queue, or retained CI artifact was added.
+- Users correcting a failed Fresh Test remain supported because `READY_TO_TEST` is an authoring state. Successfully tested or published automation revisions require a future explicit product command rather than silent in-place editing.
 
 ### Regression coverage
 
-Changed tests prove:
+New tests prove:
 
-- exact trusted capture-generated keys are accepted;
-- missing, forged, duplicate, malformed, non-string, and oversized runtime inputs remain rejected;
-- the displayed JSON example contains exactly the trusted required keys;
-- workflows with no unresolved runtime inputs produce no arbitrary JSON suggestion;
-- malformed or duplicate trusted requirement metadata fails closed for both parser and presentation.
+- the closed authoring-state policy accepts `DRAFT` / `COMPILING` / `READY_TO_TEST` and rejects publish/execution/attention/disabled states;
+- a compile from `READY_TO_TEST` cannot create a second immutable workflow version without another accepted capture;
+- an `ACTIVE` automation cannot persist a replacement trace or lose its published state;
+- AWS rejects an `ACTIVE` automation before any AgentCore Browser start or Live View signing call;
+- ordinary draft capture remains available.
 
-Exact-head GitHub Actions remains authoritative. This slice must not be considered validated until CI completes successfully on the published commit.
+Exact-head GitHub Actions is authoritative. This slice must not be considered validated until CI completes on the published commit.
 
 ## Known production risks intentionally left visible
 
 - VPC-mode AgentCore Browser is required by deployment, but real subnet/route/DNS/security-group/firewall policy still needs live proof that private/link-local/control-plane targets stay unreachable after DNS resolution and redirects.
 - Live AWS/Cognito/Google/SES/AgentCore integrations are structurally tested with fakes and deployment contracts but still need the controlled real environment demonstration.
+- A tested or published automation does not yet have an explicit “revise workflow” transaction. That feature should first pause/fence production scheduling and execution, then return the automation to authoring; this slice intentionally blocks accidental editing rather than approximating that orchestration.
 - An abandoned browser may survive until its bounded AgentCore session expiry if post-cancellation cleanup is uncertain; durable cancellation still prevents its trace/profile from becoming authoritative.
 - Same-provider BYOK key rotation remains opt-in; the platform does not rotate keys to evade provider quotas/rate limits.
 - Recurring secret typed workflow inputs remain unsupported by design; if the live product needs them, they require vault-backed secret references rather than ordinary automation metadata.
@@ -84,7 +83,8 @@ Run the protected real AWS deployment and controlled vertical demonstration usin
 4. start one Live View capture, authenticate, optionally verify **Cancel capture & start over**, then complete capture, compile, and inspect;
 5. verify the Fresh Test form shows exactly the captured runtime inputs required by the immutable workflow, then run a Fresh Test lasting more than 30 seconds and confirm asynchronous UI progression to its durable result;
 6. approve/publish with recurrence/timezone and any explicitly non-secret recurring inputs;
-7. observe Scheduler → SQS → Step Functions → AgentCore Runtime execution, verification, history, CloudWatch, and SES;
-8. deliberately expire target authentication, use bounded secure Live View repair, resume, and verify the post-resume terminal outcome.
+7. confirm a published automation cannot silently reopen capture/compile while its schedule remains live;
+8. observe Scheduler → SQS → Step Functions → AgentCore Runtime execution, verification, history, CloudWatch, and SES;
+9. deliberately expire target authentication, use bounded secure Live View repair, resume, and verify the post-resume terminal outcome.
 
 Further engineering should be driven primarily by concrete failures from that live path, not additional recovery micro-hardening.

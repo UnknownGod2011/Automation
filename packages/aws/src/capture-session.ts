@@ -9,7 +9,7 @@ import type {
   CaptureStartResult,
   OwnershipScope,
 } from "@automation/core";
-import { initialCaptureCollectionControlRecord } from "@automation/core";
+import { canAuthorWorkflowCapture, initialCaptureCollectionControlRecord } from "@automation/core";
 import { Browser } from "bedrock-agentcore/browser";
 import { parseProfileRef } from "./browser-profile.js";
 import { MAX_BROWSER_SESSION_TIMEOUT_SECONDS } from "./config.js";
@@ -127,6 +127,9 @@ export class AgentCoreCaptureSessionStarter implements CaptureSessionStarter {
 
   async start(scope: OwnershipScope, automation: AutomationRecord): Promise<CaptureStartResult> {
     validateOwnership(scope, automation);
+    if (!canAuthorWorkflowCapture(automation.status)) {
+      throw new Error("automation must be in a pre-publish workflow-authoring state before capture");
+    }
     if (!this.sessionStore) throw new Error("durable capture session store is not configured");
     if (!automation.browserProfileRef) {
       throw new Error("automation browser profile is required before capture");
