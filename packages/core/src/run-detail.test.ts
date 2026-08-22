@@ -20,19 +20,30 @@ const retryPolicy = {
   retryableFailureCodes: ["TRANSIENT_NETWORK" as const],
 };
 
-function node(overrides: Partial<WorkflowNode> & Pick<WorkflowNode, "id" | "kind" | "objective">): WorkflowNode {
+interface TestNodeParams {
+  id: string;
+  kind: WorkflowNode["kind"];
+  objective: string;
+  next?: readonly string[];
+  inputBindings?: Readonly<Record<string, string>>;
+  allowedSideEffects?: readonly string[];
+  verification?: WorkflowNode["verification"];
+}
+
+function node(params: TestNodeParams): WorkflowNode {
   return {
-    id: overrides.id,
-    kind: overrides.kind,
-    objective: overrides.objective,
+    id: params.id,
+    kind: params.kind,
+    objective: params.objective,
     deterministicStrategies: [{ kind: "CSS", value: "#private-selector" }],
-    inputBindings: {},
+    inputBindings: params.inputBindings ?? {},
     outputBindings: {},
-    allowedSideEffects: [],
+    allowedSideEffects: params.allowedSideEffects ?? [],
+    ...(params.verification ? { verification: params.verification } : {}),
     retryPolicy,
     timeoutMs: 5_000,
+    ...(params.next ? { next: params.next } : {}),
     escalation: "FAIL",
-    ...overrides,
   };
 }
 

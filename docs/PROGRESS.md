@@ -25,7 +25,9 @@ sign in -> dashboard -> create -> cloud capture -> persisted Browser Profile + t
 
 - PR #1 is the open draft on `agent/bootstrap-platform`.
 - Incoming head `67c8a1aedcd8161ddbdc484c2c6cacf37113565a` (`Add durable scheduled capture inputs`) is green on GitHub Actions CI #219.
-- GitHub Actions on the exact outgoing head remains authoritative. No pass is claimed until that exact-head run completes successfully.
+- Normal product commit `4d681e1667f59fd532349ab0bb635314acbbde91` (`Add semantic run diagnostics`) reached CI #220. Deterministic lock verification and `pnpm install --frozen-lockfile` passed. `pnpm check` then stopped on three test-only TS2783 duplicate-property diagnostics in the new `run-detail.test.ts` fixture helper (`id`, `kind`, `objective` were explicitly assigned and then repeated by a spread). Production code was not implicated; packaging and tests were correctly skipped after the strict type-check failure.
+- The single corrective change replaces that fixture spread with an explicit typed test-node builder. No TypeScript rule, CI gate, runtime behavior, or security boundary is weakened.
+- GitHub Actions on the exact outgoing corrective head remains authoritative. No pass is claimed until that exact-head run completes successfully.
 
 ## 2026-08-22 — semantic run diagnostics + server-owned resume boundary
 
