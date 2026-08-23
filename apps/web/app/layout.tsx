@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { authenticatedNavigationPresentation } from "../lib/navigation-readiness";
+import { newAutomationAccess } from "../lib/new-automation-access";
 import { getWebAuthStatus } from "../lib/server-auth";
 import "./globals.css";
 
@@ -10,6 +12,10 @@ export const metadata: Metadata = {
 
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const auth = await getWebAuthStatus();
+  const authenticatedNavigation = auth.kind === "AUTHENTICATED"
+    ? authenticatedNavigationPresentation(newAutomationAccess(auth))
+    : null;
+
   return (
     <html lang="en">
       <body>
@@ -19,10 +25,16 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
             <Link href="/">Dashboard</Link>
             {auth.kind === "AUTHENTICATED" ? (
               <>
-                <Link href="/settings/credentials">Credentials</Link>
-                <Link href="/settings/inputs">Inputs</Link>
-                <Link href="/settings/notifications">Notifications</Link>
-                <Link className="button small" href="/automations/new">New automation</Link>
+                {authenticatedNavigation?.kind === "READY" ? (
+                  <>
+                    <Link href="/settings/credentials">Credentials</Link>
+                    <Link href="/settings/inputs">Inputs</Link>
+                    <Link href="/settings/notifications">Notifications</Link>
+                    <Link className="button small" href="/automations/new">New automation</Link>
+                  </>
+                ) : (
+                  <span className="badge warning" title={authenticatedNavigation?.message}>Control plane unavailable</span>
+                )}
                 <form action="/api/auth/sign-out" method="post"><button className="button small secondary" type="submit">Sign out</button></form>
               </>
             ) : auth.kind === "SIGNED_OUT" ? (
