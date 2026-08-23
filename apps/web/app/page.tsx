@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createAuthenticatedWebControlPlaneClient, getWebAuthStatus, WebAuthError } from "../lib/server-auth";
+import { dashboardCreateAutomationPresentation } from "../lib/dashboard-create";
 import { dashboardLastRunPresentation } from "../lib/dashboard-last-run";
 import { automationPhase, formatCapability, formatSchedule, nextRunLabel } from "../lib/view-model";
 
@@ -26,7 +27,7 @@ export default async function DashboardPage() {
           <div className="eyebrow">Cloud browser automation</div>
           <h1>Teach it once. Let the cloud run it.</h1>
           <p>Create a permitted workflow, demonstrate it in an isolated browser, verify a fresh test, then publish it on your schedule.</p>
-          <Link className="button" href="/api/auth/sign-in?returnTo=/">Sign in with Cognito</Link>
+          <Link className="button" href="/api/auth/sign-in?returnTo=/">Sign in with Google or email</Link>
         </div>
         <div className="card subtle stack"><strong>Secure session</strong><p className="muted">OAuth authorization-code flow with PKCE. Browser JavaScript never receives the control-plane access or refresh token.</p></div>
       </section>
@@ -51,6 +52,7 @@ export default async function DashboardPage() {
     throw error;
   }
   const configured = client.status().configured;
+  const createAction = dashboardCreateAutomationPresentation(configured);
   const renderedAt = new Date();
   const capabilities = Object.entries(dashboard.capabilities) as Array<
     [keyof typeof dashboard.capabilities, (typeof dashboard.capabilities)[keyof typeof dashboard.capabilities]]
@@ -74,10 +76,12 @@ export default async function DashboardPage() {
       <section className="card stack">
         <div className="row">
           <div><h2>Automations</h2><p className="muted">Status, schedule, next run, latest run, and human-attention state.</p></div>
-          <Link className="button" href="/automations/new">Create automation</Link>
+          {createAction.kind === "READY"
+            ? <Link className="button" href="/automations/new">{createAction.label}</Link>
+            : <span className="badge warning" title={createAction.message}>{createAction.label}</span>}
         </div>
         {dashboard.automations.length === 0 ? (
-          <div className="card subtle"><h3>No automations yet</h3><p>{configured ? "Create your first workflow to begin capture." : "Connect the control plane first; no fake cloud data is shown."}</p></div>
+          <div className="card subtle"><h3>No automations yet</h3><p>{configured ? "Create your first workflow to begin capture." : createAction.kind === "BLOCKED" ? createAction.message : "Creation is unavailable."}</p></div>
         ) : (
           <div className="list">
             {dashboard.automations.map((automation) => {
