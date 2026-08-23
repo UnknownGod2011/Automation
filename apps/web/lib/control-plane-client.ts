@@ -58,6 +58,7 @@ export type AutomationCommand =
   | "test"
   | "publish"
   | "schedule"
+  | "scheduled-inputs"
   | "pause"
   | "resume"
   | "disable"

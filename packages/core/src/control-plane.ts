@@ -41,6 +41,10 @@ export interface PublishAutomationCommand {
   scheduledInputsAreNonSecret?: boolean;
 }
 export interface UpdateAutomationScheduleCommand { schedule: AutomationSchedule; }
+export interface UpdateScheduledInputValuesCommand {
+  scheduledNonSecretInputs: Readonly<Record<string, string>>;
+  scheduledInputsAreNonSecret: boolean;
+}
 export interface UpdateNotificationPreferencesCommand { notifyOnSuccess: boolean; notifyOnFailure: boolean; }
 export interface CreateCredentialCommand { credentialId: string; provider: string; apiKey: string; maskedLabel: string; priority: number; }
 export interface RotateCredentialCommand { apiKey: string; }
@@ -69,6 +73,9 @@ export class ControlPlaneError extends Error {
   constructor(readonly code: "BAD_REQUEST" | "NOT_FOUND" | "CONFLICT" | "NOT_CONFIGURED", message: string) { super(message); }
 }
 const attentionStatuses = new Set<AutomationStatus>(["NEEDS_AUTH", "NEEDS_API_KEY", "NEEDS_ATTENTION", "PAUSED"]);
+const MAX_SCHEDULED_INPUTS = 64;
+const MAX_SCHEDULED_INPUT_VALUE_CHARS = 4_096;
+const MAX_SCHEDULED_INPUT_TOTAL_CHARS = 32_768;
 function requireToken(value: string, name: string): string { const trimmed = value.trim(); if (!trimmed) throw new ControlPlaneError("BAD_REQUEST", `${name} is required`); if (trimmed.length > 160) throw new ControlPlaneError("BAD_REQUEST", `${name} is too long`); return trimmed; }
 function classifyRunKind(run: RunRecord): NonNullable<RunSummaryView["runKind"]> { return run.occurrenceKey === `${run.automationId}:test:${run.runId}` ? "FRESH_TEST" : "SCHEDULED"; }
 function toRunSummary(run: RunRecord): RunSummaryView {
@@ -93,6 +100,35 @@ function toAutomationSummary(record: AutomationRecord, runs: readonly RunRecord[
     ...(record.schedule ? { schedule: structuredClone(record.schedule) } : {}), notifyOnSuccess: record.notifyOnSuccess, notifyOnFailure: record.notifyOnFailure,
     createdAt: record.createdAt, updatedAt: record.updatedAt, ...(latestCompletedCapture ? { latestCompletedCapture } : {}),
     ...(lastRun ? { lastRun: toRunSummary(lastRun) } : {}), needsAttention: attentionStatuses.has(record.status) || lastRun?.status === "WAITING_FOR_HUMAN" };
+}
+function sameStringMap(left: Readonly<Record<string, string>>, right: Readonly<Record<string, string>>): boolean {
+  const leftEntries = Object.entries(left).sort(([a], [b]) => a.localeCompare(b));
+  const rightEntries = Object.entries(right).sort(([a], [b]) => a.localeCompare(b));
+  return leftEntries.length === rightEntries.length && leftEntries.every(([key, value], index) => rightEntries[index]?.[0] === key && rightEntries[index]?.[1] === value);
+}
+function validateScheduledInputReplacement(
+  current: Readonly<Record<string, string>>,
+  supplied: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> {
+  const expectedKeys = Object.keys(current).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const entries = Object.entries(supplied);
+  if (expectedKeys.length === 0) throw new ControlPlaneError("CONFLICT", "published workflow has no configurable scheduled inputs");
+  if (entries.length > MAX_SCHEDULED_INPUTS) throw new ControlPlaneError("BAD_REQUEST", "too many scheduled non-secret inputs");
+  const suppliedKeys = entries.map(([key]) => key).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  if (suppliedKeys.length !== expectedKeys.length || suppliedKeys.some((key, index) => key !== expectedKeys[index])) {
+    throw new ControlPlaneError("BAD_REQUEST", "scheduled input keys must exactly match the published workflow configuration");
+  }
+  let totalChars = 0;
+  const normalized: Record<string, string> = {};
+  for (const key of expectedKeys) {
+    const value = supplied[key];
+    if (typeof value !== "string") throw new ControlPlaneError("BAD_REQUEST", "scheduled non-secret input values must be strings");
+    if (value.length > MAX_SCHEDULED_INPUT_VALUE_CHARS) throw new ControlPlaneError("BAD_REQUEST", "scheduled non-secret input value is too long");
+    totalChars += value.length;
+    if (totalChars > MAX_SCHEDULED_INPUT_TOTAL_CHARS) throw new ControlPlaneError("BAD_REQUEST", "scheduled non-secret inputs are too large");
+    normalized[key] = value;
+  }
+  return normalized;
 }
 
 export class AutomationControlPlaneService {
@@ -163,6 +199,34 @@ export class AutomationControlPlaneService {
       return await this.summaryFor(updated);
     } catch {
       throw new ControlPlaneError("CONFLICT", "notification preferences could not be updated");
+    }
+  }
+  async updateScheduledInputValues(scope: OwnershipScope, automationId: string, command: UpdateScheduledInputValuesCommand): Promise<AutomationSummaryView> {
+    const id = requireToken(automationId, "automationId");
+    const automation = await this.dependencies.automations.get(scope, id);
+    if (!automation) throw new ControlPlaneError("NOT_FOUND", "automation not found");
+    if (automation.status !== "ACTIVE" && automation.status !== "PAUSED") {
+      throw new ControlPlaneError("CONFLICT", "scheduled inputs may be changed only for ACTIVE or PAUSED automations");
+    }
+    if (automation.publishedWorkflowVersion === undefined || !automation.schedule) {
+      throw new ControlPlaneError("CONFLICT", "automation must be published before scheduled inputs can be changed");
+    }
+    if (command.scheduledInputsAreNonSecret !== true) {
+      throw new ControlPlaneError("BAD_REQUEST", "scheduled inputs require explicit non-secret acknowledgement");
+    }
+    const current = automation.scheduledNonSecretInputs ?? {};
+    const scheduledNonSecretInputs = validateScheduledInputReplacement(current, command.scheduledNonSecretInputs);
+    if (sameStringMap(current, scheduledNonSecretInputs)) return this.summaryFor(automation);
+    const updated: AutomationRecord = {
+      ...automation,
+      scheduledNonSecretInputs,
+      updatedAt: this.now().toISOString(),
+    };
+    try {
+      await this.dependencies.automations.put(updated);
+      return await this.summaryFor(updated);
+    } catch {
+      throw new ControlPlaneError("CONFLICT", "scheduled inputs could not be updated");
     }
   }
   async beginCapture(scope: OwnershipScope, automationId: string): Promise<CaptureStartResult> {

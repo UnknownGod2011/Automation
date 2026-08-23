@@ -11,7 +11,8 @@ import { parseScheduledInputForm } from "../../../../../../lib/scheduled-input-f
 import { createAuthenticatedWebControlPlaneClient, WebAuthError } from "../../../../../../lib/server-auth";
 
 function redirectBack(request: Request, automationId: string, notice: string): NextResponse { return NextResponse.redirect(new URL(`/automations/${encodeURIComponent(automationId)}?notice=${encodeURIComponent(notice)}`, request.url), 303); }
-const COMMANDS = ["capture", "record-workflow", "finish-capture", "cancel-capture", "compile", "test", "publish", "schedule", "pause", "resume", "disable"] as const;
+function redirectInputs(request: Request, notice: string): NextResponse { return NextResponse.redirect(new URL(`/settings/inputs?notice=${encodeURIComponent(notice)}`, request.url), 303); }
+const COMMANDS = ["capture", "record-workflow", "finish-capture", "cancel-capture", "compile", "test", "publish", "schedule", "scheduled-inputs", "pause", "resume", "disable"] as const;
 
 export async function POST(request: Request, context: { params: Promise<{ automationId: string; command: string }> }): Promise<Response> {
   if (!isSameOriginMutation(request.url, request.headers)) return new NextResponse("Forbidden", { status: 403 });
@@ -50,6 +51,18 @@ export async function POST(request: Request, context: { params: Promise<{ automa
       await client.command(automationId, "test", { runId: freshTestRunId(), ...(runtimeVariables ? { runtimeVariables } : {}) });
       return redirectBack(request, automationId, "tested");
     }
+    if (command === "scheduled-inputs") {
+      const scheduledInputs = parseScheduledInputForm(
+        String(form.get("scheduledNonSecretInputs") ?? ""),
+        form.get("scheduledInputsAreNonSecret") === "yes",
+      );
+      if (!scheduledInputs?.values || !scheduledInputs.acknowledged) return redirectInputs(request, "invalid-input");
+      await client.command(automationId, "scheduled-inputs", {
+        scheduledNonSecretInputs: scheduledInputs.values,
+        scheduledInputsAreNonSecret: true,
+      });
+      return redirectInputs(request, "updated");
+    }
     if (command === "pause" || command === "resume" || command === "disable") {
       await client.command(automationId, command, {}); return redirectBack(request, automationId, command === "pause" ? "paused" : command === "resume" ? "resumed" : "disabled");
     }
@@ -72,8 +85,8 @@ export async function POST(request: Request, context: { params: Promise<{ automa
     });
     return redirectBack(request, automationId, "published");
   } catch (error) {
-    if (error instanceof WebAuthError) return NextResponse.redirect(new URL(`/api/auth/sign-in?returnTo=${encodeURIComponent(`/automations/${automationId}`)}`, request.url), 303);
-    if (error instanceof WebControlPlaneError && error.code === "NOT_CONFIGURED") return redirectBack(request, automationId, "not-configured");
-    return redirectBack(request, automationId, "request-failed");
+    if (error instanceof WebAuthError) return NextResponse.redirect(new URL(`/api/auth/sign-in?returnTo=${encodeURIComponent(command === "scheduled-inputs" ? "/settings/inputs" : `/automations/${automationId}`)}`, request.url), 303);
+    if (error instanceof WebControlPlaneError && error.code === "NOT_CONFIGURED") return command === "scheduled-inputs" ? redirectInputs(request, "not-configured") : redirectBack(request, automationId, "not-configured");
+    return command === "scheduled-inputs" ? redirectInputs(request, "request-failed") : redirectBack(request, automationId, "request-failed");
   }
 }
