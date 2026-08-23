@@ -8,55 +8,59 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end corre
 
 ## Incoming validation
 
-- Incoming PR #1 head: `b6aa91c223eb2dbf6dcd9334e74949b238c42328` (`Harden target-auth Live View handoff`).
-- GitHub Actions CI #267 passed completely on that exact head.
+- Incoming PR #1 head: `57f2373f75060a73911af753aa763875de1125f7` (`Gate cloud Fresh Test before Runtime invocation`).
+- GitHub Actions CI #268 passed completely on that exact head.
 - PR #1 is open, ready for review, mergeable, and unmerged.
 - Exact-head GitHub Actions remains authoritative for this new slice; no pass is claimed until the new commit receives a completed successful run.
 
-## This product slice — gate cloud Fresh Test before execution-plane invocation
+## This product slice — make Fresh Test capability state fail closed
 
-### Product/cost defect and correction
+### Product/correctness defect and correction
 
-The execution plane already revalidates automation state before Browser/model work, but the provider-neutral control plane could submit a production Fresh Test to the AgentCore Runtime port without first checking whether the automation was actually in `READY_TO_TEST` or `READY_TO_PUBLISH`.
+`ControlPlaneCapabilities.cloudExecution` has three explicit states: `CONFIGURED`, `LOCAL_MOCK`, and `NOT_CONFIGURED`. `AutomationControlPlaneService.runFreshTest()` correctly used the trusted AgentCore execution port for `CONFIGURED`, but every other state fell through to the in-process lifecycle implementation. As a result, `NOT_CONFIGURED` silently behaved like `LOCAL_MOCK`.
 
-That meant a stale or deliberately replayed authenticated API request against a `DRAFT`, `COMPILING`, `ACTIVE`, `PAUSED`, or other non-test-ready automation would still create an avoidable AgentCore Runtime invocation before the execution plane rejected it. The request remained safe from browser side effects, but the control plane was knowingly paying execution-plane cost for an invalid lifecycle transition.
+That violates the repository's deployment contract: missing cloud execution configuration must remain an explicit product state and must never fabricate success or silently start a different browser/model execution path. In production composition this could also make behavior depend on whichever lifecycle implementation happened to be injected instead of the declared capability state.
 
-`AutomationControlPlaneService.runFreshTest()` now resolves the automation under the authenticated tenant/user scope before constructing or submitting the execution request. Missing automations return `NOT_FOUND`; every status except `READY_TO_TEST` and `READY_TO_PUBLISH` returns a sanitized `CONFLICT`. Only a valid test-ready automation can reach `FreshTestExecutionPort.execute()`.
+Fresh Test dispatch now treats the three capability states distinctly:
 
-The Runtime worker remains authoritative after admission. If lifecycle state changes in the race between the control-plane read and Runtime execution, the existing execution-plane preflight still fails closed before Browser/model work.
+- `CONFIGURED` -> use the trusted `FreshTestExecutionPort` and keep AgentCore Runtime authoritative;
+- `LOCAL_MOCK` -> use the deterministic in-process lifecycle used by local product tests;
+- `NOT_CONFIGURED` -> return a sanitized `NOT_CONFIGURED` error before either execution path starts.
+
+The existing automation ownership/lifecycle admission still runs first. Runtime remains independently authoritative after a configured cloud submission.
 
 ### Security / tenant isolation
 
-- Automation lookup uses the trusted `OwnershipScope`; request JSON cannot select another tenant/user.
-- Cross-tenant Fresh Test attempts now stop before AgentCore Runtime invocation.
-- No Browser Profile reference, BYOK secret reference, provider key, workload token, runtime identity capability, or raw provider/browser error is added to the control-plane response.
-- Existing server-owned run IDs and Fresh Test runtime-variable validation remain unchanged.
+- Tenant/user ownership remains derived from trusted `OwnershipScope` and is checked before capability dispatch.
+- `NOT_CONFIGURED` does not expose Browser Profile references, BYOK references/keys, workload tokens, runtime identities, or provider/browser errors.
+- The HTTP boundary maps the error to a stable 503 response without invoking local or cloud execution.
+- No permission boundary or client-controlled capability flag was added.
 
 ### Idempotency / concurrency / retry / timeout
 
-- Fresh Test run identity and durable occurrence idempotency are unchanged.
-- This admission read is not treated as execution authority; Runtime still revalidates state and owns durable run creation/locking.
-- No retry loop, lease, outbox, queue, or new recovery state was added.
-- A state transition after the admission read is handled by the existing downstream fail-closed preflight rather than by optimistic assumptions in the API process.
+- Fresh Test run IDs, occurrence idempotency, automation locking, and asynchronous AgentCore execution are unchanged.
+- `NOT_CONFIGURED` now creates no run and starts no execution path, so there is nothing new to retry or reconcile.
+- No queue, outbox, lease, heartbeat, or recovery state was added.
 
 ### Side-effect verification / recovery
 
-- Deterministic browser execution, constrained semantic fallback, expected-effect verification, checkpoints, Browser Profile persistence, human takeover, and resume behavior are unchanged.
-- The change can only suppress invalid execution-plane submissions; it cannot broaden or authorize a browser action.
+- Deterministic browser execution, constrained semantic fallback, expected-effect verification, checkpoint persistence, Browser Profile persistence, and human takeover/resume are unchanged.
+- This change only narrows dispatch authority; it cannot authorize a browser/model side effect.
 
 ### Cost / observability
 
-- A valid cloud Fresh Test adds one already-cheap scoped automation metadata read before AgentCore invocation.
-- Invalid/stale Fresh Test requests now avoid AgentCore Runtime startup and all downstream Browser/model cost.
-- No AWS resource, IAM permission, dependency, metric dimension, retained GitHub Actions artifact, or storage schema was added.
+- A `NOT_CONFIGURED` Fresh Test now stops before AgentCore Browser/model cost and before local mock execution.
+- `LOCAL_MOCK` remains available for deterministic no-credential product tests.
+- No AWS resource, IAM permission, dependency, metric dimension, storage schema, or retained GitHub Actions artifact was added.
 
 ### Regression coverage
 
 New provider-neutral tests prove:
 
-- a `DRAFT` automation is rejected before `FreshTestExecutionPort.execute()`;
-- a cross-tenant request is `NOT_FOUND` before execution-plane invocation;
-- a `READY_TO_TEST` automation still forwards the same trusted scope, automation ID, run ID, and runtime variables and receives the asynchronous `ACCEPTED` result.
+- `NOT_CONFIGURED` rejects a test-ready automation without calling the local lifecycle;
+- `NOT_CONFIGURED` also does not call a supplied cloud execution port;
+- the HTTP API returns sanitized 503 `NOT_CONFIGURED` for that state;
+- `LOCAL_MOCK` still uses the in-process lifecycle and never calls the cloud execution port.
 
 ## Known production risks intentionally left visible
 
@@ -80,7 +84,7 @@ Run the protected real AWS deployment and controlled vertical demonstration afte
 2. sign in through Cognito/Google, verify the trusted notification identity, and configure a usable OpenAI BYOK credential;
 3. create one automation and complete Live View capture;
 4. compile and inspect the semantic plan, then run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
-5. explicitly test an invalid/stale Fresh Test request and confirm no AgentCore execution-plane work is admitted;
+5. deliberately exercise both invalid lifecycle state and `NOT_CONFIGURED` Fresh Test capability and confirm no local or AgentCore execution work starts;
 6. publish with recurrence/timezone and explicitly non-secret recurring inputs, then verify Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution and inspect verification/history/CloudWatch/SES;
 7. deliberately expire target authentication, repair through hardened Live View handoff, save the repaired profile, resume, and follow the terminal result.
 

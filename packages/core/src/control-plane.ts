@@ -256,7 +256,11 @@ export class AutomationControlPlaneService {
       throw new ControlPlaneError("CONFLICT", "automation is not ready for a fresh test");
     }
     const request: FreshTestRunRequest = { scope, automationId: id, runId, ...(command.runtimeVariables ? { runtimeVariables: structuredClone(command.runtimeVariables) } : {}) };
-    if (this.dependencies.capabilities.cloudExecution === "CONFIGURED") {
+    const cloudExecution = this.dependencies.capabilities.cloudExecution;
+    if (cloudExecution === "NOT_CONFIGURED") {
+      throw new ControlPlaneError("NOT_CONFIGURED", "fresh-test execution is not configured");
+    }
+    if (cloudExecution === "CONFIGURED") {
       if (!this.dependencies.freshTests) throw new ControlPlaneError("NOT_CONFIGURED", "cloud fresh-test execution is not configured");
       try { return await this.dependencies.freshTests.execute(request); }
       catch (error) { if (error instanceof ControlPlaneError) throw error; throw new ControlPlaneError("CONFLICT", "cloud fresh test could not be submitted"); }
