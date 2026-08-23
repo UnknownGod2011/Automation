@@ -1,11 +1,38 @@
 import { AUTOMATION_DRAFT_LIMITS } from "@automation/core";
+import Link from "next/link";
+import { newAutomationAccess } from "../../../lib/new-automation-access";
 import { notificationPreferenceCopy } from "../../../lib/notification-preferences";
+import { getWebAuthStatus } from "../../../lib/server-auth";
+
+export const dynamic = "force-dynamic";
 
 export default async function NewAutomationPage({
   searchParams,
 }: {
   searchParams: Promise<{ notice?: string }>;
 }) {
+  const auth = newAutomationAccess(await getWebAuthStatus());
+  if (auth.kind === "NOT_CONFIGURED") {
+    return (
+      <section className="card stack">
+        <div className="eyebrow">Create automation</div>
+        <h1>Authentication is not configured.</h1>
+        <p className="muted">Automation authoring stays unavailable until the Cognito web session boundary is configured.</p>
+        <Link href="/">Back to dashboard</Link>
+      </section>
+    );
+  }
+  if (auth.kind === "SIGN_IN_REQUIRED") {
+    return (
+      <section className="card stack">
+        <div className="eyebrow">Create automation</div>
+        <h1>Sign in before entering automation details.</h1>
+        <p className="muted">Website, objective, consent, and notification settings are submitted only from an authenticated product session.</p>
+        <Link className="button" href="/api/auth/sign-in?returnTo=/automations/new">Sign in</Link>
+      </section>
+    );
+  }
+
   const { notice } = await searchParams;
   const notificationCopy = notificationPreferenceCopy();
   return (
