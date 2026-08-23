@@ -1,4 +1,5 @@
 import { AUTOMATION_DRAFT_LIMITS } from "@automation/core";
+import { notificationPreferenceCopy } from "../../../lib/notification-preferences";
 
 export default async function NewAutomationPage({
   searchParams,
@@ -6,6 +7,7 @@ export default async function NewAutomationPage({
   searchParams: Promise<{ notice?: string }>;
 }) {
   const { notice } = await searchParams;
+  const notificationCopy = notificationPreferenceCopy();
   return (
     <section className="grid two">
       <div>
@@ -26,8 +28,9 @@ export default async function NewAutomationPage({
             <input name="consentAcknowledged" type="checkbox" value="true" required />
             <span>I am authorized to automate this website and understand that security controls, MFA, CAPTCHAs, and site restrictions will not be bypassed.</span>
           </label>
-          <label className="checkbox"><input name="notifyOnFailure" type="checkbox" value="true" defaultChecked /> <span>Notify me when a run fails or needs attention.</span></label>
-          <label className="checkbox"><input name="notifyOnSuccess" type="checkbox" value="true" /> <span>Send a completion notification after successful runs.</span></label>
+          <label className="checkbox"><input name="notifyOnFailure" type="checkbox" value="true" defaultChecked /> <span>{notificationCopy.failure}</span></label>
+          <label className="checkbox"><input name="notifyOnSuccess" type="checkbox" value="true" /> <span>{notificationCopy.success}</span></label>
+          <p className="muted">{notificationCopy.attention}</p>
           <button className="button" type="submit">Create draft</button>
         </form>
       </div>

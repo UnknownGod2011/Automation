@@ -8,61 +8,47 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end corre
 
 ## Incoming validation
 
-- Incoming PR #1 head: `6d3d201430a5fbcb10b4b81c05fb19220c2b85d5` (`Keep capture compile identity server-side`).
-- GitHub Actions CI #246 completed successfully on that exact head before this slice began.
+- Incoming PR #1 head: `5b36eb728e55b70439d961c1db50ea4eef10c992` (`Refresh automation draft lock snapshot`).
+- GitHub Actions CI #248 completed successfully on that exact head before this slice began.
 - PR #1 remains open, draft, mergeable, and unmerged.
 - Deterministic pnpm lock verification, frozen installation, strict TypeScript/Next.js validation, production packaging, AWS release/deployment/demo/OIDC contracts, and the full test suite remain mandatory gates.
 
-## This slice — bound automation draft metadata before cloud allocation
+## This slice — make notification preferences truthful in the product UX
 
-### Product/security defect closed
+### Product contract mismatch closed
 
-The Next.js create form already limited names to 160 characters and objectives to 4,000, but `AutomationProductLifecycleService.createDraft()` did not enforce those limits. A direct authenticated API caller could bypass the form and submit oversized durable metadata. Name/objective validation also happened after Browser Profile allocation, so an invalid request could consume AgentCore Browser Profile resources before being rejected.
+The create-automation form said the failure-notification checkbox controlled both ordinary failures and runs that need human attention. The provider-neutral reporting policy intentionally does something stricter: `WAITING_FOR_HUMAN` always notifies the owner, even when `notifyOnFailure` is disabled. Existing core regression coverage explicitly enforces that behavior so authentication repair or another required human action cannot silently sit unnoticed.
 
-The provider-neutral lifecycle is now the authoritative metadata boundary. Draft creation validates and bounds every durable user-controlled field before duplicate lookup, Browser Profile creation, or persistence.
+The UX now states the actual policy instead of implying that a user can disable attention notifications.
 
 ### Changes
 
-- Added exported `AUTOMATION_DRAFT_LIMITS`:
-  - automation ID: 128 characters;
-  - name: 160 characters;
-  - website URL: 2,048 characters;
-  - objective: 4,000 characters.
-- Added fail-closed bounded non-empty validation; values are rejected rather than truncated.
-- Website URLs are bounded before target-policy parsing and rechecked after canonical normalization.
-- `createDraft()` now validates automation ID, name, objective, and target URL before any Browser Profile allocation.
-- The Next.js create page imports the same provider-neutral limits so browser affordances and server authority cannot drift; the URL field now also has the 2,048-character bound.
+- Added a small shared web product-copy helper for notification preferences.
+- The failure checkbox now says only that it controls ordinary run failures.
+- The success checkbox continues to control optional completion notifications.
+- The create page now explicitly states that human-attention pauses always notify the owner.
+- Added a web regression test locking this distinction so future copy changes cannot silently contradict the reporting contract.
 
-### Security / tenant isolation
+### Security / tenant isolation / recovery
 
-- Authenticated API callers can no longer create unbounded automation metadata that later flows into DynamoDB, workflow compilation/model context, logs, or resource names.
-- Rejected metadata creates zero Browser Profile resources, reducing a cheap allocation-amplification path.
-- Tenant/user ownership remains exclusively the authenticated scope; no new client-selected secret/profile identity was introduced.
-- Existing public-target/SSRF policy remains authoritative after the new size gate.
+- No ownership, recipient routing, Cognito identity, SES transport, execution, checkpoint, or recovery authority changed.
+- Human-attention notification remains mandatory and tenant/user scoped through the existing trusted notification resolver.
+- No provider error, browser state, credential, session identifier, or secret was added to the UI.
 
 ### Idempotency / concurrency / retry / verification
 
-- Draft creation still performs duplicate automation detection within the ownership scope before successful allocation.
-- The new validation is deterministic and side-effect free; invalid requests are not retried and cannot partially create automation state.
-- Browser execution, scheduling, run idempotency, workflow retries, effect verification, and human recovery are unchanged.
+- Notification delivery semantics are unchanged: duplicate scheduled delivery remains suppressed by the existing run/idempotency authority and human-resume reporting remains limited to newly executed outcomes.
+- Browser/model retries, side-effect verification, automation locking, and human-resume claim/lease fencing are unchanged.
 
-### Cost / observability / user recovery
+### Cost / observability
 
-- Invalid oversized requests now fail before AgentCore Browser Profile cost.
-- No AWS resource, SDK dependency, table, queue, model call, browser session, metric dimension, or retained Actions artifact was added.
-- Errors remain bounded validation messages; provider/internal errors and secrets are not exposed.
-- User recovery is simply to submit metadata within the documented product bounds.
+- No AWS resource, SDK dependency, table, queue, browser session, model call, metric dimension, or retained GitHub Actions artifact was added.
+- This is a product-contract clarification only; it does not increase SES volume because the mandatory attention behavior already existed.
 
-### Regression coverage
+### Validation
 
-Core tests prove each oversized automation ID/name/objective/website URL is rejected with zero Browser Profile allocations, while exact-boundary values remain accepted and allocate exactly one profile only after validation.
-
-### CI validation
-
-- Normal implementation commit: `d85c7d6ecadb97c4aa3b15a004cebafc0ab26baa` (`Bound automation draft metadata before allocation`).
-- CI #247 stopped before installation/type-check/tests at the deterministic pnpm supply-chain gate. No package manifest changed; pnpm 10.15.0 re-resolved the transitive graph from reviewed SHA `00456e6d43e48cfb385db6eb7ba1afeb1543a6e79b051b61f72e76851d1ecabd` to authoritative CI-generated SHA `999e13c64e1f9a4b8cda605fea8aad510229afd66aef12bff45265e6286a53a6`.
-- The AWS DynamoDB peer-alignment assertions remained intact. The single corrective commit updates only that reviewed lock fingerprint plus this progress record.
-- Exact-head GitHub Actions remains authoritative; this slice is not considered green until the corrective head completes CI successfully.
+- Added `apps/web/lib/notification-preferences.test.ts` covering the ordinary-failure opt-out versus mandatory attention distinction.
+- Exact-head GitHub Actions remains authoritative; this slice is not considered complete until CI succeeds on the published head.
 
 ## Known production risks intentionally left visible
 
