@@ -8,10 +8,12 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end corre
 
 ## Incoming validation
 
-- Incoming PR #1 head: `8addca51713f3a65cab95d8ba1e8e0adebc61807` (`Align authenticated navigation with control-plane readiness`).
+- Incoming green PR #1 head before this slice: `8addca51713f3a65cab95d8ba1e8e0adebc61807` (`Align authenticated navigation with control-plane readiness`).
 - GitHub Actions CI #262 passed completely on that exact head.
+- Normal implementation commit for this slice: `d2cb1f2adc0e61758abc6a2724662878188663fc` (`Make automation creation replay-safe`).
+- CI #263 passed deterministic lock verification and frozen installation, then failed strict `pnpm check` only because the web control-plane client error-code union did not yet admit the sanitized `CONFLICT` branch used by the new replay path. Packaging and tests were correctly skipped after type-check failure.
+- The corrective change classifies HTTP 409 as `WebControlPlaneError("CONFLICT")` without reading or surfacing the remote error body and adds regression coverage for that boundary. Exact-head corrective CI remains authoritative before this slice is considered green.
 - PR #1 remains open, draft, mergeable, and unmerged.
-- Exact-head GitHub Actions remains authoritative; no slice is considered green before its own workflow run completes successfully.
 
 ## This product slice — replay-safe automation creation
 
@@ -19,9 +21,9 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end corre
 
 Automation creation had a real cloud-side ambiguity at the first durable resource boundary. A Create Automation POST generated a new automation ID on every submission, while `AutomationProductLifecycleService.createDraft()` allocated the Browser Profile before the automation metadata write. If the metadata write committed but its acknowledgement was lost, the web retry generated another automation ID and could allocate another Browser Profile. Two concurrent same-ID lifecycle calls could also both pass the pre-read and allocate before either metadata write became visible.
 
-The web form now receives one server-generated UUIDv4 creation-attempt ID when it is rendered. That non-secret idempotency identity is preserved across ordinary request failure, sign-in, and NOT_CONFIGURED redirects, so a retry submits the same automation ID rather than manufacturing another resource identity. A same-scope control-plane conflict therefore converges the browser to the existing automation instead of asking the user to create another draft.
+The web form now receives one server-generated UUIDv4 creation-attempt ID when it is rendered. That non-secret idempotency identity is preserved across ordinary request failure, sign-in, and NOT_CONFIGURED redirects, so a retry submits the same automation ID rather than manufacturing another resource identity. The server-side control-plane client now preserves only the sanitized HTTP 409 classification needed to recognize a same-scope duplicate; it still discards upstream error bodies. A same-scope conflict therefore converges the browser to the existing automation instead of asking the user to create another draft.
 
-The provider-neutral lifecycle now reuses the existing durable `AutomationLockManager` before Browser Profile allocation. It rechecks automation existence after acquiring the lock, so concurrent delivery of one creation attempt cannot allocate two authoritative profiles. If the automation metadata write throws, the lifecycle performs an authoritative repository read. When that read proves the exact same automation/profile identity was durably committed, the lost acknowledgement is treated as success. If the read is absent or uncertain, the original failure propagates and the Browser Profile is deliberately not blindly deleted because the metadata write may have committed.
+The provider-neutral lifecycle reuses the existing durable `AutomationLockManager` before Browser Profile allocation. It rechecks automation existence after acquiring the lock, so concurrent delivery of one creation attempt cannot allocate two authoritative profiles. If the automation metadata write throws, the lifecycle performs an authoritative repository read. When that read proves the exact same automation/profile identity was durably committed, the lost acknowledgement is treated as success. If the read is absent or uncertain, the original failure propagates and the Browser Profile is deliberately not blindly deleted because the metadata write may have committed.
 
 The AWS Browser Profile adapter already gives retries for the same tenant/user + automation ID a stable AgentCore client token, so a later retry after a definitely-uncommitted metadata write converges on the same managed Browser Profile rather than intentionally creating another one.
 
@@ -29,6 +31,7 @@ The AWS Browser Profile adapter already gives retries for the same tenant/user +
 
 - The creation-attempt UUID is browser-visible idempotency data, not an authentication or ownership credential. Cognito-derived tenant/user scope remains authoritative at the control plane and lifecycle.
 - The web accepts only UUIDv4-shaped creation identities. A tampered ID can at most name an automation inside the already-authenticated ownership scope; it cannot choose another tenant/user or Browser Profile reference.
+- HTTP 409 classification is status-code-only. The web client does not parse, log, or surface the upstream conflict body.
 - Existing metadata bounds, consent validation, and public-target/SSRF policy still run before Browser Profile allocation.
 - The creation lock is scoped through the same tenant/user + automation identity boundary as production execution locks.
 - A same-attempt duplicate that arrives after the first durable commit converges to the existing automation. Two separately rendered forms intentionally receive different IDs and remain separate user creation attempts.
@@ -51,9 +54,11 @@ The AWS Browser Profile adapter already gives retries for the same tenant/user +
 
 - Core regression coverage simulates a metadata write that commits and then loses its acknowledgement, proving the lifecycle returns the committed draft and does not delete its Browser Profile.
 - Core concurrency coverage blocks the first profile allocation and proves a concurrent same-ID creation attempt is rejected before a second profile can be allocated.
-- Web regression coverage validates the UUIDv4 creation-attempt contract and fail-closed malformed identity handling.
+- Web coverage validates the UUIDv4 creation-attempt contract and fail-closed malformed identity handling.
+- Corrective web coverage proves HTTP 409 becomes only a sanitized `CONFLICT` code while a private upstream conflict body remains undisclosed.
 - Existing AWS Browser Profile coverage already proves repeated `create()` calls for the same scope + automation ID use the same AgentCore client token and opaque profile reference.
-- Exact-head CI must pass deterministic lock verification, frozen installation, strict `pnpm check`, all production packaging paths, AWS release/deployment/demo/OIDC contracts, and the complete test suite before this slice is considered green.
+- CI #263 root cause was a strict TypeScript union mismatch only; deterministic lock verification and frozen installation had already passed. No check or compiler option was weakened.
+- Exact-head CI must pass strict `pnpm check`, all production packaging paths, AWS release/deployment/demo/OIDC contracts, and the complete test suite before this slice is considered green.
 
 ## Known production risks intentionally left visible
 

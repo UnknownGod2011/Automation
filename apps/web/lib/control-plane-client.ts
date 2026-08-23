@@ -23,8 +23,14 @@ export interface WebControlPlaneStatus {
 }
 
 export class WebControlPlaneError extends Error {
-  constructor(readonly code: "NOT_CONFIGURED" | "BAD_RESPONSE" | "REQUEST_FAILED") {
-    super(code === "NOT_CONFIGURED" ? "Control plane is not configured" : "Control-plane request failed");
+  constructor(readonly code: "NOT_CONFIGURED" | "CONFLICT" | "BAD_RESPONSE" | "REQUEST_FAILED") {
+    super(
+      code === "NOT_CONFIGURED"
+        ? "Control plane is not configured"
+        : code === "CONFLICT"
+          ? "Control-plane request conflicted with current state"
+          : "Control-plane request failed",
+    );
   }
 }
 
@@ -230,7 +236,10 @@ export class WebControlPlaneClient {
     } catch {
       throw new WebControlPlaneError("REQUEST_FAILED");
     }
-    if (!response.ok) throw new WebControlPlaneError("REQUEST_FAILED");
+    if (!response.ok) {
+      if (response.status === 409) throw new WebControlPlaneError("CONFLICT");
+      throw new WebControlPlaneError("REQUEST_FAILED");
+    }
     try {
       return (await response.json()) as T;
     } catch {

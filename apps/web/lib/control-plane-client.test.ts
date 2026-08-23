@@ -146,6 +146,21 @@ describe("WebControlPlaneClient", () => {
     );
   });
 
+  it("classifies HTTP 409 as a sanitized conflict without surfacing the remote body", async () => {
+    const fetchImpl = vi.fn<FetchLike>(async () =>
+      new Response(JSON.stringify({ error: { message: "upstream-private-conflict-detail" } }), { status: 409 }),
+    );
+    const client = new WebControlPlaneClient(
+      { baseUrl: "https://control.example.test", bearerToken: "token" },
+      fetchImpl,
+    );
+
+    await expect(client.create({ automationId: "attempt" })).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "Control-plane request conflicted with current state",
+    });
+  });
+
   it("does not surface remote error bodies", async () => {
     const fetchImpl = vi.fn<FetchLike>(async () =>
       new Response(JSON.stringify({ error: { message: "upstream-private-detail" } }), { status: 500 }),
