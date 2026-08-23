@@ -11,8 +11,8 @@ export default async function NewAutomationPage({
 }: {
   searchParams: Promise<{ notice?: string }>;
 }) {
-  const auth = newAutomationAccess(await getWebAuthStatus());
-  if (auth.kind === "NOT_CONFIGURED") {
+  const access = newAutomationAccess(await getWebAuthStatus());
+  if (access.kind === "AUTH_NOT_CONFIGURED") {
     return (
       <section className="card stack">
         <div className="eyebrow">Create automation</div>
@@ -22,7 +22,17 @@ export default async function NewAutomationPage({
       </section>
     );
   }
-  if (auth.kind === "SIGN_IN_REQUIRED") {
+  if (access.kind === "CONTROL_PLANE_NOT_CONFIGURED") {
+    return (
+      <section className="card stack">
+        <div className="eyebrow">Create automation</div>
+        <h1>The control plane is not configured.</h1>
+        <p className="muted">This deployment cannot persist or execute automations yet, so the product does not collect website or objective metadata that it cannot safely submit.</p>
+        <Link href="/">Back to dashboard</Link>
+      </section>
+    );
+  }
+  if (access.kind === "SIGN_IN_REQUIRED") {
     return (
       <section className="card stack">
         <div className="eyebrow">Create automation</div>

@@ -8,45 +8,44 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end corre
 
 ## Incoming validation
 
-- Incoming PR #1 head: `cfb332a27aa135019bf1cf4155ab7056a6cb6b49` (`Surface Fresh Test credential readiness`).
-- GitHub Actions CI #257 passed completely on that exact head, including deterministic lock verification, frozen installation, strict TypeScript/Next.js validation, production packaging, AWS release/deployment/demo/OIDC contracts, and the full test suite.
+- Incoming PR #1 head: `2683842a2dce96b9afe57a6a419da7f64eb4e54f` (`Gate automation authoring on web authentication`).
+- GitHub Actions CI #258 passed completely on that exact head.
 - PR #1 remains open, draft, mergeable, and unmerged.
 - Exact-head GitHub Actions remains authoritative; no slice is considered green before its own workflow run completes successfully.
 
-## This product slice — require authentication before automation authoring UI
+## This product slice — gate automation authoring on control-plane readiness
 
 ### Product defect and correction
 
-The create-automation POST boundary already requires an authenticated Cognito-derived session, but `/automations/new` itself rendered a writable-looking form for direct signed-out navigation. That made the product state misleading: a visitor could enter target URL, objective, consent, and notification choices only to discover authentication was required after submission.
+The create-automation page already hid its form when Cognito authentication was missing or the visitor was signed out. However, an authenticated deployment with Cognito configured but no valid `AUTOMATION_CONTROL_PLANE_URL` still rendered the complete authoring form. The dashboard simultaneously reported that mutations were disabled, so a user could enter website/objective/consent metadata only to discover after submission that no control plane existed to persist the draft.
 
-The create page now resolves the same server-side web-auth status used by the rest of the product before rendering authoring controls. `SIGNED_OUT` receives an explicit sign-in action with a bounded return path to `/automations/new`; `NOT_CONFIGURED` receives a non-writable deployment state; only `AUTHENTICATED` renders the automation metadata form.
+The create-page presentation gate now requires both an authenticated web session and a valid configured control-plane endpoint before rendering writable automation metadata fields. Authentication-not-configured and control-plane-not-configured are distinct non-writable product states. The control-plane readiness check reuses the existing `WebControlPlaneClient.status()` URL policy and performs no network request.
 
 ### Security / tenant isolation / secret handling
 
-- This is a presentation/authentication gate, not a new authorization authority. The existing authenticated mutation and control-plane tenant/user checks remain mandatory and unchanged.
-- Signed-out users no longer receive a form that invites them to enter durable website/objective metadata before authentication.
-- No target-site credential, Browser Profile identifier, provider secret, workload token, tenant ID, or user ID is added to browser state.
-- The sign-in return path is fixed to the local product route rather than supplied from user-controlled form data.
+- This remains a presentation/readiness gate, not an authorization authority. The POST route and control plane continue to enforce Cognito-derived tenant/user scope.
+- A deployment that cannot persist automation metadata no longer invites the user to enter target URLs, objectives, consent choices, or notification preferences.
+- Control-plane URL validation retains the existing HTTPS requirement for remote endpoints and localhost exception for local development.
+- The readiness helper uses a synthetic non-secret bearer value only to exercise existing local `status()` validation; it never issues a request and never handles a real access token, Browser Profile identifier, provider secret, or workload token.
 
 ### Idempotency / concurrency / retry / verification / recovery
 
-- No run creation, schedule mutation, browser/model execution, retry budget, verification contract, workflow graph, checkpoint, human-resolution claim, or recovery behavior changed.
-- Authentication state can still expire after render; the POST boundary remains authoritative and fails closed if the session changes concurrently.
+- No run creation, schedule mutation, Browser/model execution, workflow graph, retry budget, side-effect verification, checkpoint, human-resolution claim, or recovery behavior changed.
+- Deployment configuration can change after render. The authenticated POST/client boundary remains authoritative and still fails closed if the control plane becomes unavailable concurrently.
 
 ### Cost / availability / observability
 
-- The page performs only the existing server-side Cognito configuration/cookie-presence check. It does not call AgentCore, DynamoDB, S3, Scheduler, model APIs, or the control plane merely to display the form.
-- No dependency, AWS resource, IAM permission, queue, metric dimension, email, or retained Actions artifact was added.
+- The additional readiness decision is process-local configuration validation only. It adds no DynamoDB/S3/AgentCore/Scheduler/model call and no cloud cost.
+- No dependency, AWS resource, IAM permission, queue, metric dimension, email, or retained GitHub Actions artifact was added.
 
 ### Validation
 
-- Added pure regression coverage proving the create form is reachable only from `AUTHENTICATED`, while `SIGNED_OUT` and `NOT_CONFIGURED` map to non-authoring states.
-- The page now mirrors the authenticated UX already used by credential settings and automation-detail pages.
-- Exact-head CI must pass deterministic lock verification, frozen install, `pnpm check`, all production package builds, AWS release/deployment/demo/OIDC contracts, and the full test suite before this slice is considered green.
+- Extended `new-automation-access` regression coverage for authenticated + configured readiness, signed-out behavior, separate auth-vs-control-plane configuration states, and rejection of an unsafe remote HTTP control-plane URL.
+- Exact-head CI must pass deterministic lock verification, frozen installation, `pnpm check`, all production package builds, AWS release/deployment/demo/OIDC contracts, and the complete test suite before this slice is considered green.
 
 ## Known production risks intentionally left visible
 
-- The page-level authentication check is not authorization; all mutations must continue to enforce trusted Cognito-derived ownership server-side.
+- Page-level readiness is not authorization and does not prove the remote control plane is healthy; mutations must continue to fail closed on request/network failure.
 - VPC-mode AgentCore Browser is required by deployment, but real subnet/route/DNS/security-group/firewall policy still needs live proof that private/link-local/control-plane targets stay unreachable after DNS resolution and redirects.
 - Live AWS/Cognito/Google/SES/AgentCore integrations are structurally tested with fakes and deployment contracts but still need the controlled real environment demonstration.
 - Only OpenAI has a concrete production BYOK reasoning adapter today; additional providers must not be advertised until their adapters and deployment contracts exist.
@@ -60,8 +59,8 @@ The create page now resolves the same server-side web-auth status used by the re
 Run the protected real AWS deployment and controlled vertical demonstration using the deployment-provisioned VPC AgentCore Browser:
 
 1. deploy immutable artifacts and pass the live public/auth smoke;
-2. verify signed-out direct navigation to `/automations/new` shows sign-in rather than the authoring form, then sign in through Cognito/Google;
-3. verify the trusted notification identity and configure a usable OpenAI BYOK credential;
+2. verify signed-out direct navigation to `/automations/new` shows sign-in and an authenticated deployment without the control-plane URL shows a non-writable configuration state;
+3. sign in through Cognito/Google, verify the trusted notification identity, and configure a usable OpenAI BYOK credential;
 4. create an automation, complete Live View capture, compile/inspect, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
 5. publish with recurrence/timezone and any explicitly non-secret recurring inputs, then confirm the truthful next occurrence;
 6. observe Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution and inspect verification/history/CloudWatch/SES;
