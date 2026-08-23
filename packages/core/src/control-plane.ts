@@ -248,7 +248,14 @@ export class AutomationControlPlaneService {
     catch { throw new ControlPlaneError("CONFLICT", "automation could not be compiled from the latest capture"); }
   }
   async runFreshTest(scope: OwnershipScope, automationId: string, command: TestAutomationCommand): Promise<FreshTestExecutionResult> {
-    const request: FreshTestRunRequest = { scope, automationId: requireToken(automationId, "automationId"), runId: requireToken(command.runId, "runId"), ...(command.runtimeVariables ? { runtimeVariables: structuredClone(command.runtimeVariables) } : {}) };
+    const id = requireToken(automationId, "automationId");
+    const runId = requireToken(command.runId, "runId");
+    const automation = await this.dependencies.automations.get(scope, id);
+    if (!automation) throw new ControlPlaneError("NOT_FOUND", "automation not found");
+    if (automation.status !== "READY_TO_TEST" && automation.status !== "READY_TO_PUBLISH") {
+      throw new ControlPlaneError("CONFLICT", "automation is not ready for a fresh test");
+    }
+    const request: FreshTestRunRequest = { scope, automationId: id, runId, ...(command.runtimeVariables ? { runtimeVariables: structuredClone(command.runtimeVariables) } : {}) };
     if (this.dependencies.capabilities.cloudExecution === "CONFIGURED") {
       if (!this.dependencies.freshTests) throw new ControlPlaneError("NOT_CONFIGURED", "cloud fresh-test execution is not configured");
       try { return await this.dependencies.freshTests.execute(request); }
