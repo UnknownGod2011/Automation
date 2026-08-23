@@ -12,6 +12,13 @@ const WEEKDAY_INDEX: Readonly<Record<string, number>> = {
   FRI: 5,
   SAT: 6,
 };
+const REVISION_AUTHORING_STATUSES = new Set<AutomationSummaryView["status"]>([
+  "CAPTURING",
+  "COMPILING",
+  "READY_TO_TEST",
+  "TESTING",
+  "READY_TO_PUBLISH",
+]);
 type RequiredDateTimePart = "year" | "month" | "day" | "hour" | "minute";
 
 interface ZonedMinute {
@@ -137,6 +144,14 @@ function formattedLocalMinute(date: Date, timezone: string): string | null {
   return `${datePart} ${timePart} · ${timezone}`;
 }
 
+function hasRetainedDisabledRevisionSchedule(automation: AutomationSummaryView): boolean {
+  return Boolean(
+    automation.schedule &&
+    automation.publishedWorkflowVersion !== undefined &&
+    REVISION_AUTHORING_STATUSES.has(automation.status),
+  );
+}
+
 export function formatCapability(label: string, state: ControlPlaneCapabilities[keyof ControlPlaneCapabilities]): string {
   return `${label}: ${state === "NOT_CONFIGURED" ? "Not configured" : state === "LOCAL_MOCK" ? "Local mock" : "Configured"}`;
 }
@@ -144,7 +159,8 @@ export function formatCapability(label: string, state: ControlPlaneCapabilities[
 export function formatSchedule(automation: AutomationSummaryView): string {
   const schedule = automation.schedule;
   if (!schedule) return "Not published";
-  return humanScheduleLabel(schedule);
+  const label = humanScheduleLabel(schedule);
+  return hasRetainedDisabledRevisionSchedule(automation) ? `${label} · disabled during revision` : label;
 }
 
 export function nextRunLabel(automation: AutomationSummaryView, now = new Date()): string {
@@ -152,6 +168,7 @@ export function nextRunLabel(automation: AutomationSummaryView, now = new Date()
   if (!schedule || automation.publishedWorkflowVersion === undefined) return "Next run: not scheduled";
   if (automation.status === "PAUSED") return "Next run: paused";
   if (automation.status === "DISABLED") return "Next run: disabled";
+  if (hasRetainedDisabledRevisionSchedule(automation)) return "Next run: disabled during workflow revision";
 
   let candidate: Date | null = null;
   if (schedule.kind === "HOURLY" && schedule.expression === "rate(1 hour)") {

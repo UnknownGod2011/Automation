@@ -8,50 +8,49 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end corre
 
 ## Incoming validation
 
-- Incoming PR #1 head: `77f870933a67d297b0d52bbae5f278ea5dc8bb39` (`Add editable automation notification preferences`).
-- GitHub Actions CI #251 completed successfully on that exact head before this slice began.
+- Incoming PR #1 head: `a74100b3fa961287a46cd0fa4667a6e4599508c8` (`Align BYOK settings with deployed provider`).
+- GitHub Actions CI #252 completed successfully on that exact head before this slice began.
 - PR #1 remains open, draft, mergeable, and unmerged.
 - Deterministic pnpm lock verification, frozen installation, strict TypeScript/Next.js validation, production packaging, AWS release/deployment/demo/OIDC contracts, and the full test suite remain mandatory gates.
 
-## This slice — align BYOK settings with deployed reasoning providers
+## This slice — make retained revision schedules truthful in the dashboard
 
-### Product contract mismatch closed
+### Product-state mismatch closed
 
-The authenticated credential settings page previously invited users to enter provider identifiers such as `google` or `anthropic`. The provider-neutral credential pool intentionally supports arbitrary provider names for future adapters, but the current production AWS execution graph has a concrete OpenAI BYOK reasoning adapter only. A normal product user could therefore store a credential that the deployed product could not actually execute.
+The safe published-workflow revision path intentionally preserves the previous `schedule` and `publishedWorkflowVersion` while requiring the user to Disable the automation before recapturing and testing a replacement. EventBridge Scheduler therefore remains disabled throughout revision authoring until the replacement is explicitly republished.
 
-The web product now exposes only providers backed by the deployed reasoning capability. Today that set is OpenAI. Google sign-in federation is unrelated and remains supported; this change concerns model-reasoning credentials only.
+The dashboard's next-run projection previously looked only at the retained schedule plus published version and special-cased literal `PAUSED`/`DISABLED`. Once a disabled automation advanced into `CAPTURING`, `COMPILING`, `READY_TO_TEST`, `TESTING`, or `READY_TO_PUBLISH`, it could therefore display a future "Next run" timestamp even though Scheduler was still disabled. That was a user-facing correctness defect in the revision lifecycle.
 
 ### Changes
 
-- Added one shared web BYOK provider boundary with a closed list of deployable product providers.
-- Credential creation now uses a provider selector rather than arbitrary free text.
-- The authenticated server mutation reparses and validates the provider, so a tampered form cannot create unsupported provider metadata through the web product.
-- Existing unsupported/legacy credential metadata remains visible for rotation/removal; no stored secret is migrated or deleted automatically.
-- Provider-neutral core contracts and credential storage remain unchanged so a future Google adapter can be added without redesigning the core pool.
+- Added one explicit retained-disabled-revision schedule predicate to the web view model.
+- A previously published automation in capture/compile/test/pre-publish revision states now reports `Next run: disabled during workflow revision` instead of calculating an occurrence that cannot run.
+- The retained schedule remains visible for context, but its label is annotated `disabled during revision` so the old recurrence cannot be mistaken for an active Scheduler resource.
+- Initial unpublished authoring remains `Next run: not scheduled`; the revision rule requires both a retained published workflow version and schedule.
+- Once the revised workflow is republished and durable state returns to `ACTIVE`, normal daily/weekly/hourly next-run projection resumes.
 
-### Security / tenant isolation / secret handling
+### Security / tenant isolation / execution authority
 
-- Raw provider keys still cross only the authenticated server boundary and existing credential vault path; they are not returned after submission or stored in workflow/run metadata.
-- Tenant/user ownership remains Cognito-derived and is not accepted from the form.
-- Rejecting unsupported web providers happens before credential creation, avoiding misleading secret metadata that cannot be used by this deployment.
-- No Browser Profile, session, workload token, provider error body, or secret reference was added to the page.
+- This is a presentation-only correction. Tenant/user ownership, Cognito authentication, workflow immutability, Scheduler mutation authority, run admission, Browser Profiles, BYOK credentials, and AgentCore workload identity are unchanged.
+- No browser request, provider secret, workflow variable, internal node identifier, or scheduling credential is added to the UI.
+- The server-side lifecycle remains authoritative: published revision authoring is possible only after the existing fail-closed Disable transition has made durable state non-executable before Scheduler disablement.
 
-### Idempotency / concurrency / retry / verification
+### Idempotency / concurrency / retry / verification / recovery
 
-- Credential IDs remain server-generated UUIDs; duplicate/replay and metadata health behavior are unchanged.
-- Credential selection remains governed by the provider-neutral configured `providerOrder`; this slice does not introduce automatic provider failover or same-provider key rotation.
-- Browser/model retry, side-effect verification, schedule idempotency, automation locking, and human-resume fencing are unchanged.
+- No new mutation, retry, lease, outbox, reconciliation, or recovery mechanism was introduced.
+- Existing EventBridge occurrence idempotency, automation execution leases, checkpoint semantics, side-effect verification, and human-resume fencing are unchanged.
+- A stale browser page may still display an old snapshot until refreshed; it cannot re-enable Scheduler or create execution authority through this view-model change.
 
 ### Cost / observability
 
-- No AWS resource, SDK dependency, database/table, queue, model call, Browser session, email send, metric dimension, or retained Actions artifact was added.
-- The change prevents the normal UI from creating credentials that would later lead to a fail-closed unsupported-provider execution path.
+- No AWS resource, SDK dependency, DynamoDB read/write, Scheduler API call, model token, Browser session, email send, metric dimension, or retained GitHub Actions artifact was added.
+- The change prevents a misleading next-run promise during revision without introducing a second source of schedule truth.
 
 ### Validation
 
-- Added web regression coverage proving OpenAI normalization and rejecting Google, Anthropic, empty, and missing provider values at the product boundary.
-- Added a regression locking the currently exposed provider option set to the deployed OpenAI capability.
-- The settings page and server mutation share the same provider definition to prevent UI/server drift.
+- Added regression coverage for `CAPTURING`, `COMPILING`, `READY_TO_TEST`, `TESTING`, and `READY_TO_PUBLISH` with retained published schedule metadata, proving none advertises a future occurrence.
+- Added coverage proving the retained schedule is visibly marked disabled during revision.
+- Added coverage proving an `ACTIVE` republished automation resumes normal next-run preview and an initial unpublished authoring flow remains unscheduled.
 - Exact-head GitHub Actions remains authoritative; this slice is not green until its PR-head CI run succeeds.
 
 ## Known production risks intentionally left visible
@@ -72,10 +71,11 @@ Run the protected real AWS deployment and controlled vertical demonstration usin
 
 1. deploy immutable artifacts and pass the live public/auth smoke;
 2. sign in through Cognito/Google and verify the trusted notification identity;
-3. configure an OpenAI BYOK credential through the now capability-aligned settings page;
+3. configure an OpenAI BYOK credential through the capability-aligned settings page;
 4. create a bounded automation draft, complete Live View capture, compile from the server-owned latest capture, inspect, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
-5. publish with recurrence/timezone and any explicitly non-secret recurring inputs;
-6. observe Scheduler → SQS → Step Functions → AgentCore Runtime execution, verification, history, CloudWatch, and SES, then exercise notification preferences while human-attention notification remains mandatory;
-7. deliberately expire target authentication, use bounded secure Live View repair, submit resume, and confirm the diagnostics page automatically follows the run through its terminal post-resume outcome.
+5. publish with recurrence/timezone and any explicitly non-secret recurring inputs, then confirm the dashboard shows a truthful next occurrence;
+6. exercise the safe revision loop: Disable → Capture replacement → Compile → Fresh Test, verify the retained schedule is visibly disabled throughout revision, then republish and confirm next-run projection resumes;
+7. observe Scheduler → SQS → Step Functions → AgentCore Runtime execution, verification, history, CloudWatch, and SES, then exercise notification preferences while human-attention notification remains mandatory;
+8. deliberately expire target authentication, use bounded secure Live View repair, submit resume, and confirm the diagnostics page automatically follows the run through its terminal post-resume outcome.
 
 Further engineering should be driven primarily by concrete failures from that live path, not additional recovery micro-hardening.
