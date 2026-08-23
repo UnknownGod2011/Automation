@@ -48,7 +48,10 @@ The UX now states the actual policy instead of implying that a user can disable 
 ### Validation
 
 - Added `apps/web/lib/notification-preferences.test.ts` covering the ordinary-failure opt-out versus mandatory attention distinction.
-- Exact-head GitHub Actions remains authoritative; this slice is not considered complete until CI succeeds on the published head.
+- Normal product commit: `beec197ffe38cdde4a9f60aaa58a5a6de5de815b` (`Clarify mandatory human-attention notifications`).
+- GitHub Actions CI #249 stopped exclusively at the deterministic pnpm supply-chain gate before installation/type-check/tests. No package manifest changed; pnpm 10.15.0 regenerated the full graph from reviewed SHA `999e13c64e1f9a4b8cda605fea8aad510229afd66aef12bff45265e6286a53a6` to authoritative CI-generated SHA `b579875069c8d490511e20e887a8a0178eafe4bfcb93131e163e2a686b50413b`.
+- The AWS DynamoDB peer-alignment assertions remained intact. The single corrective commit updates only that reviewed lock fingerprint plus this progress record.
+- Exact-head GitHub Actions remains authoritative; this slice is not green until the corrective head completes CI successfully.
 
 ## Known production risks intentionally left visible
 
