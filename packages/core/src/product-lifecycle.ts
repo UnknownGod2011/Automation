@@ -109,6 +109,13 @@ export interface AutomationProductLifecycleDependencies {
   lockTtlMs?: number;
 }
 
+export const AUTOMATION_DRAFT_LIMITS = {
+  automationId: 128,
+  name: 160,
+  websiteUrl: 2_048,
+  objective: 4_000,
+} as const;
+
 const WORKFLOW_CAPTURE_AUTHORING_STATUSES = new Set<AutomationRecord["status"]>([
   "DRAFT",
   "COMPILING",
@@ -133,8 +140,18 @@ function nonEmpty(value: string, name: string): string {
   return trimmed;
 }
 
+function boundedNonEmpty(value: string, name: string, maxLength: number): string {
+  if (value.length > maxLength) throw new Error(`${name} must be at most ${maxLength} characters`);
+  return nonEmpty(value, name);
+}
+
 function normalizeWebsiteUrl(value: string): string {
-  return normalizeAutomationTargetUrl(value);
+  const bounded = boundedNonEmpty(value, "websiteUrl", AUTOMATION_DRAFT_LIMITS.websiteUrl);
+  const normalized = normalizeAutomationTargetUrl(bounded);
+  if (normalized.length > AUTOMATION_DRAFT_LIMITS.websiteUrl) {
+    throw new Error(`websiteUrl must be at most ${AUTOMATION_DRAFT_LIMITS.websiteUrl} characters`);
+  }
+  return normalized;
 }
 
 function assertSchedule(schedule: AutomationSchedule): void {
@@ -168,18 +185,20 @@ export class AutomationProductLifecycleService {
 
   async createDraft(request: CreateAutomationDraftRequest): Promise<AutomationRecord> {
     if (!request.consentAcknowledged) throw new Error("explicit authorization/consent acknowledgement is required");
-    const automationId = nonEmpty(request.automationId, "automationId");
-    if (await this.dependencies.automations.get(request.scope, automationId)) throw new Error(`automation '${automationId}' already exists in ownership scope`);
+    const automationId = boundedNonEmpty(request.automationId, "automationId", AUTOMATION_DRAFT_LIMITS.automationId);
+    const name = boundedNonEmpty(request.name, "name", AUTOMATION_DRAFT_LIMITS.name);
+    const objective = boundedNonEmpty(request.objective, "objective", AUTOMATION_DRAFT_LIMITS.objective);
     const websiteUrl = normalizeWebsiteUrl(request.websiteUrl);
+    if (await this.dependencies.automations.get(request.scope, automationId)) throw new Error(`automation '${automationId}' already exists in ownership scope`);
     const now = this.now().toISOString();
     const browserProfileRef = await this.dependencies.profiles.create(request.scope, automationId);
     const record: AutomationRecord = {
       tenantId: request.scope.tenantId,
       userId: request.scope.userId,
       automationId,
-      name: nonEmpty(request.name, "name"),
+      name,
       websiteUrl,
-      prompt: nonEmpty(request.objective, "objective"),
+      prompt: objective,
       status: "DRAFT",
       browserProfileRef,
       notifyOnSuccess: request.notifyOnSuccess ?? false,

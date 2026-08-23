@@ -1,3 +1,5 @@
+import { AUTOMATION_DRAFT_LIMITS } from "@automation/core";
+
 export default async function NewAutomationPage({
   searchParams,
 }: {
@@ -17,9 +19,9 @@ export default async function NewAutomationPage({
         {notice === "not-configured" ? <div className="notice">Control plane is not configured on this deployment.</div> : null}
         {notice === "request-failed" ? <div className="notice">The request could not be completed. No provider error details were exposed.</div> : null}
         <form action="/api/ui/automations" method="post">
-          <label>Name<input name="name" maxLength={160} required placeholder="Daily invoice approval" /></label>
-          <label>Website URL<input name="websiteUrl" type="url" required placeholder="https://app.example.com" /></label>
-          <label>Objective<textarea name="objective" maxLength={4000} required placeholder="Open pending invoices, approve those matching our policy, and record the result." /></label>
+          <label>Name<input name="name" maxLength={AUTOMATION_DRAFT_LIMITS.name} required placeholder="Daily invoice approval" /></label>
+          <label>Website URL<input name="websiteUrl" type="url" maxLength={AUTOMATION_DRAFT_LIMITS.websiteUrl} required placeholder="https://app.example.com" /></label>
+          <label>Objective<textarea name="objective" maxLength={AUTOMATION_DRAFT_LIMITS.objective} required placeholder="Open pending invoices, approve those matching our policy, and record the result." /></label>
           <label className="checkbox">
             <input name="consentAcknowledged" type="checkbox" value="true" required />
             <span>I am authorized to automate this website and understand that security controls, MFA, CAPTCHAs, and site restrictions will not be bypassed.</span>
