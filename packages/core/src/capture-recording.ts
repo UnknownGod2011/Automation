@@ -55,6 +55,14 @@ function token(value: string, name: string): string {
   return trimmed;
 }
 
+function captureExpiryMillis(value: string): number {
+  const expiry = Date.parse(value);
+  if (!Number.isFinite(expiry)) {
+    throw new ControlPlaneError("CONFLICT", "active capture expiry is invalid");
+  }
+  return expiry;
+}
+
 export class CaptureRecordingControlPlaneService {
   constructor(
     private readonly sessions: ActiveCaptureSessionStore,
@@ -75,6 +83,13 @@ export class CaptureRecordingControlPlaneService {
       record.status !== "STARTED"
     ) {
       throw new ControlPlaneError("CONFLICT", "active capture state is invalid");
+    }
+    if (captureExpiryMillis(record.expiresAt) <= this.now().getTime()) {
+      // The durable current-capture pointer may remain until a replacement capture claims it.
+      // Expiry is nevertheless authoritative for product commands: an expired Live View cannot
+      // be resumed safely because its capability URL is intentionally not persisted. Treat it as
+      // no active recording so the user can launch a replacement capture immediately.
+      return null;
     }
     return record;
   }

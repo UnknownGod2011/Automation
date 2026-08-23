@@ -2,63 +2,65 @@
 
 ## Current production state
 
-The platform implements the intended AWS-first product path: Cognito/optional Google sign-in, authenticated dashboard, bounded automation creation and public-target validation, AgentCore Browser/Profile capture with Live View, durable capture/trace persistence, semantic workflow compilation/inspection, asynchronous cloud Fresh Test through AgentCore Runtime with OpenAI BYOK reasoning, tested-version publish gating, EventBridge Scheduler/SQS/Step Functions dispatch, durable execution/checkpoints/history, SES/CloudWatch reporting, workflow revision, editable non-secret scheduled values, and bounded human repair/resume. Core execution remains provider-neutral; AWS owns the current production adapters.
+The platform implements the intended AWS-first product path: Cognito/optional Google sign-in, authenticated dashboard, replay-safe bounded automation creation, AgentCore Browser/Profile capture with Live View, durable capture/trace persistence, semantic workflow compilation/inspection, asynchronous cloud Fresh Test through AgentCore Runtime with OpenAI BYOK reasoning, tested-version publish gating, EventBridge Scheduler/SQS/Step Functions dispatch, durable execution/checkpoints/history, SES/CloudWatch reporting, workflow revision, editable non-secret scheduled values, and bounded human repair/resume. Core execution remains provider-neutral; AWS owns the current production adapters.
 
 Recovery/crash machinery remains intentionally parked unless an end-to-end correctness defect requires it. Product priority is the protected real AWS deployment and defects revealed by that live lifecycle.
 
 ## Incoming validation
 
-- Incoming green PR #1 head before this slice: `8addca51713f3a65cab95d8ba1e8e0adebc61807` (`Align authenticated navigation with control-plane readiness`).
-- GitHub Actions CI #262 passed completely on that exact head.
-- Normal implementation commit for this slice: `d2cb1f2adc0e61758abc6a2724662878188663fc` (`Make automation creation replay-safe`).
-- CI #263 passed deterministic lock verification and frozen installation, then failed strict `pnpm check` only because the web control-plane client error-code union did not yet admit the sanitized `CONFLICT` branch used by the new replay path. Packaging and tests were correctly skipped after type-check failure.
-- The corrective change classifies HTTP 409 as `WebControlPlaneError("CONFLICT")` without reading or surfacing the remote error body and adds regression coverage for that boundary. Exact-head corrective CI remains authoritative before this slice is considered green.
+- Incoming PR #1 head: `c60b8fea1d6098bc1ca2c1dd974ffbc5daaa3e32` (`Classify create replay conflicts safely`).
+- GitHub Actions CI #264 passed completely on that exact head.
 - PR #1 remains open, draft, mergeable, and unmerged.
+- Exact-head GitHub Actions remains authoritative for this new slice; no pass is claimed in this file before that run exists.
 
-## This product slice — replay-safe automation creation
+## This product slice — expired capture sessions no longer block restart
 
 ### Product defect and correction
 
-Automation creation had a real cloud-side ambiguity at the first durable resource boundary. A Create Automation POST generated a new automation ID on every submission, while `AutomationProductLifecycleService.createDraft()` allocated the Browser Profile before the automation metadata write. If the metadata write committed but its acknowledgement was lost, the web retry generated another automation ID and could allocate another Browser Profile. Two concurrent same-ID lifecycle calls could also both pass the pre-read and allocate before either metadata write became visible.
+The durable capture-session pointer can legitimately outlive the short-lived AgentCore Browser/Live View capability until a later capture replaces it. `CaptureRecordingControlPlaneService`, however, previously treated every durable `STARTED` session as an active product recording without checking `expiresAt`.
 
-The web form now receives one server-generated UUIDv4 creation-attempt ID when it is rendered. That non-secret idempotency identity is preserved across ordinary request failure, sign-in, and NOT_CONFIGURED redirects, so a retry submits the same automation ID rather than manufacturing another resource identity. The server-side control-plane client now preserves only the sanitized HTTP 409 classification needed to recognize a same-scope duplicate; it still discards upstream error bodies. A same-scope conflict therefore converges the browser to the existing automation instead of asking the user to create another draft.
+That created a real user dead-end after browser/session expiry. The automation detail page would continue presenting the expired session as active and suppress a replacement capture. The worst case was an expired session with `finishRequested=true`: the page intentionally suppresses Cancel while finishing, so the user could be left with neither a usable Live View nor a restart action even though the AWS capture starter already supports replacing expired durable capture claims.
 
-The provider-neutral lifecycle reuses the existing durable `AutomationLockManager` before Browser Profile allocation. It rechecks automation existence after acquiring the lock, so concurrent delivery of one creation attempt cannot allocate two authoritative profiles. If the automation metadata write throws, the lifecycle performs an authoritative repository read. When that read proves the exact same automation/profile identity was durably committed, the lost acknowledgement is treated as success. If the read is absent or uncertain, the original failure propagates and the Browser Profile is deliberately not blindly deleted because the metadata write may have committed.
+The provider-neutral capture-recording boundary now validates the durable expiry before exposing or accepting commands for an active capture. At or after `expiresAt`, the product-facing state becomes `NONE`. Start/Finish commands against that stale capture fail as `NOT_FOUND`, and Cancel becomes a no-op `NONE` result. The next Open cloud capture request can therefore flow into the existing AWS starter, which already allows an expired current-capture pointer to be conditionally replaced.
 
-The AWS Browser Profile adapter already gives retries for the same tenant/user + automation ID a stable AgentCore client token, so a later retry after a definitely-uncommitted metadata write converges on the same managed Browser Profile rather than intentionally creating another one.
+Malformed durable expiry is treated as a sanitized `CONFLICT`; the service does not guess whether the capture is still valid.
 
-### Security / tenant isolation / idempotency
+### Security / tenant isolation
 
-- The creation-attempt UUID is browser-visible idempotency data, not an authentication or ownership credential. Cognito-derived tenant/user scope remains authoritative at the control plane and lifecycle.
-- The web accepts only UUIDv4-shaped creation identities. A tampered ID can at most name an automation inside the already-authenticated ownership scope; it cannot choose another tenant/user or Browser Profile reference.
-- HTTP 409 classification is status-code-only. The web client does not parse, log, or surface the upstream conflict body.
-- Existing metadata bounds, consent validation, and public-target/SSRF policy still run before Browser Profile allocation.
-- The creation lock is scoped through the same tenant/user + automation identity boundary as production execution locks.
-- A same-attempt duplicate that arrives after the first durable commit converges to the existing automation. Two separately rendered forms intentionally receive different IDs and remain separate user creation attempts.
+- Tenant/user/automation identity validation still happens before expiry classification.
+- Expiry is evaluated only from server-owned durable capture metadata; no browser-supplied timestamp gains authority.
+- Browser session IDs, Browser Profile references, Live View URLs, cookies, BYOK keys, workload tokens, and provider/browser error bodies remain excluded from the product-facing capture view.
+- An expired Live View capability is never reconstructed or reissued from persisted data; the product starts a new isolated capture instead.
 
-### Concurrency / retry / timeout / verification / recovery
+### Idempotency / concurrency / retry / timeout
 
-- Same-ID creation is serialized before the Browser Profile side effect. The lifecycle rechecks the automation after lock acquisition to close the pre-read race.
-- No new blind retry loop or recovery subsystem was added. HTTP/user replay reuses the same stable creation identity; a stale creation lock expires according to the existing bounded automation-lock TTL.
-- Metadata-write uncertainty is reconciled by read-after-error. An uncertain reconciliation read never authorizes profile deletion or fabricates success.
-- Workflow execution, Browser action retries, verification, scheduling, human-resolution claims, resume leases, heartbeat, and effect reconciliation are unchanged.
+- No new retry loop, lease, outbox, or recovery subsystem was added.
+- The durable current-capture pointer remains the AWS concurrency authority. `AwsDynamoCaptureSessionStore.putStarted()` already permits replacement only when the stored capture expiry is at or before the new capture start time.
+- A truly concurrent replacement is still serialized by that conditional DynamoDB claim; only one replacement capture can become authoritative.
+- Expired Start/Finish commands are rejected before capture-control mutation or collector launch.
+- Expired Cancel does not issue a stale browser-stop call. AgentCore session lifetime remains the cleanup authority for an already-expired browser; a replacement capture claims the durable slot independently.
+
+### Side-effect verification / recovery
+
+- Workflow execution, browser action verification, run checkpoints, scheduled retries, human-resolution claims, resume leases, heartbeat, and effect reconciliation are unchanged.
+- This change affects only pre-workflow capture-session presentation/command eligibility. It does not infer a successful capture from timeout; an expired partial capture remains unusable and must be replaced.
 
 ### Cost / observability
 
-- Sequential or concurrent replay of one create-form attempt no longer intentionally allocates another Browser Profile.
-- The change adds no table, queue, Lambda, model call, metric dimension, IAM permission, dependency, or retained GitHub Actions artifact.
-- A metadata write that definitely did not commit and is then abandoned without retry can still leave one managed Browser Profile. That bounded orphan is safer than deleting a profile that might already be referenced by committed automation metadata; a future cleanup policy should be driven by observed live cost rather than speculative recovery machinery.
-- No secret, Browser Profile payload, provider key, workload token, or raw provider error is added to logs or user-visible state.
+- Users no longer need to wait for a stale durable pointer or invent another automation merely to restart capture.
+- No AWS resource, table, queue, Lambda, metric dimension, IAM permission, model call, dependency, or retained GitHub Actions artifact was added.
+- The expired durable session/control records may remain until normal retention/cleanup, but they cannot block product progress. Their bounded storage cost is preferable to mutating historical capture state merely for UI cleanup.
 
-### Validation
+### Regression coverage
 
-- Core regression coverage simulates a metadata write that commits and then loses its acknowledgement, proving the lifecycle returns the committed draft and does not delete its Browser Profile.
-- Core concurrency coverage blocks the first profile allocation and proves a concurrent same-ID creation attempt is rejected before a second profile can be allocated.
-- Web coverage validates the UUIDv4 creation-attempt contract and fail-closed malformed identity handling.
-- Corrective web coverage proves HTTP 409 becomes only a sanitized `CONFLICT` code while a private upstream conflict body remains undisclosed.
-- Existing AWS Browser Profile coverage already proves repeated `create()` calls for the same scope + automation ID use the same AgentCore client token and opaque profile reference.
-- CI #263 root cause was a strict TypeScript union mismatch only; deterministic lock verification and frozen installation had already passed. No check or compiler option was weakened.
-- Exact-head CI must pass strict `pnpm check`, all production packaging paths, AWS release/deployment/demo/OIDC contracts, and the complete test suite before this slice is considered green.
+New provider-neutral tests prove:
+
+- an expired `STARTED` capture is presented as `NONE` without reading capture-control state;
+- stale Start and Finish commands fail before collector/control work;
+- expired Cancel performs no durable mutation or browser cleanup;
+- malformed durable expiry fails closed with a sanitized conflict.
+
+The existing AWS capture-session tests continue to cover conditional replacement of expired current-capture pointers and cleanup of failed new-session startup.
 
 ## Known production risks intentionally left visible
 
@@ -66,7 +68,8 @@ The AWS Browser Profile adapter already gives retries for the same tenant/user +
 - VPC-mode AgentCore Browser is required by deployment, but real subnet/route/DNS/security-group/firewall policy still needs live proof that private/link-local/control-plane targets stay unreachable after DNS resolution and redirects.
 - Live AWS/Cognito/Google/SES/AgentCore integrations are structurally tested with fakes and deployment contracts but still need the controlled real environment demonstration.
 - Only OpenAI has a concrete production BYOK reasoning adapter today; additional providers must not be advertised until their adapters and deployment contracts exist.
-- An abandoned create attempt after a definitely-uncommitted metadata write may leave one retry-stable Browser Profile; do not add blind cleanup that could delete a profile referenced by an ambiguously committed automation.
+- An abandoned create attempt after a definitely-uncommitted metadata write may leave one retry-stable Browser Profile; blind cleanup remains unsafe under ambiguous metadata persistence.
+- Expired capture records/control rows are not immediately deleted by this slice. They are non-authoritative after expiry and should be cleaned only by a deliberate retention policy if live storage volume makes that worthwhile.
 - Workflow revision does not force-cancel an execution already admitted before disablement; immutable workflow version plus execution lease keep that run isolated.
 - Recurring secret typed workflow inputs remain unsupported by design; they require vault-backed secret references if the live product needs them.
 - DynamoDB and EventBridge Scheduler cannot be mutated atomically; lifecycle ordering is fail-closed but partial infrastructure failure remains an operational reconciliation concern.
@@ -78,9 +81,10 @@ Run the protected real AWS deployment and controlled vertical demonstration afte
 
 1. deploy immutable artifacts and pass the live public/auth smoke;
 2. sign in through Cognito/Google, verify the trusted notification identity, and configure a usable OpenAI BYOK credential;
-3. exercise Create Automation with one normal submission plus one intentionally repeated same-form submission and confirm it converges on one draft/Browser Profile;
-4. complete Live View capture, compile/inspect, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
-5. publish with recurrence/timezone and explicitly non-secret recurring inputs, then verify Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution and inspect verification/history/CloudWatch/SES;
-6. deliberately expire target authentication, use secure Live View repair, resume, and follow the terminal post-resume result.
+3. create one automation and validate same-form replay converges on one automation/Browser Profile;
+4. exercise capture restart explicitly: open a capture, allow/force it to expire, confirm the product offers a replacement capture rather than remaining stuck, then complete a fresh Live View capture;
+5. compile/inspect and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
+6. publish with recurrence/timezone and explicitly non-secret recurring inputs, then verify Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution and inspect verification/history/CloudWatch/SES;
+7. deliberately expire target authentication, use secure Live View repair, resume, and follow the terminal post-resume result.
 
 Further engineering should be driven primarily by concrete failures from that live path, not additional recovery micro-hardening.
