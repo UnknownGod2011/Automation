@@ -57,7 +57,12 @@ The provider-neutral lifecycle is now the authoritative metadata boundary. Draft
 
 Core tests prove each oversized automation ID/name/objective/website URL is rejected with zero Browser Profile allocations, while exact-boundary values remain accepted and allocate exactly one profile only after validation.
 
-Exact-head GitHub Actions is authoritative. This slice is not considered validated until CI completes successfully on the final published commit.
+### CI validation
+
+- Normal implementation commit: `d85c7d6ecadb97c4aa3b15a004cebafc0ab26baa` (`Bound automation draft metadata before allocation`).
+- CI #247 stopped before installation/type-check/tests at the deterministic pnpm supply-chain gate. No package manifest changed; pnpm 10.15.0 re-resolved the transitive graph from reviewed SHA `00456e6d43e48cfb385db6eb7ba1afeb1543a6e79b051b61f72e76851d1ecabd` to authoritative CI-generated SHA `999e13c64e1f9a4b8cda605fea8aad510229afd66aef12bff45265e6286a53a6`.
+- The AWS DynamoDB peer-alignment assertions remained intact. The single corrective commit updates only that reviewed lock fingerprint plus this progress record.
+- Exact-head GitHub Actions remains authoritative; this slice is not considered green until the corrective head completes CI successfully.
 
 ## Known production risks intentionally left visible
 
