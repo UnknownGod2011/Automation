@@ -8,55 +8,50 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end corre
 
 ## Incoming validation
 
-- Incoming PR #1 head: `a7d426063c61a99f968c15961c2625d2e259b1a2` (`Fix dashboard module resolution`).
-- GitHub Actions CI #255 passed completely on that exact head, including deterministic lock verification, frozen installation, strict TypeScript/Next.js validation, production packaging, AWS release/deployment/demo/OIDC contracts, and the full test suite.
+- Incoming PR #1 head: `74a28530eff90837ce808cdf935ac798c06971b8` (`Gate Fresh Test on usable BYOK credential`).
+- GitHub Actions CI #256 passed completely on that exact head, including deterministic lock verification, frozen installation, strict TypeScript/Next.js validation, production packaging, AWS release/deployment/demo/OIDC contracts, and the full test suite.
 - PR #1 remains open, draft, mergeable, and unmerged.
 - Exact-head GitHub Actions remains authoritative; no slice is considered green before its own workflow run completes successfully.
 
-## This product slice — avoid impossible Fresh Test submissions
+## This product slice — surface Fresh Test credential readiness before submission
 
 ### Product defect and correction
 
-The production execution plane already performs a fail-closed BYOK credential preflight before AgentCore Browser/model allocation. The authenticated Next.js product, however, still submitted Fresh Test whenever a workflow was otherwise testable, even when the user had no currently usable OpenAI BYOK credential. That submission could not succeed: it created an avoidable AgentCore Runtime invocation and a durable `WAITING_FOR_HUMAN / NOT_CONFIGURED` run before directing the user back to credential setup.
+The authenticated Fresh Test POST already performs a sanitized OpenAI BYOK readiness check before it creates a cloud test run. The automation detail page, however, still rendered an apparently runnable Fresh Test form whenever the workflow itself was ready. A user with no usable OpenAI credential therefore had to click the button and be redirected to credential settings to discover a condition the page could already explain safely.
 
-The server-side web mutation boundary now reads only the existing sanitized credential summaries before submitting Fresh Test. If the deployed OpenAI credential pool has no usable primary credential, the request redirects to authenticated credential settings without creating a Fresh Test run or invoking AgentCore Runtime. The execution-plane `CredentialPoolPreflightCheck` remains authoritative and still runs for every real cloud execution.
+The detail page now checks sanitized credential summaries only when the workflow is otherwise ready for a new Fresh Test. If the deterministic primary OpenAI credential is unavailable, the test form is replaced with an explicit credential-setup action. Once a usable credential exists, the normal Fresh Test form is shown.
 
-The web readiness rule intentionally mirrors the current production routing policy:
-
-- only the deployed `openai` provider is considered;
-- the primary credential is selected deterministically by priority, then failure count, then credential ID;
-- `UNKNOWN` and `HEALTHY` are immediately usable;
-- `COOLDOWN` is usable only after its bounded expiry;
-- `DISABLED` and `EXHAUSTED` are unavailable;
-- same-provider failover remains disabled, so a healthier secondary key does not silently bypass the primary key's state.
+The presentation lookup is intentionally best-effort. A credential-summary read outage does not make the whole automation page unavailable and does not manufacture a `NEEDS_CREDENTIAL` decision; the form remains available and the existing POST mutation plus AgentCore execution-plane `CredentialPoolPreflightCheck` still perform authoritative checks before cloud execution.
 
 ### Security / tenant isolation / secret handling
 
-- The web preflight consumes `ProviderCredentialSummary` only. Raw provider keys and AgentCore secret references are not returned to the browser or used by this presentation guard.
-- Credential listing remains scoped by the authenticated Cognito-derived tenant/user control-plane context; request bodies cannot choose another ownership scope.
-- The check grants no execution authority. A credential can change after the web check, and the AgentCore execution-plane preflight still re-reads authoritative credential metadata before Browser/model work.
-- The product continues to advertise only OpenAI reasoning because that is the only concrete deployed BYOK reasoning adapter.
+- The page consumes `ProviderCredentialSummary` only. Raw API keys and AgentCore secret references never enter this readiness helper or page rendering.
+- Credential summaries are still loaded through the authenticated Cognito-derived tenant/user control-plane client. The browser cannot choose another tenant/user scope.
+- The readiness state exposes only `READY`, `NEEDS_CREDENTIAL`, or `UNKNOWN`; it does not expose credential IDs, secret references, provider error text, or raw cooldown metadata in the automation page.
+- The deployed web product remains OpenAI-only for reasoning; Google sign-in federation is unrelated to model-provider readiness.
 
 ### Idempotency / concurrency / retry / verification / recovery
 
-- No durable execution idempotency key, automation lease, retry policy, verification contract, Scheduler boundary, or human-resume machinery changed.
-- Stale credential state is fail-safe: if a credential becomes unavailable after the web check, the authoritative execution preflight blocks the run as before; if it becomes available after a web rejection, the user can resubmit from credential settings.
-- The web check does not introduce same-provider key rotation or a retry loop.
+- This is a product/readiness guard only. It grants no execution authority and changes no run ID, automation lease, retry policy, verification contract, Scheduler behavior, Browser Profile state, or human-resume machinery.
+- Credential health can change after page render. The POST mutation re-reads credential summaries and the AgentCore execution plane re-reads authoritative metadata before Browser/model allocation, so stale UI state remains fail-safe.
+- Same-provider failover remains disabled; the web readiness helper still follows deterministic primary ordering by priority, failure count, then credential ID.
 
-### Cost / observability
+### Cost / availability / observability
 
-- A rejected Fresh Test now avoids one unnecessary AgentCore Runtime invocation and the associated blocked-run persistence path.
-- The guard adds one authenticated control-plane credential-summary read only when the user intentionally submits Fresh Test; it adds no browser session, model call, AWS resource, IAM permission, queue, metric dimension, dependency, or retained Actions artifact.
-- Durable execution telemetry remains unchanged because no run exists when the product preflight rejects the request.
+- The extra credential-summary read occurs only when the automation is otherwise ready for a new Fresh Test. It is not performed while asynchronous Fresh Test polling is active, avoiding repeated DynamoDB/control-plane reads every five seconds.
+- A proven unavailable credential now avoids the pointless click/redirect round trip and makes the zero-cloud-execution path visible before submission.
+- No AWS resource, dependency, IAM permission, Browser session, model call, queue, metric dimension, email, or retained Actions artifact was added.
+- A credential-summary read failure degrades to `UNKNOWN` presentation rather than taking down the automation detail page.
 
 ### Validation
 
-- Added web regression coverage for `UNKNOWN`/`HEALTHY`, cooldown expiry, `DISABLED`/`EXHAUSTED`, unsupported providers, deterministic primary ordering, and the production no-same-provider-failover rule.
-- The exact-head CI must pass deterministic lock verification, frozen install, `pnpm check`, all production package builds, AWS release/deployment/demo/OIDC contracts, and the full test suite before this slice is considered green.
+- Extended web regression coverage for the presentation readiness states: usable OpenAI key -> `READY`, no/unusable key -> `NEEDS_CREDENTIAL`, summary-read uncertainty -> `UNKNOWN`.
+- Existing readiness regressions continue to cover `UNKNOWN`/`HEALTHY`, cooldown expiry, `DISABLED`/`EXHAUSTED`, unsupported providers, deterministic primary ordering, and no same-provider failover.
+- Exact-head CI must pass deterministic lock verification, frozen install, `pnpm check`, all production package builds, AWS release/deployment/demo/OIDC contracts, and the full test suite before this slice is considered green.
 
 ## Known production risks intentionally left visible
 
-- The web credential check is a product/cost guard, not authorization. The execution plane remains the only authoritative BYOK preflight because credential health can change concurrently.
+- The web readiness check is not authorization. Credential health can change concurrently; the execution plane remains authoritative.
 - VPC-mode AgentCore Browser is required by deployment, but real subnet/route/DNS/security-group/firewall policy still needs live proof that private/link-local/control-plane targets stay unreachable after DNS resolution and redirects.
 - Live AWS/Cognito/Google/SES/AgentCore integrations are structurally tested with fakes and deployment contracts but still need the controlled real environment demonstration.
 - Only OpenAI has a concrete production BYOK reasoning adapter today; additional providers must not be advertised until their adapters and deployment contracts exist.
@@ -71,11 +66,11 @@ Run the protected real AWS deployment and controlled vertical demonstration usin
 
 1. deploy immutable artifacts and pass the live public/auth smoke;
 2. sign in through Cognito/Google and verify the trusted notification identity;
-3. confirm Fresh Test routes to credential setup before cloud execution when no usable OpenAI key exists, then configure a usable OpenAI BYOK credential;
+3. confirm the automation page shows the OpenAI credential setup action before Fresh Test when no usable key exists, then configure a usable OpenAI BYOK credential;
 4. create an automation, complete Live View capture, compile/inspect, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
 5. confirm the dashboard clearly identifies that result as a Fresh Test rather than a scheduled production occurrence;
 6. publish with recurrence/timezone and any explicitly non-secret recurring inputs, then confirm the truthful next occurrence;
-7. observe Scheduler → SQS → Step Functions → AgentCore Runtime execution and confirm the dashboard identifies the latest result as a Scheduled run;
+7. observe Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution and confirm the dashboard identifies the latest result as a Scheduled run;
 8. inspect verification/history/CloudWatch/SES, then deliberately expire target authentication, use secure Live View repair, resume, and follow the terminal post-resume result.
 
 Further engineering should be driven primarily by concrete failures from that live path, not additional recovery micro-hardening.

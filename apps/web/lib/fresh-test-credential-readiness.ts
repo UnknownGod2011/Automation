@@ -38,3 +38,23 @@ export function hasUsableFreshTestCredential(
 
   return primary ? credentialIsUsable(primary, nowMs) : false;
 }
+
+export type FreshTestCredentialReadiness =
+  | { kind: "READY" }
+  | { kind: "NEEDS_CREDENTIAL" }
+  | { kind: "UNKNOWN" };
+
+/**
+ * Presentation readiness for the authenticated web product.
+ * A failed credential-summary lookup is UNKNOWN rather than a hard product outage; the server
+ * mutation and execution-plane preflight still re-check authoritative credential state.
+ */
+export function freshTestCredentialReadiness(
+  credentials: readonly ProviderCredentialSummary[] | null,
+  now: Date = new Date(),
+): FreshTestCredentialReadiness {
+  if (credentials === null) return { kind: "UNKNOWN" };
+  return hasUsableFreshTestCredential(credentials, now)
+    ? { kind: "READY" }
+    : { kind: "NEEDS_CREDENTIAL" };
+}

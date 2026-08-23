@@ -1,6 +1,9 @@
 import type { ProviderCredentialSummary } from "@automation/core";
 import { describe, expect, it } from "vitest";
-import { hasUsableFreshTestCredential } from "./fresh-test-credential-readiness";
+import {
+  freshTestCredentialReadiness,
+  hasUsableFreshTestCredential,
+} from "./fresh-test-credential-readiness";
 
 function credential(
   overrides: Partial<ProviderCredentialSummary> = {},
@@ -58,5 +61,19 @@ describe("Fresh Test credential readiness", () => {
       credential({ credentialId: "later-priority", priority: 1, failureCount: 0, status: "HEALTHY" }),
     ];
     expect(hasUsableFreshTestCredential(records, now)).toBe(true);
+  });
+
+  it("returns an actionable presentation state when the trusted summary proves no usable key", () => {
+    expect(freshTestCredentialReadiness([], now)).toEqual({ kind: "NEEDS_CREDENTIAL" });
+    expect(freshTestCredentialReadiness([
+      credential({ status: "EXHAUSTED" }),
+    ], now)).toEqual({ kind: "NEEDS_CREDENTIAL" });
+    expect(freshTestCredentialReadiness([
+      credential({ status: "HEALTHY" }),
+    ], now)).toEqual({ kind: "READY" });
+  });
+
+  it("does not turn a credential-summary read outage into a false unavailable decision", () => {
+    expect(freshTestCredentialReadiness(null, now)).toEqual({ kind: "UNKNOWN" });
   });
 });
