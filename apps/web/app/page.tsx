@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { createAuthenticatedWebControlPlaneClient, getWebAuthStatus, WebAuthError } from "../lib/server-auth";
-import { automationPhase, formatCapability, formatSchedule, nextRunLabel, runTone } from "../lib/view-model";
+import { dashboardLastRunPresentation } from "../lib/dashboard-last-run";
+import { automationPhase, formatCapability, formatSchedule, nextRunLabel } from "../lib/view-model";
 
 export const dynamic = "force-dynamic";
 
@@ -79,13 +80,16 @@ export default async function DashboardPage() {
           <div className="card subtle"><h3>No automations yet</h3><p>{configured ? "Create your first workflow to begin capture." : "Connect the control plane first; no fake cloud data is shown."}</p></div>
         ) : (
           <div className="list">
-            {dashboard.automations.map((automation) => (
-              <Link className="list-item" href={`/automations/${encodeURIComponent(automation.automationId)}`} key={automation.automationId}>
-                <div><div className="row"><h3>{automation.name}</h3>{automation.needsAttention ? <span className="badge warning">Needs attention</span> : null}</div><div className="muted">{automation.websiteUrl}</div><p>{automation.objective}</p></div>
-                <div><div className="badge">{automationPhase(automation)}</div><p className="muted">{formatSchedule(automation)}</p><p className="muted">{nextRunLabel(automation, renderedAt)}</p></div>
-                <div>{automation.lastRun ? <><span className={`badge ${runTone(automation.lastRun.status)}`}>{automation.lastRun.status}</span><p className="muted">{automation.lastRun.scheduledAt}</p></> : <span className="muted">No runs yet</span>}</div>
-              </Link>
-            ))}
+            {dashboard.automations.map((automation) => {
+              const lastRun = automation.lastRun ? dashboardLastRunPresentation(automation.lastRun) : null;
+              return (
+                <Link className="list-item" href={`/automations/${encodeURIComponent(automation.automationId)}`} key={automation.automationId}>
+                  <div><div className="row"><h3>{automation.name}</h3>{automation.needsAttention ? <span className="badge warning">Needs attention</span> : null}</div><div className="muted">{automation.websiteUrl}</div><p>{automation.objective}</p></div>
+                  <div><div className="badge">{automationPhase(automation)}</div><p className="muted">{formatSchedule(automation)}</p><p className="muted">{nextRunLabel(automation, renderedAt)}</p></div>
+                  <div>{lastRun && automation.lastRun ? <><strong>{lastRun.kind}</strong><br /><span className={`badge ${lastRun.tone}`}>{automation.lastRun.status}</span><p className="muted">{lastRun.detail}</p><p className="muted">{automation.lastRun.scheduledAt}</p></> : <span className="muted">No runs yet</span>}</div>
+                </Link>
+              );
+            })}
           </div>
         )}
       </section>
