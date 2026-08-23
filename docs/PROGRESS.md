@@ -8,42 +8,55 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end corre
 
 ## Incoming validation
 
-- Incoming PR #1 head: `238935e0c9dcb800422a0ad0806ee5f2c825fc32` (`Clarify dashboard latest run provenance`).
-- GitHub Actions CI #254 failed on that exact head during the real Next.js Lambda packaging build, after deterministic lock verification, frozen install, and `pnpm check` had already passed.
-- Authoritative CI logs showed one packaging defect: `apps/web/lib/dashboard-last-run.ts` imported the TypeScript source as `./view-model.js`, which Turbopack could not resolve from source.
+- Incoming PR #1 head: `a7d426063c61a99f968c15961c2625d2e259b1a2` (`Fix dashboard module resolution`).
+- GitHub Actions CI #255 passed completely on that exact head, including deterministic lock verification, frozen installation, strict TypeScript/Next.js validation, production packaging, AWS release/deployment/demo/OIDC contracts, and the full test suite.
 - PR #1 remains open, draft, mergeable, and unmerged.
-- Deterministic pnpm lock verification, frozen installation, strict TypeScript/Next.js validation, production packaging, AWS release/deployment/demo/OIDC contracts, and the full test suite remain mandatory gates.
+- Exact-head GitHub Actions remains authoritative; no slice is considered green before its own workflow run completes successfully.
 
-## This corrective slice — restore the production web package build
+## This product slice — avoid impossible Fresh Test submissions
 
-### Root cause and correction
+### Product defect and correction
 
-The dashboard provenance helper itself type-checked correctly, but its source-level relative import used the emitted JavaScript suffix (`./view-model.js`). The standalone Next.js/Turbopack production build resolves the TypeScript source graph directly and therefore failed with `Module not found: Can't resolve './view-model.js'`.
+The production execution plane already performs a fail-closed BYOK credential preflight before AgentCore Browser/model allocation. The authenticated Next.js product, however, still submitted Fresh Test whenever a workflow was otherwise testable, even when the user had no currently usable OpenAI BYOK credential. That submission could not succeed: it created an avoidable AgentCore Runtime invocation and a durable `WAITING_FOR_HUMAN / NOT_CONFIGURED` run before directing the user back to credential setup.
 
-The helper now imports `./view-model` extensionlessly, matching the established Next.js source-module convention already required elsewhere in this repository. No dashboard behavior or run authority changed.
+The server-side web mutation boundary now reads only the existing sanitized credential summaries before submitting Fresh Test. If the deployed OpenAI credential pool has no usable primary credential, the request redirects to authenticated credential settings without creating a Fresh Test run or invoking AgentCore Runtime. The execution-plane `CredentialPoolPreflightCheck` remains authoritative and still runs for every real cloud execution.
 
-### Security / tenant isolation / authority
+The web readiness rule intentionally mirrors the current production routing policy:
 
-- This is a module-resolution correction only. Cognito tenant/user ownership, run persistence, Scheduler authority, execution leases, Browser Profiles, BYOK credentials, AgentCore workload identity, and human-resume authority are unchanged.
-- No new user-controlled input, secret-bearing data, browser capability, or durable identifier is introduced.
+- only the deployed `openai` provider is considered;
+- the primary credential is selected deterministically by priority, then failure count, then credential ID;
+- `UNKNOWN` and `HEALTHY` are immediately usable;
+- `COOLDOWN` is usable only after its bounded expiry;
+- `DISABLED` and `EXHAUSTED` are unavailable;
+- same-provider failover remains disabled, so a healthier secondary key does not silently bypass the primary key's state.
+
+### Security / tenant isolation / secret handling
+
+- The web preflight consumes `ProviderCredentialSummary` only. Raw provider keys and AgentCore secret references are not returned to the browser or used by this presentation guard.
+- Credential listing remains scoped by the authenticated Cognito-derived tenant/user control-plane context; request bodies cannot choose another ownership scope.
+- The check grants no execution authority. A credential can change after the web check, and the AgentCore execution-plane preflight still re-reads authoritative credential metadata before Browser/model work.
+- The product continues to advertise only OpenAI reasoning because that is the only concrete deployed BYOK reasoning adapter.
 
 ### Idempotency / concurrency / retry / verification / recovery
 
-- No mutation, retry, lease, outbox, queue, browser/model call, verification rule, or recovery mechanism changed.
-- The dashboard remains a read-only presentation of already-sanitized durable run summaries.
+- No durable execution idempotency key, automation lease, retry policy, verification contract, Scheduler boundary, or human-resume machinery changed.
+- Stale credential state is fail-safe: if a credential becomes unavailable after the web check, the authoritative execution preflight blocks the run as before; if it becomes available after a web rejection, the user can resubmit from credential settings.
+- The web check does not introduce same-provider key rotation or a retry loop.
 
 ### Cost / observability
 
-- No AWS resource, SDK dependency, DynamoDB read/write, Scheduler API call, Browser session, model token, email send, metric dimension, or retained GitHub Actions artifact was added.
+- A rejected Fresh Test now avoids one unnecessary AgentCore Runtime invocation and the associated blocked-run persistence path.
+- The guard adds one authenticated control-plane credential-summary read only when the user intentionally submits Fresh Test; it adds no browser session, model call, AWS resource, IAM permission, queue, metric dimension, dependency, or retained Actions artifact.
+- Durable execution telemetry remains unchanged because no run exists when the product preflight rejects the request.
 
 ### Validation
 
-- CI #254 is the authoritative root-cause evidence: deterministic lock verification, frozen installation, and `pnpm check` passed; `Package Next.js web Lambda` failed only on the source import resolution above.
-- The existing dashboard provenance regressions remain unchanged because runtime behavior is unchanged.
-- The production Next.js Lambda packaging gate is the regression gate for this correction and must pass on the exact corrective head before this slice is considered green.
+- Added web regression coverage for `UNKNOWN`/`HEALTHY`, cooldown expiry, `DISABLED`/`EXHAUSTED`, unsupported providers, deterministic primary ordering, and the production no-same-provider-failover rule.
+- The exact-head CI must pass deterministic lock verification, frozen install, `pnpm check`, all production package builds, AWS release/deployment/demo/OIDC contracts, and the full test suite before this slice is considered green.
 
 ## Known production risks intentionally left visible
 
+- The web credential check is a product/cost guard, not authorization. The execution plane remains the only authoritative BYOK preflight because credential health can change concurrently.
 - VPC-mode AgentCore Browser is required by deployment, but real subnet/route/DNS/security-group/firewall policy still needs live proof that private/link-local/control-plane targets stay unreachable after DNS resolution and redirects.
 - Live AWS/Cognito/Google/SES/AgentCore integrations are structurally tested with fakes and deployment contracts but still need the controlled real environment demonstration.
 - Only OpenAI has a concrete production BYOK reasoning adapter today; additional providers must not be advertised until their adapters and deployment contracts exist.
@@ -54,11 +67,11 @@ The helper now imports `./view-model` extensionlessly, matching the established 
 
 ## Next product milestone
 
-After exact-head CI is green, run the protected real AWS deployment and controlled vertical demonstration using the deployment-provisioned VPC AgentCore Browser:
+Run the protected real AWS deployment and controlled vertical demonstration using the deployment-provisioned VPC AgentCore Browser:
 
 1. deploy immutable artifacts and pass the live public/auth smoke;
 2. sign in through Cognito/Google and verify the trusted notification identity;
-3. configure an OpenAI BYOK credential;
+3. confirm Fresh Test routes to credential setup before cloud execution when no usable OpenAI key exists, then configure a usable OpenAI BYOK credential;
 4. create an automation, complete Live View capture, compile/inspect, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
 5. confirm the dashboard clearly identifies that result as a Fresh Test rather than a scheduled production occurrence;
 6. publish with recurrence/timezone and any explicitly non-secret recurring inputs, then confirm the truthful next occurrence;

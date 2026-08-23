@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { serverResolvedCaptureSessionId } from "../../../../../../lib/capture-command-state";
 import { createCaptureLiveViewHandoff } from "../../../../../../lib/capture-live-view-handoff";
 import { WebControlPlaneError } from "../../../../../../lib/control-plane-client";
+import { hasUsableFreshTestCredential } from "../../../../../../lib/fresh-test-credential-readiness";
 import { parseFreshTestRuntimeInputForm } from "../../../../../../lib/fresh-test-input-form";
 import { isSameOriginMutation } from "../../../../../../lib/mutation-security";
 import { freshTestRunId, serverResolvedPublishWorkflowVersion } from "../../../../../../lib/product-flow-identities";
@@ -38,6 +39,10 @@ export async function POST(request: Request, context: { params: Promise<{ automa
       return redirectBack(request, automationId, "compiled");
     }
     if (command === "test") {
+      const credentials = await client.credentials();
+      if (!hasUsableFreshTestCredential(credentials)) {
+        return NextResponse.redirect(new URL("/settings/credentials", request.url), 303);
+      }
       const workflow = await client.workflow(automationId);
       if (!workflow) return redirectBack(request, automationId, "invalid-input");
       const runtimeVariables = parseFreshTestRuntimeInputForm(form, workflow.runtimeInputs);
