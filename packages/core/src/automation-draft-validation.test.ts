@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { WorkflowNode } from "@automation/contracts";
+import type { AutomationRecord, WorkflowNode } from "@automation/contracts";
 import {
   AUTOMATION_DRAFT_LIMITS,
   AutomationProductLifecycleService,
@@ -14,6 +14,7 @@ import {
   InMemoryWorkflowVersionRepository,
 } from "./memory.js";
 import type {
+  AutomationRepository,
   BrowserActionResult,
   BrowserExecutor,
   BrowserProfileStore,
@@ -30,18 +31,54 @@ const owner: OwnershipScope = { tenantId: "tenant-a", userId: "user-a" };
 
 class RecordingProfiles implements BrowserProfileStore {
   readonly created: string[] = [];
+  readonly deleted: string[] = [];
+
   async create(_scope: OwnershipScope, automationId: string): Promise<string> {
     this.created.push(automationId);
     return `profile:${automationId}`;
   }
+
   async exists(): Promise<boolean> { return true; }
-  async delete(): Promise<void> {}
+
+  async delete(_scope: OwnershipScope, profileRef: string): Promise<void> {
+    this.deleted.push(profileRef);
+  }
+}
+
+class BlockingProfiles extends RecordingProfiles {
+  private enteredResolve!: () => void;
+  private releaseResolve!: () => void;
+  readonly entered = new Promise<void>((resolve) => { this.enteredResolve = resolve; });
+  private readonly released = new Promise<void>((resolve) => { this.releaseResolve = resolve; });
+
+  override async create(scope: OwnershipScope, automationId: string): Promise<string> {
+    this.enteredResolve();
+    await this.released;
+    return super.create(scope, automationId);
+  }
+
+  release(): void {
+    this.releaseResolve();
+  }
+}
+
+class AckLostAutomationRepository extends InMemoryAutomationRepository {
+  private loseFirstAck = true;
+
+  override async put(record: AutomationRecord): Promise<void> {
+    await super.put(record);
+    if (this.loseFirstAck) {
+      this.loseFirstAck = false;
+      throw new Error("automation metadata acknowledgement was lost");
+    }
+  }
 }
 
 class UnusedBrowser implements BrowserExecutor {
   async executeDeterministic(_scope: OwnershipScope, _runId: string, _node: WorkflowNode): Promise<BrowserActionResult> {
     throw new Error("browser must not execute while creating a draft");
   }
+
   async executeSemantic(_scope: OwnershipScope, _runId: string, _node: WorkflowNode, _decision: ReasoningDecision): Promise<BrowserActionResult> {
     throw new Error("browser must not execute while creating a draft");
   }
@@ -59,10 +96,13 @@ class UnusedReasoner implements ReasoningProvider {
   }
 }
 
-function harness() {
-  const profiles = new RecordingProfiles();
+function harness(options: {
+  automations?: AutomationRepository;
+  profiles?: RecordingProfiles;
+} = {}) {
+  const profiles = options.profiles ?? new RecordingProfiles();
   const service = new AutomationProductLifecycleService({
-    automations: new InMemoryAutomationRepository(),
+    automations: options.automations ?? new InMemoryAutomationRepository(),
     captures: new InMemoryCaptureTraceRepository(),
     workflows: new InMemoryWorkflowVersionRepository(),
     runs: new InMemoryRunRepository(),
@@ -118,5 +158,33 @@ describe("automation draft metadata bounds", () => {
     expect(record.websiteUrl).toHaveLength(AUTOMATION_DRAFT_LIMITS.websiteUrl);
     expect(record.prompt).toHaveLength(AUTOMATION_DRAFT_LIMITS.objective);
     expect(profiles.created).toEqual([record.automationId]);
+  });
+});
+
+describe("automation draft creation coordination", () => {
+  it("reconciles a lost automation-metadata acknowledgement without deleting the referenced Browser Profile", async () => {
+    const automations = new AckLostAutomationRepository();
+    const { service, profiles } = harness({ automations });
+
+    const created = await service.createDraft(baseRequest());
+
+    expect(created.automationId).toBe("automation-1");
+    expect((await automations.get(owner, "automation-1"))?.browserProfileRef).toBe("profile:automation-1");
+    expect(profiles.created).toEqual(["automation-1"]);
+    expect(profiles.deleted).toEqual([]);
+  });
+
+  it("serializes concurrent creation attempts before a second Browser Profile can be allocated", async () => {
+    const profiles = new BlockingProfiles();
+    const { service } = harness({ profiles });
+    const first = service.createDraft(baseRequest());
+    await profiles.entered;
+
+    await expect(service.createDraft(baseRequest())).rejects.toThrow(/creation is already in progress/);
+    expect(profiles.created).toEqual([]);
+
+    profiles.release();
+    await expect(first).resolves.toMatchObject({ automationId: "automation-1" });
+    expect(profiles.created).toEqual(["automation-1"]);
   });
 });

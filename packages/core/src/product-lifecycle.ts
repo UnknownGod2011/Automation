@@ -165,12 +165,30 @@ function copyRuntimeVariables(variables: Readonly<Record<string, unknown>> | und
   return variables ? structuredClone(variables) : undefined;
 }
 
+function sameAutomationCreationIdentity(left: AutomationRecord, right: AutomationRecord): boolean {
+  return (
+    left.tenantId === right.tenantId &&
+    left.userId === right.userId &&
+    left.automationId === right.automationId &&
+    left.name === right.name &&
+    left.websiteUrl === right.websiteUrl &&
+    left.prompt === right.prompt &&
+    left.browserProfileRef === right.browserProfileRef
+  );
+}
+
+function draftCreationOwnerToken(): string {
+  return `draft-create:${globalThis.crypto.randomUUID()}`;
+}
+
 export class AutomationProductLifecycleService {
   private readonly now: () => Date;
   private readonly coordinator: ScheduledRunCoordinator;
+  private readonly lockTtlMs: number;
 
   constructor(private readonly dependencies: AutomationProductLifecycleDependencies) {
     this.now = dependencies.now ?? (() => new Date());
+    this.lockTtlMs = dependencies.lockTtlMs ?? 5 * 60_000;
     this.coordinator = new ScheduledRunCoordinator({
       automations: dependencies.automations,
       workflows: dependencies.workflows,
@@ -189,25 +207,59 @@ export class AutomationProductLifecycleService {
     const name = boundedNonEmpty(request.name, "name", AUTOMATION_DRAFT_LIMITS.name);
     const objective = boundedNonEmpty(request.objective, "objective", AUTOMATION_DRAFT_LIMITS.objective);
     const websiteUrl = normalizeWebsiteUrl(request.websiteUrl);
-    if (await this.dependencies.automations.get(request.scope, automationId)) throw new Error(`automation '${automationId}' already exists in ownership scope`);
-    const now = this.now().toISOString();
-    const browserProfileRef = await this.dependencies.profiles.create(request.scope, automationId);
-    const record: AutomationRecord = {
-      tenantId: request.scope.tenantId,
-      userId: request.scope.userId,
+    if (await this.dependencies.automations.get(request.scope, automationId)) {
+      throw new Error(`automation '${automationId}' already exists in ownership scope`);
+    }
+
+    const lease = await this.dependencies.locks.acquire(
+      request.scope,
       automationId,
-      name,
-      websiteUrl,
-      prompt: objective,
-      status: "DRAFT",
-      browserProfileRef,
-      notifyOnSuccess: request.notifyOnSuccess ?? false,
-      notifyOnFailure: request.notifyOnFailure ?? true,
-      createdAt: now,
-      updatedAt: now,
-    };
-    await this.dependencies.automations.put(record);
-    return structuredClone(record);
+      draftCreationOwnerToken(),
+      this.lockTtlMs,
+    );
+    if (!lease) throw new Error("automation creation is already in progress");
+
+    try {
+      if (await this.dependencies.automations.get(request.scope, automationId)) {
+        throw new Error(`automation '${automationId}' already exists in ownership scope`);
+      }
+
+      const now = this.now().toISOString();
+      const browserProfileRef = await this.dependencies.profiles.create(request.scope, automationId);
+      const record: AutomationRecord = {
+        tenantId: request.scope.tenantId,
+        userId: request.scope.userId,
+        automationId,
+        name,
+        websiteUrl,
+        prompt: objective,
+        status: "DRAFT",
+        browserProfileRef,
+        notifyOnSuccess: request.notifyOnSuccess ?? false,
+        notifyOnFailure: request.notifyOnFailure ?? true,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      try {
+        await this.dependencies.automations.put(record);
+      } catch (error) {
+        try {
+          const persisted = await this.dependencies.automations.get(request.scope, automationId);
+          if (persisted && sameAutomationCreationIdentity(persisted, record)) {
+            return structuredClone(persisted);
+          }
+        } catch {
+          // The reconciliation read is itself uncertain. Preserve the original write failure;
+          // deleting the Browser Profile here could break a metadata write that actually committed.
+        }
+        throw error;
+      }
+
+      return structuredClone(record);
+    } finally {
+      await this.dependencies.locks.release(request.scope, lease);
+    }
   }
 
   async persistCapture(request: PersistCaptureRequest): Promise<CaptureTrace> {

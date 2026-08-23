@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { AUTOMATION_DRAFT_LIMITS } from "@automation/core";
 import Link from "next/link";
+import { automationCreationId, newAutomationCreationId } from "../../../lib/automation-creation-idempotency";
 import { newAutomationAccess } from "../../../lib/new-automation-access";
 import { notificationPreferenceCopy } from "../../../lib/notification-preferences";
 import { getWebAuthStatus } from "../../../lib/server-auth";
@@ -9,7 +11,7 @@ export const dynamic = "force-dynamic";
 export default async function NewAutomationPage({
   searchParams,
 }: {
-  searchParams: Promise<{ notice?: string }>;
+  searchParams: Promise<{ notice?: string; creationAttempt?: string }>;
 }) {
   const access = newAutomationAccess(await getWebAuthStatus());
   if (access.kind === "AUTH_NOT_CONFIGURED") {
@@ -43,7 +45,8 @@ export default async function NewAutomationPage({
     );
   }
 
-  const { notice } = await searchParams;
+  const { notice, creationAttempt } = await searchParams;
+  const creationRequestId = automationCreationId(creationAttempt) ?? newAutomationCreationId(randomUUID);
   const notificationCopy = notificationPreferenceCopy();
   return (
     <section className="grid two">
@@ -56,8 +59,9 @@ export default async function NewAutomationPage({
       </div>
       <div className="card">
         {notice === "not-configured" ? <div className="notice">Control plane is not configured on this deployment.</div> : null}
-        {notice === "request-failed" ? <div className="notice">The request could not be completed. No provider error details were exposed.</div> : null}
+        {notice === "request-failed" ? <div className="notice">The request could not be completed. Retrying this form will reuse the same safe creation attempt instead of creating a second automation.</div> : null}
         <form action="/api/ui/automations" method="post">
+          <input name="creationRequestId" type="hidden" value={creationRequestId} />
           <label>Name<input name="name" maxLength={AUTOMATION_DRAFT_LIMITS.name} required placeholder="Daily invoice approval" /></label>
           <label>Website URL<input name="websiteUrl" type="url" maxLength={AUTOMATION_DRAFT_LIMITS.websiteUrl} required placeholder="https://app.example.com" /></label>
           <label>Objective<textarea name="objective" maxLength={AUTOMATION_DRAFT_LIMITS.objective} required placeholder="Open pending invoices, approve those matching our policy, and record the result." /></label>
