@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
+import { parseWebByokProvider } from "../../../../lib/credential-form";
 import { WebControlPlaneError } from "../../../../lib/control-plane-client";
 import { isSameOriginMutation } from "../../../../lib/mutation-security";
 import {
@@ -28,7 +29,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   try {
     const client = await createAuthenticatedWebControlPlaneClient();
     if (action === "create") {
-      const provider = text(form, "provider");
+      const provider = parseWebByokProvider(form.get("provider"));
       const maskedLabel = text(form, "maskedLabel");
       const apiKey = String(form.get("apiKey") ?? "");
       const priority = Number(text(form, "priority"));

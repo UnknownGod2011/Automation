@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { WEB_BYOK_PROVIDER_OPTIONS } from "../../../lib/credential-form";
 import {
   createAuthenticatedWebControlPlaneClient,
   getWebAuthStatus,
@@ -71,11 +72,18 @@ export default async function CredentialSettingsPage() {
       <section className="card stack">
         <div>
           <h2>Add credential</h2>
-          <p className="muted">Use the provider identifier expected by the deployment reasoner, such as openai, google, or anthropic.</p>
+          <p className="muted">This AWS-first deployment currently executes BYOK reasoning with OpenAI. Additional provider adapters must be implemented and deployed before they appear here.</p>
         </div>
         <form className="stack" action="/api/ui/credentials" method="post">
           <input type="hidden" name="action" value="create" />
-          <label className="stack"><span>Provider</span><input required name="provider" autoComplete="off" placeholder="openai" /></label>
+          <label className="stack">
+            <span>Provider</span>
+            <select required name="provider" defaultValue={WEB_BYOK_PROVIDER_OPTIONS[0].value}>
+              {WEB_BYOK_PROVIDER_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </label>
           <label className="stack"><span>Label</span><input required name="maskedLabel" autoComplete="off" placeholder="Personal OpenAI key" /></label>
           <label className="stack"><span>Priority</span><input required name="priority" type="number" min="0" max="10000" defaultValue="0" /></label>
           <label className="stack"><span>API key</span><input required name="apiKey" type="password" autoComplete="off" /></label>
@@ -84,9 +92,9 @@ export default async function CredentialSettingsPage() {
       </section>
 
       <section className="card stack">
-        <div><h2>Configured credentials</h2><p className="muted">Only sanitized health and routing metadata is shown.</p></div>
+        <div><h2>Configured credentials</h2><p className="muted">Only sanitized health and routing metadata is shown. Legacy credentials for providers not supported by this deployment remain visible for removal or rotation, but are not offered as new product choices.</p></div>
         {credentials.length === 0 ? (
-          <div className="card subtle"><h3>No credentials configured</h3><p>Add a BYOK key before publishing reasoning-dependent automations.</p></div>
+          <div className="card subtle"><h3>No credentials configured</h3><p>Add an OpenAI BYOK key before publishing reasoning-dependent automations.</p></div>
         ) : (
           <div className="list">
             {credentials.map((credential) => (
