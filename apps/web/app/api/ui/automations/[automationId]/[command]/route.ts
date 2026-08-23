@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { serverResolvedCaptureSessionId } from "../../../../../../lib/capture-command-state";
 import { createCaptureLiveViewHandoff } from "../../../../../../lib/capture-live-view-handoff";
+import { canCompileLatestCapture } from "../../../../../../lib/compile-readiness";
 import { WebControlPlaneError } from "../../../../../../lib/control-plane-client";
 import { hasUsableFreshTestCredential } from "../../../../../../lib/fresh-test-credential-readiness";
 import { parseFreshTestRuntimeInputForm } from "../../../../../../lib/fresh-test-input-form";
@@ -36,6 +37,8 @@ export async function POST(request: Request, context: { params: Promise<{ automa
       await client.finishCaptureRecording(automationId, captureSessionId); return redirectBack(request, automationId, "capture-finishing");
     }
     if (command === "compile") {
+      const automation = await client.automation(automationId);
+      if (!canCompileLatestCapture(automation)) return redirectBack(request, automationId, "invalid-input");
       await client.command(automationId, "compile", {});
       return redirectBack(request, automationId, "compiled");
     }
