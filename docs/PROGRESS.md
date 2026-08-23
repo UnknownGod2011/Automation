@@ -8,41 +8,39 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end corre
 
 ## Incoming validation
 
-- Incoming PR #1 head: `a9004a05f051be70910b97f117c64569fa4c8050` (`Show disabled schedule during workflow revision`).
-- GitHub Actions CI #253 completed successfully on that exact head before this slice began.
+- Incoming PR #1 head: `238935e0c9dcb800422a0ad0806ee5f2c825fc32` (`Clarify dashboard latest run provenance`).
+- GitHub Actions CI #254 failed on that exact head during the real Next.js Lambda packaging build, after deterministic lock verification, frozen install, and `pnpm check` had already passed.
+- Authoritative CI logs showed one packaging defect: `apps/web/lib/dashboard-last-run.ts` imported the TypeScript source as `./view-model.js`, which Turbopack could not resolve from source.
 - PR #1 remains open, draft, mergeable, and unmerged.
 - Deterministic pnpm lock verification, frozen installation, strict TypeScript/Next.js validation, production packaging, AWS release/deployment/demo/OIDC contracts, and the full test suite remain mandatory gates.
 
-## This slice — distinguish test runs from production runs on the dashboard
+## This corrective slice — restore the production web package build
 
-### Product ambiguity closed
+### Root cause and correction
 
-The dashboard already showed the latest run status and timestamp, but it did not identify whether that run was a Fresh Test or a scheduled production occurrence. Because Fresh Tests and scheduled runs share the same durable run summary contract, the latest test result could therefore look like evidence that the published schedule had actually executed.
+The dashboard provenance helper itself type-checked correctly, but its source-level relative import used the emitted JavaScript suffix (`./view-model.js`). The standalone Next.js/Turbopack production build resolves the TypeScript source graph directly and therefore failed with `Module not found: Can't resolve './view-model.js'`.
 
-The dashboard now renders a bounded presentation derived from the existing trusted run summary: `Fresh test`, `Scheduled run`, or `Run`, plus the existing sanitized user-facing status detail. A successful Fresh Test is visibly different from a successful scheduled occurrence; human-attention states show only the classified failure code already allowed by the run-history boundary.
+The helper now imports `./view-model` extensionlessly, matching the established Next.js source-module convention already required elsewhere in this repository. No dashboard behavior or run authority changed.
 
 ### Security / tenant isolation / authority
 
-- This is presentation-only. Cognito tenant/user ownership, run persistence, Scheduler authority, execution leases, Browser Profiles, BYOK credentials, AgentCore workload identity, and human-resume authority are unchanged.
-- Durable run IDs and node IDs are not copied into the presentation helper or rendered as dashboard labels.
-- Raw browser/provider error text, evidence contents, runtime variables, cookies, Browser/Profile identifiers, and credentials remain excluded.
+- This is a module-resolution correction only. Cognito tenant/user ownership, run persistence, Scheduler authority, execution leases, Browser Profiles, BYOK credentials, AgentCore workload identity, and human-resume authority are unchanged.
+- No new user-controlled input, secret-bearing data, browser capability, or durable identifier is introduced.
 
 ### Idempotency / concurrency / retry / verification / recovery
 
-- No new mutation, retry, lease, outbox, queue, browser/model call, verification rule, or recovery mechanism was introduced.
-- The dashboard remains a snapshot of durable state; stale UI cannot create run or scheduling authority.
+- No mutation, retry, lease, outbox, queue, browser/model call, verification rule, or recovery mechanism changed.
+- The dashboard remains a read-only presentation of already-sanitized durable run summaries.
 
 ### Cost / observability
 
 - No AWS resource, SDK dependency, DynamoDB read/write, Scheduler API call, Browser session, model token, email send, metric dimension, or retained GitHub Actions artifact was added.
-- The page reuses the run summary it already receives from the control plane, so there is no additional cloud read.
 
 ### Validation
 
-- Added regression coverage proving Fresh Tests and scheduled production runs receive distinct dashboard labels.
-- Added coverage proving human-attention presentation contains the classified failure code but not durable run/node identifiers.
-- Existing view-model tests continue to cover sanitized status details and run-kind classification independently.
-- Exact-head GitHub Actions remains authoritative; this slice is not green until its PR-head CI run succeeds.
+- CI #254 is the authoritative root-cause evidence: deterministic lock verification, frozen installation, and `pnpm check` passed; `Package Next.js web Lambda` failed only on the source import resolution above.
+- The existing dashboard provenance regressions remain unchanged because runtime behavior is unchanged.
+- The production Next.js Lambda packaging gate is the regression gate for this correction and must pass on the exact corrective head before this slice is considered green.
 
 ## Known production risks intentionally left visible
 
@@ -56,7 +54,7 @@ The dashboard now renders a bounded presentation derived from the existing trust
 
 ## Next product milestone
 
-Run the protected real AWS deployment and controlled vertical demonstration using the deployment-provisioned VPC AgentCore Browser:
+After exact-head CI is green, run the protected real AWS deployment and controlled vertical demonstration using the deployment-provisioned VPC AgentCore Browser:
 
 1. deploy immutable artifacts and pass the live public/auth smoke;
 2. sign in through Cognito/Google and verify the trusted notification identity;
@@ -64,7 +62,7 @@ Run the protected real AWS deployment and controlled vertical demonstration usin
 4. create an automation, complete Live View capture, compile/inspect, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
 5. confirm the dashboard clearly identifies that result as a Fresh Test rather than a scheduled production occurrence;
 6. publish with recurrence/timezone and any explicitly non-secret recurring inputs, then confirm the truthful next occurrence;
-7. observe Scheduler → SQS → Step Functions → AgentCore Runtime execution and confirm the dashboard now identifies the latest result as a Scheduled run;
+7. observe Scheduler → SQS → Step Functions → AgentCore Runtime execution and confirm the dashboard identifies the latest result as a Scheduled run;
 8. inspect verification/history/CloudWatch/SES, then deliberately expire target authentication, use secure Live View repair, resume, and follow the terminal post-resume result.
 
 Further engineering should be driven primarily by concrete failures from that live path, not additional recovery micro-hardening.

@@ -1,5 +1,5 @@
 import type { RunSummaryView } from "@automation/core";
-import { runHistoryStatusDetail, runKindLabel, runTone } from "./view-model.js";
+import { runHistoryStatusDetail, runKindLabel, runTone } from "./view-model";
 
 export interface DashboardLastRunPresentation {
   kind: string;
