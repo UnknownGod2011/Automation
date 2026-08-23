@@ -41,6 +41,7 @@ export interface PublishAutomationCommand {
   scheduledInputsAreNonSecret?: boolean;
 }
 export interface UpdateAutomationScheduleCommand { schedule: AutomationSchedule; }
+export interface UpdateNotificationPreferencesCommand { notifyOnSuccess: boolean; notifyOnFailure: boolean; }
 export interface CreateCredentialCommand { credentialId: string; provider: string; apiKey: string; maskedLabel: string; priority: number; }
 export interface RotateCredentialCommand { apiKey: string; }
 export type CaptureStartResult = { kind: "READY"; captureSessionId: string; liveViewUrl: string; expiresAt: string } | { kind: "NOT_CONFIGURED"; reason: string };
@@ -62,7 +63,7 @@ export type AutomationScheduleLifecyclePort = Pick<AutomationScheduleLifecycleSe
 export interface AutomationControlPlaneDependencies {
   automations: AutomationRepository; runs: RunRepository; lifecycle: AutomationLifecyclePort; captureSessions: CaptureSessionStarter;
   captureState: CaptureCompletionReader; capabilities: ControlPlaneCapabilities; credentials?: ProviderCredentialManagementPort;
-  freshTests?: FreshTestExecutionPort; scheduleLifecycle?: AutomationScheduleLifecyclePort;
+  freshTests?: FreshTestExecutionPort; scheduleLifecycle?: AutomationScheduleLifecyclePort; now?: () => Date;
 }
 export class ControlPlaneError extends Error {
   constructor(readonly code: "BAD_REQUEST" | "NOT_FOUND" | "CONFLICT" | "NOT_CONFIGURED", message: string) { super(message); }
@@ -95,7 +96,12 @@ function toAutomationSummary(record: AutomationRecord, runs: readonly RunRecord[
 }
 
 export class AutomationControlPlaneService {
-  constructor(private readonly dependencies: AutomationControlPlaneDependencies) {}
+  private readonly now: () => Date;
+
+  constructor(private readonly dependencies: AutomationControlPlaneDependencies) {
+    this.now = dependencies.now ?? (() => new Date());
+  }
+
   private credentialManagement(): ProviderCredentialManagementPort { if (!this.dependencies.credentials) throw new ControlPlaneError("NOT_CONFIGURED", "BYOK credential management is not configured"); return this.dependencies.credentials; }
   private scheduleManagement(): AutomationScheduleLifecyclePort { if (!this.dependencies.scheduleLifecycle) throw new ControlPlaneError("NOT_CONFIGURED", "automation schedule management is not configured"); return this.dependencies.scheduleLifecycle; }
   private async summaryFor(record: AutomationRecord): Promise<AutomationSummaryView> {
@@ -138,6 +144,26 @@ export class AutomationControlPlaneService {
         ...(command.notifyOnSuccess !== undefined ? { notifyOnSuccess: command.notifyOnSuccess } : {}), ...(command.notifyOnFailure !== undefined ? { notifyOnFailure: command.notifyOnFailure } : {}) });
       return toAutomationSummary(created, []);
     } catch (error) { if (error instanceof ControlPlaneError) throw error; throw new ControlPlaneError("BAD_REQUEST", "automation draft is invalid"); }
+  }
+  async updateNotificationPreferences(scope: OwnershipScope, automationId: string, command: UpdateNotificationPreferencesCommand): Promise<AutomationSummaryView> {
+    const id = requireToken(automationId, "automationId");
+    const automation = await this.dependencies.automations.get(scope, id);
+    if (!automation) throw new ControlPlaneError("NOT_FOUND", "automation not found");
+    if (automation.notifyOnSuccess === command.notifyOnSuccess && automation.notifyOnFailure === command.notifyOnFailure) {
+      return this.summaryFor(automation);
+    }
+    const updated: AutomationRecord = {
+      ...automation,
+      notifyOnSuccess: command.notifyOnSuccess,
+      notifyOnFailure: command.notifyOnFailure,
+      updatedAt: this.now().toISOString(),
+    };
+    try {
+      await this.dependencies.automations.put(updated);
+      return await this.summaryFor(updated);
+    } catch {
+      throw new ControlPlaneError("CONFLICT", "notification preferences could not be updated");
+    }
   }
   async beginCapture(scope: OwnershipScope, automationId: string): Promise<CaptureStartResult> {
     const id = requireToken(automationId, "automationId"); const automation = await this.dependencies.automations.get(scope, id);

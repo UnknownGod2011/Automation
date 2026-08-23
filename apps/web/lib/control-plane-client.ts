@@ -60,7 +60,8 @@ export type AutomationCommand =
   | "schedule"
   | "pause"
   | "resume"
-  | "disable";
+  | "disable"
+  | "notifications";
 
 export class WebControlPlaneClient {
   constructor(
@@ -195,6 +196,13 @@ export class WebControlPlaneClient {
     return this.request(`/v1/automations/${encodeURIComponent(automationId)}/capture-recording/cancel`, {
       method: "POST", body: "{}",
     });
+  }
+
+  async updateNotificationPreferences(
+    automationId: string,
+    preferences: { notifyOnSuccess: boolean; notifyOnFailure: boolean },
+  ): Promise<AutomationSummaryView> {
+    return this.command(automationId, "notifications", preferences);
   }
 
   async command<T>(automationId: string, command: AutomationCommand, body: unknown): Promise<T> {

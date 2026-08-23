@@ -8,50 +8,64 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end corre
 
 ## Incoming validation
 
-- Incoming PR #1 head: `5b36eb728e55b70439d961c1db50ea4eef10c992` (`Refresh automation draft lock snapshot`).
-- GitHub Actions CI #248 completed successfully on that exact head before this slice began.
+- Incoming PR #1 head: `5e162150f2233aea74b8bffd261bec2157aa6ac6` (`Refresh notification preference lock snapshot`).
+- GitHub Actions CI #250 completed successfully on that exact head before this slice began.
 - PR #1 remains open, draft, mergeable, and unmerged.
 - Deterministic pnpm lock verification, frozen installation, strict TypeScript/Next.js validation, production packaging, AWS release/deployment/demo/OIDC contracts, and the full test suite remain mandatory gates.
 
-## This slice — make notification preferences truthful in the product UX
+## This slice — editable per-automation notification preferences
 
-### Product contract mismatch closed
+### Product gap closed
 
-The create-automation form said the failure-notification checkbox controlled both ordinary failures and runs that need human attention. The provider-neutral reporting policy intentionally does something stricter: `WAITING_FOR_HUMAN` always notifies the owner, even when `notifyOnFailure` is disabled. Existing core regression coverage explicitly enforces that behavior so authentication repair or another required human action cannot silently sit unnoticed.
+Notification preferences were accepted only when the automation draft was created. After publication, a user could not change ordinary failure or success notifications without rebuilding the automation even though these flags are ordinary durable automation configuration. This was inconsistent with the long-lived scheduled product lifecycle.
 
-The UX now states the actual policy instead of implying that a user can disable attention notifications.
+The authenticated product now has a dedicated Notifications settings page. Users can change `notifyOnSuccess` and `notifyOnFailure` independently for each automation without changing workflow versions, schedules, Browser Profiles, run state, or execution authority.
 
-### Changes
+Human-attention notifications remain intentionally mandatory. `WAITING_FOR_HUMAN` reporting is not controlled by either optional flag, so authentication repair and other required owner action cannot be silently disabled.
 
-- Added a small shared web product-copy helper for notification preferences.
-- The failure checkbox now says only that it controls ordinary run failures.
-- The success checkbox continues to control optional completion notifications.
-- The create page now explicitly states that human-attention pauses always notify the owner.
-- Added a web regression test locking this distinction so future copy changes cannot silently contradict the reporting contract.
+### Provider-neutral control-plane changes
+
+- Added `UpdateNotificationPreferencesCommand` and `AutomationControlPlaneService.updateNotificationPreferences()`.
+- Updates resolve the automation through the authenticated tenant/user scope before mutation.
+- The full automation record is preserved; only the two optional notification flags and `updatedAt` change.
+- Exact same-value submissions are idempotent and avoid a DynamoDB write.
+- `POST /v1/automations/:automationId/notifications` requires both boolean fields and ignores any spoofed tenant/user fields in request JSON.
+- No new repository, table, queue, scheduler operation, browser/model invocation, retry layer, or recovery authority was introduced.
+
+### Authenticated Next.js UX
+
+- Added `/settings/notifications`, linked from authenticated primary navigation.
+- The page lists tenant-scoped automations and their current success/failure preferences using the existing sanitized dashboard response.
+- It shows the deployment notification capability (`CONFIGURED`, `LOCAL_MOCK`, or `NOT_CONFIGURED`) instead of pretending delivery is available.
+- The existing product copy explicitly states that human-attention pauses always notify the owner.
+- Added a same-origin server mutation route; browser form data contains only the automation path identity and the two preference booleans. Tenant/user ownership remains Cognito-derived.
 
 ### Security / tenant isolation / recovery
 
-- No ownership, recipient routing, Cognito identity, SES transport, execution, checkpoint, or recovery authority changed.
-- Human-attention notification remains mandatory and tenant/user scoped through the existing trusted notification resolver.
-- No provider error, browser state, credential, session identifier, or secret was added to the UI.
+- Cross-tenant updates fail at the existing scoped automation repository lookup before persistence.
+- Browser Profile references, capture/session identifiers, credentials, workload tokens, run variables, and provider/browser errors remain absent from the settings response and form.
+- Preference changes cannot start, retry, pause, resume, or otherwise mutate a workflow run.
+- Mandatory human-attention reporting remains unchanged and continues through the existing trusted recipient resolver.
 
 ### Idempotency / concurrency / retry / verification
 
-- Notification delivery semantics are unchanged: duplicate scheduled delivery remains suppressed by the existing run/idempotency authority and human-resume reporting remains limited to newly executed outcomes.
-- Browser/model retries, side-effect verification, automation locking, and human-resume claim/lease fencing are unchanged.
+- Same-value preference submissions are read-only after the scoped lookup and summary read.
+- A changed preference uses the existing automation-record read/modify/write pattern; there is no new cross-system transaction.
+- As with other automation-record mutations, two genuinely concurrent independent control-plane writes can race at the repository boundary. This slice does not introduce a new CAS/version field solely for preferences; the live deployment should determine whether broader optimistic-concurrency control is needed across automation settings.
+- Browser/model retries, side-effect verification, scheduling idempotency, automation locks, and human-resume claim/lease fencing are unchanged.
 
 ### Cost / observability
 
-- No AWS resource, SDK dependency, table, queue, browser session, model call, metric dimension, or retained GitHub Actions artifact was added.
-- This is a product-contract clarification only; it does not increase SES volume because the mandatory attention behavior already existed.
+- Same-value submissions avoid a DynamoDB write; changed settings require only the existing scoped automation read/write and summary reads.
+- No AWS resource, SDK dependency, retained GitHub Actions artifact, model token, Browser session, email send, or metric dimension was added.
+- Changing a preference does not itself send a notification.
 
 ### Validation
 
-- Added `apps/web/lib/notification-preferences.test.ts` covering the ordinary-failure opt-out versus mandatory attention distinction.
-- Normal product commit: `beec197ffe38cdde4a9f60aaa58a5a6de5de815b` (`Clarify mandatory human-attention notifications`).
-- GitHub Actions CI #249 stopped exclusively at the deterministic pnpm supply-chain gate before installation/type-check/tests. No package manifest changed; pnpm 10.15.0 regenerated the full graph from reviewed SHA `999e13c64e1f9a4b8cda605fea8aad510229afd66aef12bff45265e6286a53a6` to authoritative CI-generated SHA `b579875069c8d490511e20e887a8a0178eafe4bfcb93131e163e2a686b50413b`.
-- The AWS DynamoDB peer-alignment assertions remained intact. The single corrective commit updates only that reviewed lock fingerprint plus this progress record.
-- Exact-head GitHub Actions remains authoritative; this slice is not green until the corrective head completes CI successfully.
+- Added provider-neutral regressions for successful preference changes, exact replay/idempotency, cross-tenant isolation, required booleans, spoofed ownership suppression, preservation of server-only record fields, and sanitized summaries.
+- Added authenticated web-client routing coverage for encoded automation IDs, request-scoped bearer authorization, and the exact preference payload.
+- Normal product commit for this slice is published only after all changes in this section are batched atomically.
+- Exact-head GitHub Actions remains authoritative; do not consider the slice green until its PR-head CI run succeeds.
 
 ## Known production risks intentionally left visible
 
@@ -70,10 +84,10 @@ Run the protected real AWS deployment and controlled vertical demonstration usin
 
 1. deploy immutable artifacts and pass the live public/auth smoke;
 2. sign in through Cognito/Google and verify the trusted notification identity;
-3. configure BYOK;
+3. configure BYOK and confirm the new notification settings surface reflects deployed SES capability;
 4. create a bounded automation draft, complete Live View capture, compile from the server-owned latest capture, inspect, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
 5. publish with recurrence/timezone and any explicitly non-secret recurring inputs;
-6. observe Scheduler → SQS → Step Functions → AgentCore Runtime execution, verification, history, CloudWatch, and SES;
+6. observe Scheduler → SQS → Step Functions → AgentCore Runtime execution, verification, history, CloudWatch, and SES, then change success/failure preferences and verify subsequent delivery follows them while human-attention notification remains mandatory;
 7. deliberately expire target authentication, use bounded secure Live View repair, submit resume, and confirm the diagnostics page automatically follows the run through its terminal post-resume outcome.
 
 Further engineering should be driven primarily by concrete failures from that live path, not additional recovery micro-hardening.

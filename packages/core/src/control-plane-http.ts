@@ -9,6 +9,7 @@ import {
   type RotateCredentialCommand,
   type TestAutomationCommand,
   type UpdateAutomationScheduleCommand,
+  type UpdateNotificationPreferencesCommand,
 } from "./control-plane.js";
 
 export interface ControlPlaneHttpRequest { method: "GET" | "POST"; path: string; body?: unknown; }
@@ -17,6 +18,7 @@ export interface ControlPlaneHttpResponse { status: number; body: unknown; }
 function jsonObject(value: unknown): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new ControlPlaneError("BAD_REQUEST", "request body must be a JSON object"); return value as Record<string, unknown>; }
 function stringField(body: Record<string, unknown>, name: string): string { const value = body[name]; if (typeof value !== "string") throw new ControlPlaneError("BAD_REQUEST", `${name} must be a string`); return value; }
 function booleanField(body: Record<string, unknown>, name: string): boolean | undefined { const value = body[name]; if (value === undefined) return undefined; if (typeof value !== "boolean") throw new ControlPlaneError("BAD_REQUEST", `${name} must be a boolean`); return value; }
+function requiredBooleanField(body: Record<string, unknown>, name: string): boolean { const value = booleanField(body, name); if (value === undefined) throw new ControlPlaneError("BAD_REQUEST", `${name} is required`); return value; }
 function integerField(body: Record<string, unknown>, name: string): number { const value = body[name]; if (!Number.isInteger(value) || (value as number) < 1) throw new ControlPlaneError("BAD_REQUEST", `${name} must be a positive integer`); return value as number; }
 function priorityField(body: Record<string, unknown>): number { const value = body.priority; if (!Number.isInteger(value) || (value as number) < 0 || (value as number) > 10_000) throw new ControlPlaneError("BAD_REQUEST", "priority must be an integer between 0 and 10000"); return value as number; }
 function stringMapField(body: Record<string, unknown>, name: string): Readonly<Record<string, string>> | undefined {
@@ -66,6 +68,14 @@ export class AutomationControlPlaneHttpHandler {
       }
       const automationId = parts[2]; if (!automationId) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
       if (request.method === "GET" && parts.length === 3) return { status: 200, body: await this.service.getAutomation(context.scope, automationId) };
+      if (request.method === "POST" && parts[3] === "notifications" && parts.length === 4) {
+        const body = jsonObject(request.body);
+        const command: UpdateNotificationPreferencesCommand = {
+          notifyOnSuccess: requiredBooleanField(body, "notifyOnSuccess"),
+          notifyOnFailure: requiredBooleanField(body, "notifyOnFailure"),
+        };
+        return { status: 200, body: await this.service.updateNotificationPreferences(context.scope, automationId, command) };
+      }
       if (request.method === "POST" && parts[3] === "capture" && parts.length === 4) { const result = await this.service.beginCapture(context.scope, automationId); return result.kind === "READY" ? { status: 201, body: result } : { status: 503, body: result }; }
       if (request.method === "POST" && parts[3] === "capture-trace" && parts.length === 4) { const body = jsonObject(request.body); const trace = body.trace as CaptureTrace | undefined; if (!trace) throw new ControlPlaneError("BAD_REQUEST", "trace is required"); return { status: 202, body: await this.service.ingestCapture(context.scope, trace) }; }
       if (request.method === "POST" && parts[3] === "compile" && parts.length === 4) return { status: 200, body: await this.service.compileAutomation(context.scope, automationId) };
