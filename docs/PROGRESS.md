@@ -71,9 +71,25 @@ The safe workflow revision loop could change browser steps through Disable -> Ca
 - authenticated HTTP ownership takes precedence over forged tenant/user/status fields;
 - cross-tenant objective mutation remains `NOT_FOUND`.
 
+## CI #297 root cause and corrective dependency review
+
+The normal product head `a38dbe863099242b68e32cb3d8b5a410054e6eac` triggered GitHub Actions CI #297. pnpm `10.15.0` completed lockfile-only resolution and then the deterministic supply-chain gate stopped the run before dependency installation, type checking, packaging, or tests. No package manifest changed in this slice.
+
+The reviewed lock fingerprint changed from:
+
+`17c21e89f7aa6c41459972158807fa6ed47d7a5bb3f53dbb598f87dc85fa7b4f`
+
+to the exact CI-produced SHA-256:
+
+`93779e00f81343c50d61d1389227b3dc5fa39677b79900db4df9abc35ff0bff4`
+
+The corrective commit authenticates only that exact generated graph plus this progress record. The pinned pnpm version remains `10.15.0`; the explicit `@aws-sdk/client-dynamodb@3.1111.0` / `@aws-sdk/util-dynamodb@3.1103.0` peer-alignment assertions remain unchanged. The dependency gate is not bypassed or weakened.
+
 ## Validation status for this run
 
-The objective-revision implementation, authenticated HTTP/web wiring, regression coverage, and this progress record are accumulated as one coherent product slice. Intermediate staging commits are not opened as a PR and therefore do not trigger CI; the published branch will be squashed to one multi-file commit before review. GitHub Actions on that exact head is authoritative. No green claim is made until it exists.
+The objective-revision implementation, authenticated HTTP/web wiring, regression coverage, and progress record were published in the single normal multi-file commit `a38dbe863099242b68e32cb3d8b5a410054e6eac`.
+
+CI #297 failed exclusively at the reviewed lock-snapshot gate described above; it never reached installation or product-code validation. The one permitted corrective commit changes only the reviewed lock fingerprint plus this validation record. GitHub Actions on the exact corrective head is authoritative. No green claim is made until that run completes successfully.
 
 ## Known production risks intentionally left visible
 
