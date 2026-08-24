@@ -68,6 +68,7 @@ export type AutomationCommand =
   | "pause"
   | "resume"
   | "disable"
+  | "objective"
   | "notifications";
 
 export class WebControlPlaneClient {

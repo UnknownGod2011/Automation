@@ -1,3 +1,4 @@
+import { AUTOMATION_DRAFT_LIMITS, canUpdateAutomationObjective } from "@automation/core";
 import { NextResponse } from "next/server";
 import { createCaptureLiveViewHandoff } from "../../../../../../lib/capture-live-view-handoff";
 import { canCompileLatestCapture } from "../../../../../../lib/compile-readiness";
@@ -12,7 +13,7 @@ import { createAuthenticatedWebControlPlaneClient, WebAuthError } from "../../..
 
 function redirectBack(request: Request, automationId: string, notice: string): NextResponse { return NextResponse.redirect(new URL(`/automations/${encodeURIComponent(automationId)}?notice=${encodeURIComponent(notice)}`, request.url), 303); }
 function redirectInputs(request: Request, notice: string): NextResponse { return NextResponse.redirect(new URL(`/settings/inputs?notice=${encodeURIComponent(notice)}`, request.url), 303); }
-const COMMANDS = ["capture", "record-workflow", "finish-capture", "cancel-capture", "compile", "test", "publish", "schedule", "scheduled-inputs", "pause", "resume", "disable"] as const;
+const COMMANDS = ["capture", "record-workflow", "finish-capture", "cancel-capture", "compile", "test", "publish", "schedule", "scheduled-inputs", "pause", "resume", "disable", "objective"] as const;
 
 export async function POST(request: Request, context: { params: Promise<{ automationId: string; command: string }> }): Promise<Response> {
   if (!isSameOriginMutation(request.url, request.headers)) return new NextResponse("Forbidden", { status: 403 });
@@ -36,6 +37,21 @@ export async function POST(request: Request, context: { params: Promise<{ automa
     if (command === "finish-capture") {
       await client.finishCaptureRecording(automationId);
       return redirectBack(request, automationId, "capture-finishing");
+    }
+    if (command === "objective") {
+      const [automation, recording] = await Promise.all([
+        client.automation(automationId),
+        client.captureRecording(automationId),
+      ]);
+      if (!canUpdateAutomationObjective(automation.status) || recording.kind !== "NONE") {
+        return redirectBack(request, automationId, "invalid-input");
+      }
+      const objective = String(form.get("objective") ?? "");
+      if (!objective.trim() || objective.length > AUTOMATION_DRAFT_LIMITS.objective) {
+        return redirectBack(request, automationId, "invalid-input");
+      }
+      await client.command(automationId, "objective", { objective });
+      return redirectBack(request, automationId, "objective-updated");
     }
     if (command === "compile") {
       const automation = await client.automation(automationId);
