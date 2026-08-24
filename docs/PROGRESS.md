@@ -10,7 +10,9 @@ Recovery/crash machinery remains intentionally parked unless a real end-to-end d
 
 - `main` points to `741314d3362d6544a1615d8cb903e1cd8a683dfc` (`Keep compiled workflow graph server-side`).
 - That production content was validated on exact pre-merge PR head by GitHub Actions CI #292 before squash promotion.
-- No open production PR existed at the start of this slice.
+- PR #5 (`Keep capture recording identity server-side`) is the active production slice.
+- Normal head `7d354bf3466be98ff8b1949e7174c01f543d4276` contains the product/security change described below.
+- GitHub Actions CI #294 stopped before installation or code validation at the deterministic pnpm lock-snapshot gate.
 - Exact-head GitHub Actions remains authoritative; no pass is claimed until it exists.
 
 ## This product/security slice — keep capture recording identity server-side
@@ -49,16 +51,25 @@ That was unnecessary execution-control metadata. The authenticated user should c
 - No DynamoDB/S3/AgentCore/browser/model resource is added.
 - Existing cancel/restart UX and capture-readiness polling remain unchanged.
 
+## CI #294 root cause and corrective dependency review
+
+CI #294 completed pnpm 10.15.0 lockfile-only resolution, then the deterministic supply-chain gate detected upstream transitive drift before install, type-checking, packaging, or tests. No package manifest changed.
+
+The reviewed lock fingerprint changed from:
+
+`c87b71a17552dc8774acfd425cf7695f8e7ff644035c1f83f1dbf80282069753`
+
+to the exact CI-produced SHA-256:
+
+`17c21e89f7aa6c41459972158807fa6ed47d7a5bb3f53dbb598f87dc85fa7b4f`
+
+The corrective commit authenticates only that exact graph. The pinned pnpm version remains `10.15.0`, and the existing AWS SDK/DynamoDB peer-alignment assertions remain unchanged. The lock gate is not bypassed or weakened.
+
 ## Validation status for this run
 
-This run publishes one coherent multi-file commit containing:
+The normal commit contains the provider-neutral capture command/view narrowing, authenticated HTTP and Next.js client changes, regression coverage for server-owned capture identity and response redaction, and this progress record.
 
-- provider-neutral capture command/view narrowing;
-- authenticated HTTP and Next.js client changes;
-- regression coverage for server-owned capture identity and response redaction;
-- this progress update.
-
-GitHub Actions on the exact resulting head is authoritative. No green claim is made before the workflow completes successfully.
+After CI #294 root-cause inspection, the single permitted corrective commit updates only the reviewed deterministic lock fingerprint plus this validation record. GitHub Actions on the exact corrective head is authoritative. No green claim is made before the workflow completes successfully.
 
 ## Known production risks intentionally left visible
 
