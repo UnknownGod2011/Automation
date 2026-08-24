@@ -2,98 +2,58 @@
 
 ## Current production state
 
-The AWS-first cloud browser automation vertical is on `main`. The platform covers the end-to-end lifecycle defined in `docs/END_GOAL.md`: Cognito/optional Google sign-in, authenticated dashboard, replay-safe automation creation, AgentCore Browser/Profile capture, trusted durable traces, semantic workflow compilation/inspection, asynchronous AgentCore Fresh Test with OpenAI BYOK, tested-version publication, EventBridge Scheduler/SQS/Step Functions dispatch, deterministic browser execution with constrained semantic fallback, explicit effect verification, durable run history, SES/CloudWatch reporting, workflow revision, reusable non-secret scheduled inputs, and bounded human takeover/resume.
+The AWS-first cloud browser automation vertical is on `main`. The platform covers the end-to-end lifecycle in `docs/END_GOAL.md`: Cognito/optional Google sign-in, authenticated dashboard, replay-safe automation creation, AgentCore Browser/Profile capture, trusted durable traces, semantic workflow compilation/inspection, asynchronous AgentCore Fresh Test with OpenAI BYOK, tested-version publication, EventBridge Scheduler/SQS/Step Functions dispatch, deterministic browser execution with constrained semantic fallback, explicit effect verification, durable run history, SES/CloudWatch reporting, workflow revision, reusable non-secret scheduled inputs, and bounded human takeover/resume.
 
-Recovery/crash machinery remains intentionally parked unless a real end-to-end defect requires it. Product priority is the protected real AWS deployment and controlled vertical demonstration.
+Recovery/crash machinery remains intentionally parked unless a real end-to-end defect requires it. Product priority remains the protected real AWS deployment and controlled vertical demonstration.
 
 ## Incoming validation
 
-- `main` currently points to `1d08de6431568d81896eaf38d9569f5c04b52a46` (`Pin GitHub Actions dependencies immutably`).
-- PR #3 started from that validated production content.
-- Exact-head GitHub Actions remains authoritative for every branch change.
+- `main` currently points to `27ebb8d8596924cdbf8026da5fb20f6342b59bc6` (`Keep run diagnostic identities server-side`).
+- That content was validated on exact pre-merge PR head by GitHub Actions CI #288 before squash promotion. The connector has not surfaced a separate push-triggered `main` run for the squash SHA, so no post-merge CI claim is made here.
+- No pull request was open when this development run began.
+- Exact-head GitHub Actions remains authoritative for every new branch change.
 
-## This product/security slice — keep run diagnostic identities server-side
+## This product/security slice — keep the compiled executable workflow server-side
 
 ### Defect
 
-The rendered run-diagnostics page already hid internal workflow node IDs and raw evidence artifact references, but the authenticated JSON response still contained those identifiers. The first implementation removed them from `RunDetailView`, and CI #284 correctly exposed one remaining authority leak: the Next.js human-resume helper still depended on `currentNodeId`/checkpoint node IDs to choose `expectedNodeId` for the resume request.
+The product already exposes a dedicated sanitized semantic workflow-inspection view for users, but the authenticated `POST /v1/automations/:automationId/compile` transport still returned the complete executable `WorkflowGraph` after compilation. A direct authenticated caller could therefore receive internal workflow/node identities, deterministic execution structure, bindings, initial variables, and other implementation-level graph data even though the Next.js product immediately discarded that response and later used the sanitized inspection endpoint.
 
-That was not merely a stale test. If node identities are server-only, the web tier must not select the durable resume boundary at all.
+This was an unnecessary public transport seam, not required execution authority.
 
 ### Behavior
 
-- User-facing failure diagnostics expose only the classified failure code, retryability, and a bounded evidence count.
-- User-facing checkpoint diagnostics expose attempt count, repeated-state count, completed-step count, evidence count, last classified failure, and timestamp; internal node IDs and artifact references remain server-side.
-- Semantic workflow progress still provides human-readable step ordinal, kind, and objective when the immutable workflow is available.
-- Target-auth repair eligibility and explicit HUMAN continuation eligibility remain server-derived boolean UX hints.
-- The human-resume control-plane service now derives `expectedNodeId` exclusively from the latest authenticated durable checkpoint after validating run/checkpoint identity and agreement.
-- `POST /v1/automations/:automationId/runs/:runId/resume` no longer accepts node identity as request authority. Extra/spoofed `expectedNodeId`, tenant, user, resolution, or branch fields are ignored.
-- The Next.js resume route checks only the sanitized `humanResumeEligible` hint before submission; the provider-neutral control plane and AgentCore Runtime remain the final action authorities.
-- Target-auth takeover completion now calls the same three-argument server-authoritative resume API; it no longer forwards a paused-node identifier after profile repair.
-- The obsolete web node-resolution helper and its identifier-bearing fixtures are removed.
+- Compilation still resolves the latest trusted completed capture server-side and invokes the same provider-neutral lifecycle/compiler.
+- The authenticated compile transport now returns only `{ kind: "COMPILED", workflowVersion }`.
+- The executable `WorkflowGraph` remains server-side in the immutable workflow repository and continues to be used by Fresh Test, publication, scheduling, Runtime execution, and the sanitized workflow-inspection service.
+- The Next.js compile mutation already ignored the response body, so the user flow remains Capture -> Compile -> inspect semantic plan -> Fresh Test.
 
 ### Security / tenant isolation
 
-- Tenant/user ownership checks remain unchanged and occur before run/checkpoint state is returned or resume execution is submitted.
-- Raw browser/provider errors, workflow variables, page fingerprints, selectors, verification expectations, Browser Profile/session identifiers, BYOK material, workload tokens, evidence references, and chain-of-thought remain excluded from browser-visible diagnostics.
-- Browser/request/takeover-adjacent data can no longer choose the paused workflow node used for human resume.
-- AgentCore Runtime still revalidates durable run/checkpoint/workflow state before browser/model side effects.
+- Tenant/user ownership, capture-completion provenance, and authoring-state validation are unchanged and remain authoritative before compilation.
+- The compile response no longer exposes workflow IDs, node IDs, internal variable values, bindings, deterministic strategy details, Browser Profile references, capture trace IDs, or other executable-graph data.
+- This does not hide user-authored objective text from the owner; it narrows the transport to the minimum acknowledgement needed by the product.
+- The sanitized workflow-inspection endpoint remains the supported human-readable review surface.
 
 ### Idempotency / concurrency / retry / verification
 
-- Human-resolution claim IDs, execution leases, heartbeat fencing, immutable workflow pinning, retries, and verification remain unchanged.
-- The fixed server-owned resolution ID remains the at-least-once idempotency identity for authenticated explicit-HUMAN continuation.
-- A stale browser snapshot can at most submit a resume request; the control plane reloads durable state and fails closed if the run moved or checkpoint identity disagrees.
-- Target-auth takeover still validates the repair session against the same durable checkpoint before saving the profile, and the resume service reloads the authoritative checkpoint again before execution.
+- Compiler versioning, immutable workflow persistence, capture provenance, Fresh Test admission, Scheduler publication, execution leases, retries, and effect verification are unchanged.
+- No additional retry or recovery state machine is introduced.
+- The known compile partial-write limitation remains: if immutable workflow storage succeeds but the automation-state write definitely fails, a later retry can create another workflow version from the same capture. This slice does not broaden that uncommon cross-store recovery surface.
 
 ### Cost / observability / user recovery
 
-- No new DynamoDB/S3/AgentCore/model request is added. The resume route already loaded the run detail for eligibility, and the resume/takeover services already load durable run/checkpoint state before execution.
-- Existing CloudWatch/SES reporting is unchanged.
-- Human takeover/resume UX remains available while less execution-control metadata crosses the web boundary.
+- No additional DynamoDB, S3, AgentCore, browser, model, queue, or Scheduler operation is added.
+- The response is smaller, reducing unnecessary authenticated API payload size.
+- Existing CloudWatch/SES and human takeover/resume behavior is unchanged.
 
 ### Regression coverage
 
-Tests prove:
-
-- semantic progress remains available while internal node/artifact identities are absent from run-detail responses;
-- failure/checkpoint evidence is represented only by bounded counts;
-- target-auth repair eligibility is derived server-side without exposing paused-node identity;
-- human resume derives the expected node from durable checkpoint state;
-- forged HTTP `expectedNodeId`/tenant/user/resolution fields cannot select the resume boundary;
-- mismatched durable run/checkpoint nodes fail before execution;
-- cross-tenant/cross-automation access remains `NOT_FOUND`;
-- malformed/unbounded durable evidence state still fails closed;
-- target-auth repair continues to save the repaired Browser Profile and invoke the same idempotent resume authority without passing node selection into the public resume API;
-- the authenticated web client submits an empty resume command body and cannot choose the paused node.
-
-### CI #284 root cause and corrective action
-
-CI #284 on `716fb6bd30199b5cecbccc219d036d428b5f7ae9` passed deterministic lock verification and frozen installation, then failed `pnpm check` in `apps/web` because `run-resume-state.ts` and its tests still referenced the intentionally removed `RunDetailView.currentNodeId` / `RunCheckpointView.currentNodeId` fields. Packaging and tests were correctly skipped.
-
-The corrective change moves resume-node selection into the trusted provider-neutral control-plane service rather than restoring those identifiers to the sanitized API. No type or CI check is weakened.
-
-### CI #285 root cause and follow-up correction
-
-CI #285 on `989200bd1958a12205377feaa0f75acb318e3829` passed deterministic lock verification and frozen installation, then failed `pnpm check` at `packages/core/src/human-takeover.ts` because `HumanTakeoverService.finish()` still called the removed four-argument resume signature with browser-adjacent `expectedNodeId` authority.
-
-The follow-up correction keeps the same server-authoritative design: takeover still validates run/checkpoint/node agreement before saving the repaired Browser Profile, then invokes `HumanResumeControlPlaneService.resume(scope, automationId, runId)`. The resume service independently reloads and validates the durable checkpoint before submitting execution. No node identifier is restored to the web/API contract and no check is weakened.
-
-### CI #286 dependency-review root cause and corrective action
-
-CI #286 on `c60a846083054aa5f6d04c5568c02e088c1acefc` stopped before installation or code validation at the deterministic pnpm supply-chain gate. No package manifest changed. pnpm `10.15.0` re-resolved upstream transitive dependencies and produced the authoritative lock SHA-256 `c87b71a17552dc8774acfd425cf7695f8e7ff644035c1f83f1dbf80282069753` instead of the previously reviewed `0fba2807...` snapshot.
-
-The single corrective commit updates only the reviewed lock fingerprint plus this progress record. The existing AWS SDK/DynamoDB peer-alignment assertions remain unchanged; the gate is not bypassed or weakened.
-
-### CI #287 root cause and correction
-
-CI #287 on `e74aa276d9c54ce52835349384c827935d67a92e` passed deterministic lock verification and frozen installation, then exposed one stale web regression test. `apps/web/lib/human-resume-client.test.ts` still called `resumeRun(automationId, runId, expectedNodeId)` and expected `{ expectedNodeId }` in the authenticated POST body even though production intentionally changed the contract to `resumeRun(automationId, runId)` with an empty JSON body.
-
-The correction changes only that obsolete test expectation. It explicitly proves that the web client sends no paused-node authority; durable node selection remains inside the provider-neutral control plane. No production behavior, type safety, or CI gate is weakened.
+A dedicated control-plane HTTP regression proves that a successful compile returns only the bounded acknowledgement and does not serialize the internal workflow ID, node ID, compiled initial variable, trace identity, or Browser Profile reference.
 
 ### Validation status
 
-Exact-head GitHub Actions on the stale-test correction is authoritative. No pass is claimed until that workflow completes successfully.
+This run will publish at most one normal batched Git-data commit containing the transport change, regression coverage, and this progress update. GitHub Actions on that exact head is authoritative; no pass is claimed before it exists.
 
 ## Known production risks intentionally left visible
 
@@ -108,13 +68,13 @@ Exact-head GitHub Actions on the stale-test correction is authoritative. No pass
 
 ## Next product milestone
 
-After exact-head CI is green, run the protected real AWS vertical demonstration from `main`:
+After exact-head CI is green, deliberately promote the reviewed slice and run the protected real AWS vertical demonstration from `main`:
 
 1. deploy immutable artifacts and pass live public/auth smoke;
 2. sign in through Cognito/Google and configure an OpenAI BYOK credential;
 3. create an automation and exercise replay-safe creation under request uncertainty;
 4. capture a real workflow through AgentCore Live View and trusted worker completion;
-5. compile, inspect, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
+5. compile it, verify only the sanitized semantic inspection is user-visible, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
 6. publish with server-owned tested-workflow selection, recurrence/timezone, and any explicitly non-secret recurring inputs;
 7. verify Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution, effect verification, sanitized diagnostics/history, CloudWatch, and SES;
 8. deliberately expire target authentication, repair through the hardened Live View handoff, save the repaired Browser Profile, resume, and follow the terminal result.
