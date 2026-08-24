@@ -17,6 +17,7 @@ import {
 export interface ControlPlaneHttpRequest { method: "GET" | "POST"; path: string; body?: unknown; }
 export interface AuthenticatedControlPlaneContext { scope: OwnershipScope; }
 export interface ControlPlaneHttpResponse { status: number; body: unknown; }
+export interface CompileAutomationHttpView { kind: "COMPILED"; workflowVersion: number; }
 function jsonObject(value: unknown): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new ControlPlaneError("BAD_REQUEST", "request body must be a JSON object"); return value as Record<string, unknown>; }
 function stringField(body: Record<string, unknown>, name: string): string { const value = body[name]; if (typeof value !== "string") throw new ControlPlaneError("BAD_REQUEST", `${name} must be a string`); return value; }
 function booleanField(body: Record<string, unknown>, name: string): boolean | undefined { const value = body[name]; if (value === undefined) return undefined; if (typeof value !== "boolean") throw new ControlPlaneError("BAD_REQUEST", `${name} must be a boolean`); return value; }
@@ -107,7 +108,11 @@ export class AutomationControlPlaneHttpHandler {
         return { status: 200, body: await this.service.updateScheduledInputValues(context.scope, automationId, command) };
       }
       if (request.method === "POST" && parts[3] === "capture" && parts.length === 4) { const result = await this.service.beginCapture(context.scope, automationId); return result.kind === "READY" ? { status: 201, body: result } : { status: 503, body: result }; }
-      if (request.method === "POST" && parts[3] === "compile" && parts.length === 4) return { status: 200, body: await this.service.compileAutomation(context.scope, automationId) };
+      if (request.method === "POST" && parts[3] === "compile" && parts.length === 4) {
+        const graph = await this.service.compileAutomation(context.scope, automationId);
+        const body: CompileAutomationHttpView = { kind: "COMPILED", workflowVersion: graph.version };
+        return { status: 200, body };
+      }
       if (request.method === "POST" && parts[3] === "test" && parts.length === 4) {
         const body = jsonObject(request.body); const runtimeVariables = body.runtimeVariables;
         if (runtimeVariables !== undefined && (!runtimeVariables || typeof runtimeVariables !== "object" || Array.isArray(runtimeVariables))) throw new ControlPlaneError("BAD_REQUEST", "runtimeVariables must be a JSON object");
