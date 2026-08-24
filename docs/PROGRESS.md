@@ -2,73 +2,67 @@
 
 ## Current production state
 
-The platform implements the AWS-first product lifecycle defined in `docs/END_GOAL.md`: Cognito/optional Google sign-in, authenticated dashboard, replay-safe automation creation, AgentCore Browser/Profile capture, durable trusted traces, semantic workflow compilation/inspection, asynchronous AgentCore Fresh Test with OpenAI BYOK, tested-version publish, EventBridge Scheduler/SQS/Step Functions dispatch, deterministic browser execution with constrained semantic fallback, explicit effect verification, durable run history, SES/CloudWatch reporting, workflow revision, non-secret scheduled inputs, and bounded human takeover/resume.
+The platform implements the AWS-first lifecycle defined in `docs/END_GOAL.md`: Cognito/optional Google sign-in, authenticated dashboard, replay-safe automation creation, AgentCore Browser/Profile capture, trusted durable traces, semantic workflow compilation/inspection, asynchronous AgentCore Fresh Test with OpenAI BYOK, tested-version publish, EventBridge Scheduler/SQS/Step Functions dispatch, deterministic browser execution with constrained semantic fallback, explicit effect verification, durable run history, SES/CloudWatch reporting, workflow revision, reusable non-secret scheduled inputs, and bounded human takeover/resume.
 
 Recovery/crash machinery remains intentionally parked unless an end-to-end defect requires it. Product priority is review/promotion followed by the protected real AWS deployment and vertical demonstration.
 
-## Incoming validation and CI root cause
+## Incoming validation
 
-- Incoming PR #1 head for this run: `52ed8ba82cdf3a5f1403faae04f425f30ba1de65` (`Keep Fresh Test run identity server-owned`).
-- GitHub Actions CI #276 completed successfully on that exact incoming head.
-- Normal product commit `cf9b3eab7ca78671f08320f525f4da9b08eb3954` (`Keep Publish workflow version server-owned`) passed deterministic lock verification, frozen install, strict `pnpm check`, all three production package builds, and every AWS hosting/federation/release/deployment/demo/live-smoke/OIDC contract in CI #277.
-- CI #277 failed only in the final core test suite: 299 core tests passed and one legacy request-validation test failed because the new Publish handler consulted Fresh Test history before validating the supplied schedule. The malformed schedule therefore returned `409 CONFLICT` for missing Fresh Test provenance instead of the established `400 BAD_REQUEST` schedule-shape response.
-- The new publish-authority regression suite itself passed in CI #277.
-- The corrective change preserves the product invariant while restoring request-validation ordering: the schedule is parsed and validated first, then trusted Fresh Test provenance is resolved, then publication is attempted.
-- Exact-head GitHub Actions remains authoritative for the corrective head; no pass is claimed until a completed successful run exists for it.
+- Incoming PR #1 head: `61ae496a930fde5bbc015e7ebbd67e08682a6158` (`Validate publish schedule before provenance`).
+- GitHub Actions CI #278 completed successfully on that exact head.
+- PR #1 is open, ready for review, mergeable, and unmerged.
+- Exact-head GitHub Actions remains authoritative for the change below; no pass is claimed until a completed successful workflow exists for the new commit.
 
-## This product slice — keep Publish workflow version server-owned at the authenticated API boundary
+## This product slice — replay-safe BYOK credential creation in the authenticated web product
 
-### Product/security defect
+### Product/correctness defect
 
-The Next.js product had already stopped asking the user to choose a workflow version during approval/publish, but the ordinary authenticated control-plane HTTP route still parsed `workflowVersion` from request JSON and forwarded it as publication authority.
+The Create Automation flow already preserves one server-generated creation attempt across uncertain HTTP outcomes, but Add Credential did not. The credentials route generated a fresh UUID on every POST. If the secure credential write committed but the web request result was lost, the user-facing retry created a new credential identity and could allocate a second AgentCore Identity credential provider/secret instead of converging on the first operation.
 
-The core publish lifecycle already validates `READY_TO_PUBLISH` and rejects a workflow version that is not the latest immutable tested version, so this was not a direct bypass. However, the end-user API should not let the caller choose an internal workflow-version identity when durable successful Fresh Test history determines the legitimate publication candidate.
+This is a product-path idempotency and cloud-cost defect, not a recovery-subsystem problem.
 
 ### Behavior
 
-- `POST /v1/automations/:automationId/publish` no longer parses caller-supplied `workflowVersion` as authority.
-- The authenticated HTTP boundary resolves run history under the trusted tenant/user scope and selects the highest workflow version whose run is both `SUCCEEDED` and classified `FRESH_TEST`.
-- Successful scheduled runs and failed Fresh Tests cannot authorize publication.
-- Caller-supplied `workflowVersion`, tenant ID, and user ID have no publication authority.
-- If there is no successful Fresh Test in durable history, Publish returns sanitized `409 CONFLICT` before `publishAutomation()` is invoked.
-- Malformed schedule input is still rejected as `400 BAD_REQUEST` before the history read or any Scheduler-backed mutation.
-- `AutomationControlPlaneService.publishAutomation()` and the provider-neutral lifecycle still accept explicit workflow versions for trusted internal/local composition. This slice narrows only the authenticated end-user HTTP transport.
-- The lifecycle remains the final authority for `READY_TO_PUBLISH`, latest immutable workflow version, scheduled-input requirements, and scheduler activation. A race that changes workflow state after history resolution still fails closed at that final gate.
+- The credentials page now creates one UUIDv4 credential-creation attempt and posts it as a hidden idempotency identity.
+- Request failure, sign-in recovery, and temporary `NOT_CONFIGURED` redirects preserve that same attempt identity.
+- Raw API keys are never preserved in query strings or rendered back into the page; the user must re-enter the key after an uncertain request.
+- A retry uses the same credential ID instead of minting another cloud credential identity.
+- If the control plane reports `409 CONFLICT`, the web server performs a sanitized credential-list read and accepts the result as an exact replay only when credential ID, provider, label, and priority still match the original create intent.
+- A conflict with different non-secret metadata remains a failure and does not overwrite the existing secret.
+- Replay never reads or compares the stored API key because raw provider secrets are intentionally non-retrievable. Existing secret state remains authoritative; changing a key continues to require the explicit Rotate action.
+- The page now explains an uncertain request and instructs the user to re-enter the key while retaining the same safe creation attempt.
 
 ### Security / tenant isolation
 
-- Run-history lookup uses authenticated scope; request-body ownership fields cannot influence the selected tested version.
-- Browser Profile/session identifiers, capture trace IDs, selectors, runtime variables, BYOK keys, AgentCore workload tokens, and provider/browser error text remain outside publish request authority.
-- Removing caller control over workflow version reduces authenticated action authority without changing provider-neutral workflow contracts.
+- The creation-attempt ID is not an ownership credential or secret reference. Tenant/user authority remains derived from the authenticated Cognito session and revalidated by the control plane/vault boundary.
+- Raw API keys remain confined to the authenticated POST and secure AgentCore Identity/vault path; they are not stored in page state, query parameters, logs, workflow metadata, run state, or ordinary DynamoDB tables.
+- Replay comparison uses only already-sanitized credential metadata.
+- A different key submitted under the same already-created identity is never silently used to overwrite the existing secret; explicit rotation remains the only supported replacement path.
 
 ### Idempotency / concurrency / retry / timeout
 
-- Publication idempotency and schedule mutation ordering remain owned by the existing lifecycle/Scheduler adapter.
-- A concurrent recompile or Fresh Test between history resolution and publish cannot make an older version silently publish because the lifecycle revalidates durable automation state and the latest workflow version.
-- No retry loop, queue, lease, outbox, heartbeat, or recovery subsystem is introduced.
+- Ordinary repeated web submissions after an uncertain result converge on one credential identity.
+- Existing provider-neutral credential creation still rejects an already-present credential before another vault write; the web layer classifies only an exact sanitized-metadata match as successful replay.
+- Simultaneous first submissions can still race at the existing credential metadata/vault boundary. The stable credential identity materially reduces duplicate-resource risk, while storage/vault atomicity remains an adapter concern and is not expanded into another recovery subsystem here.
+- No new retry loop, lease, queue, outbox, background task, or timeout layer is introduced.
 
-### Side-effect verification / recovery
+### Cost / observability / recovery
 
-- This change performs no browser/model work and does not alter workflow effect verification, checkpoints, scheduled-run idempotency, human takeover/resume, or crash reconciliation.
-- It only tightens which tested workflow identity the authenticated publication transport may request.
-
-### Cost / observability
-
-- A structurally valid Publish request performs the existing sanitized run-history read before Scheduler-backed publication. No Browser/model compute is added.
-- Structurally invalid schedules stop before the history read; valid requests without successful Fresh Test provenance stop before Scheduler mutation.
-- No AWS resource, IAM permission, dependency, storage schema, metric dimension, or retained GitHub Actions artifact is added.
+- The normal path adds no AWS request. Only the conflict/replay path performs one existing sanitized credential-list read.
+- Reusing the same credential identity prevents a user retry from intentionally creating another managed secret/provider after a lost acknowledgement.
+- No Browser, model, Scheduler, Step Functions, SES, or CloudWatch behavior changes.
+- Human takeover/resume and crash reconciliation are untouched.
 
 ### Regression coverage
 
-The focused provider-neutral publish-authority suite proves:
+A new web helper suite proves:
 
-- caller-supplied workflow version cannot override a lower successful Fresh Test version;
-- a numerically higher successful scheduled run cannot authorize publication;
-- a failed newer Fresh Test cannot authorize publication;
-- spoofed tenant/user fields cannot influence trusted scope;
-- durable history with no successful Fresh Test returns `409 CONFLICT` and makes zero publish calls.
+- valid UUIDv4 creation identities normalize and malformed identities fail closed;
+- invalid UUID generators fail closed;
+- replay succeeds only for an exact non-secret metadata match;
+- changed label, priority, or credential identity is not classified as replay.
 
-Existing request-boundary coverage additionally proves malformed schedules return `400 BAD_REQUEST` before publish. CI #277 exposed that ordering regression and the corrective commit restores it without weakening either gate.
+The production Next.js build remains part of `pnpm check`, so page/route integration is validated by exact-head CI in addition to the helper tests.
 
 ## Known production risks intentionally left visible
 
@@ -77,7 +71,8 @@ Existing request-boundary coverage additionally proves malformed schedules retur
 - Live Cognito/Google/SES/AgentCore behavior is structurally tested with fakes and deployment contracts but still needs the controlled real environment demonstration.
 - Only OpenAI has a concrete production BYOK reasoning adapter today.
 - DynamoDB and EventBridge Scheduler cannot be mutated atomically; lifecycle ordering is fail-closed but operational reconciliation may still be required after a real partial infrastructure failure.
-- If a Browser Profile is created and metadata definitely never commits, an abandoned creation attempt can leave one retry-stable orphan profile. Blind deletion remains unsafe when write outcome is ambiguous; cleanup should be driven by live cost evidence.
+- A Browser Profile from an abandoned automation-creation attempt can remain orphaned when metadata definitely never committed; cleanup must not guess under ambiguous persistence.
+- Credential vault + metadata creation is not a cross-service transaction. This slice makes user retry identity stable and non-overwriting, but a real live failure between vault and metadata writes should be observed before adding any broader reconciliation mechanism.
 - Recurring secret typed workflow inputs remain unsupported by design and require vault-backed references if live product demand proves them necessary.
 - Recovery crash-reconciliation remains conservative and intentionally does not manufacture proof about ambiguous external side effects.
 
@@ -86,13 +81,13 @@ Existing request-boundary coverage additionally proves malformed schedules retur
 After exact-head CI is green, deliberately promote the reviewed PR to the trusted deployment branch and run the protected real AWS vertical demonstration:
 
 1. deploy immutable artifacts and pass live public/auth smoke;
-2. sign in through Cognito/Google and configure a usable OpenAI BYOK credential;
-3. verify the same automation-creation attempt converges after an intentionally uncertain/repeated submission without a second Browser Profile;
-4. capture a real workflow through AgentCore Live View and verify only the trusted worker completion path can make it compile-ready;
-5. finish capture, compile, inspect the semantic plan, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
-6. attempt to forge both Fresh Test run ID and Publish workflow version through the authenticated API and confirm neither can choose the durable identity;
-7. exercise `capture`, `cloudExecution`, and `scheduling` `NOT_CONFIGURED` states and confirm each causes zero corresponding cloud work;
-8. publish with recurrence/timezone and any explicitly non-secret recurring inputs, then verify Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution plus effect verification/history/CloudWatch/SES;
+2. sign in through Cognito/Google and configure an OpenAI BYOK credential;
+3. deliberately repeat the same credential-creation attempt after request uncertainty and confirm only one credential identity/provider exists;
+4. verify the same automation-creation attempt converges after an uncertain/repeated submission without a second Browser Profile;
+5. capture a real workflow through AgentCore Live View and verify only the trusted worker completion path can make it compile-ready;
+6. compile, inspect, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
+7. publish with server-owned tested-workflow selection, recurrence/timezone, and any explicitly non-secret recurring inputs;
+8. verify Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution plus effect verification/history/CloudWatch/SES;
 9. deliberately expire target authentication, repair through the hardened Live View handoff, save the repaired Browser Profile, resume, and follow the terminal result.
 
 Further engineering should be driven primarily by concrete failures from that live path, not additional recovery micro-hardening.

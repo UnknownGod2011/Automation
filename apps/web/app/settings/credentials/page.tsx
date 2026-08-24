@@ -1,4 +1,9 @@
+import { randomUUID } from "node:crypto";
 import Link from "next/link";
+import {
+  credentialCreationId,
+  newCredentialCreationId,
+} from "../../../lib/credential-creation-idempotency";
 import { WEB_BYOK_PROVIDER_OPTIONS } from "../../../lib/credential-form";
 import {
   createAuthenticatedWebControlPlaneClient,
@@ -9,7 +14,11 @@ import { WebControlPlaneError } from "../../../lib/control-plane-client";
 
 export const dynamic = "force-dynamic";
 
-export default async function CredentialSettingsPage() {
+export default async function CredentialSettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ notice?: string; creationAttempt?: string }>;
+}) {
   const auth = await getWebAuthStatus();
   if (auth.kind === "NOT_CONFIGURED") {
     return (
@@ -55,6 +64,9 @@ export default async function CredentialSettingsPage() {
     throw error;
   }
 
+  const { notice, creationAttempt } = await searchParams;
+  const credentialCreationRequestId = credentialCreationId(creationAttempt) ?? newCredentialCreationId(randomUUID);
+
   return (
     <div className="stack">
       <section className="hero compact">
@@ -74,8 +86,12 @@ export default async function CredentialSettingsPage() {
           <h2>Add credential</h2>
           <p className="muted">This AWS-first deployment currently executes BYOK reasoning with OpenAI. Additional provider adapters must be implemented and deployed before they appear here.</p>
         </div>
+        {notice === "request-failed" ? <div className="notice">The request result was uncertain. Re-enter the key and retry; this page will reuse the same credential creation attempt instead of creating a second credential.</div> : null}
+        {notice === "not-configured" ? <div className="notice">Credential management is not configured on this deployment.</div> : null}
+        {notice === "credential-added" ? <div className="notice">Credential stored securely.</div> : null}
         <form className="stack" action="/api/ui/credentials" method="post">
           <input type="hidden" name="action" value="create" />
+          <input type="hidden" name="creationRequestId" value={credentialCreationRequestId} />
           <label className="stack">
             <span>Provider</span>
             <select required name="provider" defaultValue={WEB_BYOK_PROVIDER_OPTIONS[0].value}>

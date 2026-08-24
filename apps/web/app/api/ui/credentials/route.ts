@@ -1,5 +1,8 @@
-import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
+import {
+  credentialCreationId,
+  matchesCredentialCreateReplay,
+} from "../../../../lib/credential-creation-idempotency";
 import { parseWebByokProvider } from "../../../../lib/credential-form";
 import { WebControlPlaneError } from "../../../../lib/control-plane-client";
 import { isSameOriginMutation } from "../../../../lib/mutation-security";
@@ -8,9 +11,11 @@ import {
   WebAuthError,
 } from "../../../../lib/server-auth";
 
-function redirect(request: Request, notice: string): NextResponse {
+function redirect(request: Request, notice: string, creationAttempt?: string): NextResponse {
+  const params = new URLSearchParams({ notice });
+  if (creationAttempt) params.set("creationAttempt", creationAttempt);
   return NextResponse.redirect(
-    new URL(`/settings/credentials?notice=${encodeURIComponent(notice)}`, request.url),
+    new URL(`/settings/credentials?${params.toString()}`, request.url),
     303,
   );
 }
@@ -26,6 +31,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const form = await request.formData();
   const action = text(form, "action");
+  const creationAttempt = credentialCreationId(form.get("creationRequestId"));
   try {
     const client = await createAuthenticatedWebControlPlaneClient();
     if (action === "create") {
@@ -34,6 +40,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       const apiKey = String(form.get("apiKey") ?? "");
       const priority = Number(text(form, "priority"));
       if (
+        !creationAttempt ||
         !provider ||
         !maskedLabel ||
         !apiKey ||
@@ -41,15 +48,21 @@ export async function POST(request: Request): Promise<NextResponse> {
         priority < 0 ||
         priority > 10_000
       ) {
-        return redirect(request, "invalid-credential");
+        return redirect(request, "invalid-credential", creationAttempt ?? undefined);
       }
-      await client.createCredential({
-        credentialId: randomUUID(),
+      const intent = {
+        credentialId: creationAttempt,
         provider,
-        apiKey,
         maskedLabel,
         priority,
-      });
+      };
+      try {
+        await client.createCredential({ ...intent, apiKey });
+      } catch (error) {
+        if (!(error instanceof WebControlPlaneError) || error.code !== "CONFLICT") throw error;
+        const existing = (await client.credentials()).find((credential) => credential.credentialId === creationAttempt);
+        if (!existing || !matchesCredentialCreateReplay(existing, intent)) throw error;
+      }
       return redirect(request, "credential-added");
     }
 
@@ -68,14 +81,17 @@ export async function POST(request: Request): Promise<NextResponse> {
     return redirect(request, "invalid-action");
   } catch (error) {
     if (error instanceof WebAuthError) {
+      const returnTo = creationAttempt
+        ? `/settings/credentials?creationAttempt=${encodeURIComponent(creationAttempt)}`
+        : "/settings/credentials";
       return NextResponse.redirect(
-        new URL("/api/auth/sign-in?returnTo=/settings/credentials", request.url),
+        new URL(`/api/auth/sign-in?returnTo=${encodeURIComponent(returnTo)}`, request.url),
         303,
       );
     }
     if (error instanceof WebControlPlaneError && error.code === "NOT_CONFIGURED") {
-      return redirect(request, "not-configured");
+      return redirect(request, "not-configured", creationAttempt ?? undefined);
     }
-    return redirect(request, "request-failed");
+    return redirect(request, "request-failed", creationAttempt ?? undefined);
   }
 }
