@@ -115,9 +115,9 @@ export class AutomationControlPlaneHttpHandler {
         return { status: 200, body: await this.service.runFreshTest(context.scope, automationId, command) };
       }
       if (request.method === "POST" && parts[3] === "publish" && parts.length === 4) {
-        const body = jsonObject(request.body); const scheduledNonSecretInputs = stringMapField(body, "scheduledNonSecretInputs"); const scheduledInputsAreNonSecret = booleanField(body, "scheduledInputsAreNonSecret");
+        const body = jsonObject(request.body); const schedule = scheduleField(body.schedule); const scheduledNonSecretInputs = stringMapField(body, "scheduledNonSecretInputs"); const scheduledInputsAreNonSecret = booleanField(body, "scheduledInputsAreNonSecret");
         const workflowVersion = latestSuccessfulFreshTestWorkflowVersion(await this.service.history(context.scope, automationId));
-        const command: PublishAutomationCommand = { workflowVersion, schedule: scheduleField(body.schedule), ...(scheduledNonSecretInputs !== undefined ? { scheduledNonSecretInputs } : {}), ...(scheduledInputsAreNonSecret !== undefined ? { scheduledInputsAreNonSecret } : {}) };
+        const command: PublishAutomationCommand = { workflowVersion, schedule, ...(scheduledNonSecretInputs !== undefined ? { scheduledNonSecretInputs } : {}), ...(scheduledInputsAreNonSecret !== undefined ? { scheduledInputsAreNonSecret } : {}) };
         return { status: 200, body: await this.service.publishAutomation(context.scope, automationId, command) };
       }
       if (request.method === "POST" && parts[3] === "schedule" && parts.length === 4) { const body = jsonObject(request.body); const command: UpdateAutomationScheduleCommand = { schedule: scheduleField(body.schedule) }; return { status: 200, body: await this.service.updateAutomationSchedule(context.scope, automationId, command) }; }
