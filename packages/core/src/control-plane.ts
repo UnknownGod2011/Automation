@@ -353,7 +353,13 @@ export class AutomationControlPlaneService {
     catch (error) { if (error instanceof ControlPlaneError) throw error; throw new ControlPlaneError("CONFLICT", `automation could not be ${operation}d`); }
   }
   async history(scope: OwnershipScope, automationId: string): Promise<readonly RunSummaryView[]> {
-    try { const runs = await this.dependencies.lifecycle.history(scope, requireToken(automationId, "automationId")); return runs.map(toRunSummary); }
-    catch { throw new ControlPlaneError("NOT_FOUND", "automation not found"); }
+    const id = requireToken(automationId, "automationId");
+    await this.requireOwnedAutomation(scope, id);
+    try {
+      const runs = await this.dependencies.runs.listForAutomation(scope, id);
+      return runs.map(toRunSummary);
+    } catch {
+      throw new ControlPlaneError("CONFLICT", "run history is temporarily unavailable");
+    }
   }
 }
