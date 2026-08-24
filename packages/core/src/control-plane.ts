@@ -17,6 +17,7 @@ import type {
   FreshTestRunResult,
   PublishAutomationRequest,
 } from "./product-lifecycle.js";
+import { normalizeAutomationTargetUrl } from "./target-url-policy.js";
 
 export const CONTROL_PLANE_CAPABILITY_STATES = ["CONFIGURED", "LOCAL_MOCK", "NOT_CONFIGURED"] as const;
 export type ControlPlaneCapabilityState = (typeof CONTROL_PLANE_CAPABILITY_STATES)[number];
@@ -77,6 +78,16 @@ const MAX_SCHEDULED_INPUTS = 64;
 const MAX_SCHEDULED_INPUT_VALUE_CHARS = 4_096;
 const MAX_SCHEDULED_INPUT_TOTAL_CHARS = 32_768;
 function requireToken(value: string, name: string): string { const trimmed = value.trim(); if (!trimmed) throw new ControlPlaneError("BAD_REQUEST", `${name} is required`); if (trimmed.length > 160) throw new ControlPlaneError("BAD_REQUEST", `${name} is too long`); return trimmed; }
+function matchesCreateReplay(record: AutomationRecord, command: CreateAutomationCommand): boolean {
+  if (command.consentAcknowledged !== true) return false;
+  try {
+    return record.name === command.name.trim()
+      && record.websiteUrl === normalizeAutomationTargetUrl(command.websiteUrl.trim())
+      && record.prompt === command.objective.trim();
+  } catch {
+    return false;
+  }
+}
 function classifyRunKind(run: RunRecord): NonNullable<RunSummaryView["runKind"]> { return run.occurrenceKey === `${run.automationId}:test:${run.runId}` ? "FRESH_TEST" : "SCHEDULED"; }
 function toRunSummary(run: RunRecord): RunSummaryView {
   return { runId: run.runId, automationId: run.automationId, workflowVersion: run.workflowVersion, status: run.status, scheduledAt: run.scheduledAt,
@@ -176,7 +187,11 @@ export class AutomationControlPlaneService {
   }
   async createAutomation(scope: OwnershipScope, command: CreateAutomationCommand): Promise<AutomationSummaryView> {
     const automationId = requireToken(command.automationId, "automationId");
-    if (await this.dependencies.automations.get(scope, automationId)) throw new ControlPlaneError("CONFLICT", "automation already exists");
+    const existing = await this.dependencies.automations.get(scope, automationId);
+    if (existing) {
+      if (!matchesCreateReplay(existing, command)) throw new ControlPlaneError("CONFLICT", "automation already exists");
+      return this.summaryFor(existing);
+    }
     try {
       const created = await this.dependencies.lifecycle.createDraft({ scope, automationId, name: command.name, websiteUrl: command.websiteUrl, objective: command.objective, consentAcknowledged: command.consentAcknowledged,
         ...(command.notifyOnSuccess !== undefined ? { notifyOnSuccess: command.notifyOnSuccess } : {}), ...(command.notifyOnFailure !== undefined ? { notifyOnFailure: command.notifyOnFailure } : {}) });
