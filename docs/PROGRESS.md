@@ -8,59 +8,56 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end corre
 
 ## Incoming validation
 
-- Incoming PR #1 head: `57f2373f75060a73911af753aa763875de1125f7` (`Gate cloud Fresh Test before Runtime invocation`).
-- GitHub Actions CI #268 passed completely on that exact head.
+- Incoming PR #1 head: `7456348acde590bbbb0751acecda81552c327533` (`Fail closed when Fresh Test is not configured`).
+- GitHub Actions CI #269 passed completely on that exact head.
 - PR #1 is open, ready for review, mergeable, and unmerged.
 - Exact-head GitHub Actions remains authoritative for this new slice; no pass is claimed until the new commit receives a completed successful run.
 
-## This product slice — make Fresh Test capability state fail closed
+## This product slice — make Capture capability state fail closed
 
 ### Product/correctness defect and correction
 
-`ControlPlaneCapabilities.cloudExecution` has three explicit states: `CONFIGURED`, `LOCAL_MOCK`, and `NOT_CONFIGURED`. `AutomationControlPlaneService.runFreshTest()` correctly used the trusted AgentCore execution port for `CONFIGURED`, but every other state fell through to the in-process lifecycle implementation. As a result, `NOT_CONFIGURED` silently behaved like `LOCAL_MOCK`.
+`ControlPlaneCapabilities.capture` is an explicit deployment/product state, but `AutomationControlPlaneService.beginCapture()` previously ignored it and always called `CaptureSessionStarter.start()` after ownership lookup. The concrete production starter normally returns `NOT_CONFIGURED` when its own AWS composition is absent, but the declared capability itself was not authoritative. An accidental or stale composition could therefore advertise capture as unavailable while still allocating AgentCore Browser compute and issuing a Live View capability.
 
-That violates the repository's deployment contract: missing cloud execution configuration must remain an explicit product state and must never fabricate success or silently start a different browser/model execution path. In production composition this could also make behavior depend on whichever lifecycle implementation happened to be injected instead of the declared capability state.
+Capture admission now mirrors the explicit Fresh Test capability discipline:
 
-Fresh Test dispatch now treats the three capability states distinctly:
+- ownership and automation existence are checked first under the trusted tenant/user scope;
+- `capture = NOT_CONFIGURED` returns a stable `NOT_CONFIGURED` result before the capture starter is called;
+- `capture = CONFIGURED` and `capture = LOCAL_MOCK` continue through the existing `CaptureSessionStarter` port;
+- the existing HTTP route maps the fail-closed result to 503 without browser/session allocation.
 
-- `CONFIGURED` -> use the trusted `FreshTestExecutionPort` and keep AgentCore Runtime authoritative;
-- `LOCAL_MOCK` -> use the deterministic in-process lifecycle used by local product tests;
-- `NOT_CONFIGURED` -> return a sanitized `NOT_CONFIGURED` error before either execution path starts.
-
-The existing automation ownership/lifecycle admission still runs first. Runtime remains independently authoritative after a configured cloud submission.
+The starter remains independently responsible for lifecycle state, active-capture concurrency, Browser Profile ownership, Live View safety, and AWS-specific configuration after admission.
 
 ### Security / tenant isolation
 
-- Tenant/user ownership remains derived from trusted `OwnershipScope` and is checked before capability dispatch.
-- `NOT_CONFIGURED` does not expose Browser Profile references, BYOK references/keys, workload tokens, runtime identities, or provider/browser errors.
-- The HTTP boundary maps the error to a stable 503 response without invoking local or cloud execution.
-- No permission boundary or client-controlled capability flag was added.
+- Cross-tenant or missing automation requests still resolve to `NOT_FOUND` before capability state is revealed.
+- A `NOT_CONFIGURED` request cannot allocate an AgentCore Browser session or create/sign a Live View URL.
+- No Browser Profile reference, capture session ID, signed Live View capability, BYOK secret, workload token, or provider/browser error is introduced into the unavailable response.
+- Capability state remains deployment-owned rather than client-controlled.
 
 ### Idempotency / concurrency / retry / timeout
 
-- Fresh Test run IDs, occurrence idempotency, automation locking, and asynchronous AgentCore execution are unchanged.
-- `NOT_CONFIGURED` now creates no run and starts no execution path, so there is nothing new to retry or reconcile.
-- No queue, outbox, lease, heartbeat, or recovery state was added.
+- Existing capture-current-pointer conditional claims and duplicate-active-capture fencing are unchanged.
+- `NOT_CONFIGURED` creates no capture session and has no retry/reconciliation state.
+- No new queue, lease, outbox, retry loop, heartbeat, or recovery subsystem was added.
 
 ### Side-effect verification / recovery
 
-- Deterministic browser execution, constrained semantic fallback, expected-effect verification, checkpoint persistence, Browser Profile persistence, and human takeover/resume are unchanged.
-- This change only narrows dispatch authority; it cannot authorize a browser/model side effect.
+- Workflow capture contracts, compiler verification requirements, deterministic execution, semantic fallback, and human recovery are unchanged.
+- This change only suppresses capture-side effects when deployment capability is explicitly unavailable.
 
 ### Cost / observability
 
-- A `NOT_CONFIGURED` Fresh Test now stops before AgentCore Browser/model cost and before local mock execution.
-- `LOCAL_MOCK` remains available for deterministic no-credential product tests.
-- No AWS resource, IAM permission, dependency, metric dimension, storage schema, or retained GitHub Actions artifact was added.
+- Misconfigured/unavailable deployments now stop before AgentCore Browser/Live View cost.
+- No AWS resource, IAM permission, dependency, storage schema, metric dimension, or retained GitHub Actions artifact was added.
 
 ### Regression coverage
 
 New provider-neutral tests prove:
 
-- `NOT_CONFIGURED` rejects a test-ready automation without calling the local lifecycle;
-- `NOT_CONFIGURED` also does not call a supplied cloud execution port;
-- the HTTP API returns sanitized 503 `NOT_CONFIGURED` for that state;
-- `LOCAL_MOCK` still uses the in-process lifecycle and never calls the cloud execution port.
+- `NOT_CONFIGURED` returns a stable unavailable result and makes zero `CaptureSessionStarter.start()` calls;
+- the HTTP boundary returns 503 without starting capture;
+- both `CONFIGURED` and `LOCAL_MOCK` still call the configured capture starter and preserve the existing ready result.
 
 ## Known production risks intentionally left visible
 
@@ -82,7 +79,7 @@ Run the protected real AWS deployment and controlled vertical demonstration afte
 
 1. deploy immutable artifacts and pass the live public/auth smoke;
 2. sign in through Cognito/Google, verify the trusted notification identity, and configure a usable OpenAI BYOK credential;
-3. create one automation and complete Live View capture;
+3. explicitly exercise `capture = NOT_CONFIGURED` and confirm no AgentCore Browser/Live View work starts, then enable capture and complete one real Live View demonstration;
 4. compile and inspect the semantic plan, then run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
 5. deliberately exercise both invalid lifecycle state and `NOT_CONFIGURED` Fresh Test capability and confirm no local or AgentCore execution work starts;
 6. publish with recurrence/timezone and explicitly non-secret recurring inputs, then verify Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution and inspect verification/history/CloudWatch/SES;
