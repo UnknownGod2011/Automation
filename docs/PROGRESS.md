@@ -9,58 +9,69 @@ Recovery/crash machinery remains intentionally parked unless a real end-to-end d
 ## Incoming validation
 
 - `main` currently points to `1d08de6431568d81896eaf38d9569f5c04b52a46` (`Pin GitHub Actions dependencies immutably`).
-- That content was reviewed and validated on its pre-merge branch before promotion; exact-head GitHub Actions remains authoritative for any new branch change.
-- No post-merge `main` CI pass is claimed here unless GitHub surfaces a completed run for the exact merge SHA.
+- PR #3 started from that validated production content.
+- Exact-head GitHub Actions remains authoritative for every branch change.
 
 ## This product/security slice — keep run diagnostic identities server-side
 
 ### Defect
 
-The rendered run-diagnostics page already hid internal workflow node IDs and raw evidence artifact references, but `RunDetailView` still serialized those identifiers into the authenticated JSON response. A browser therefore received `currentNodeId`, `completedNodeIds`, failure `nodeId`, and raw evidence-reference strings even though the product had no user-facing need for them.
+The rendered run-diagnostics page already hid internal workflow node IDs and raw evidence artifact references, but the authenticated JSON response still contained those identifiers. The first implementation removed them from `RunDetailView`, and CI #284 correctly exposed one remaining authority leak: the Next.js human-resume helper still depended on `currentNodeId`/checkpoint node IDs to choose `expectedNodeId` for the resume request.
 
-That contradicted the documented sanitized diagnostics boundary and unnecessarily widened durable graph/artifact metadata exposure.
+That was not merely a stale test. If node identities are server-only, the web tier must not select the durable resume boundary at all.
 
 ### Behavior
 
-- User-facing failure diagnostics now expose only the classified failure code, retryability, and a bounded evidence count.
+- User-facing failure diagnostics expose only the classified failure code, retryability, and a bounded evidence count.
 - User-facing checkpoint diagnostics expose attempt count, repeated-state count, completed-step count, evidence count, last classified failure, and timestamp; internal node IDs and artifact references remain server-side.
 - Semantic workflow progress still provides human-readable step ordinal, kind, and objective when the immutable workflow is available.
-- Target-auth repair eligibility is now derived inside the provider-neutral control plane and returned as a boolean UX hint, so the Next.js page no longer needs paused-node IDs or failure-node IDs to decide whether to show the repair action.
-- Explicit HUMAN continuation eligibility remains a server-derived boolean and runtime validation remains the final execution authority.
-- The run page no longer renders the opaque durable run ID as its title; the route still addresses the correct authenticated run internally.
+- Target-auth repair eligibility and explicit HUMAN continuation eligibility remain server-derived boolean UX hints.
+- The human-resume control-plane service now derives `expectedNodeId` exclusively from the latest authenticated durable checkpoint after validating run/checkpoint identity and agreement.
+- `POST /v1/automations/:automationId/runs/:runId/resume` no longer accepts node identity as request authority. Extra/spoofed `expectedNodeId`, tenant, user, resolution, or branch fields are ignored.
+- The Next.js resume route checks only the sanitized `humanResumeEligible` hint before submission; the provider-neutral control plane and AgentCore Runtime remain the final action authorities.
+- The obsolete web node-resolution helper and its identifier-bearing fixtures are removed.
 
 ### Security / tenant isolation
 
-- Tenant/user ownership checks remain unchanged and occur before run/checkpoint data is returned.
-- Raw browser/provider error messages, workflow variables, page fingerprints, selectors, verification expectations, Browser Profile/session identifiers, BYOK material, workload tokens, and chain-of-thought remain excluded.
-- Evidence references are still validated for bounded/corrupt durable state but are converted to counts before crossing the authenticated API boundary.
-- No signed artifact URL or evidence content is introduced in this slice.
+- Tenant/user ownership checks remain unchanged and occur before run/checkpoint state is returned or resume execution is submitted.
+- Raw browser/provider errors, workflow variables, page fingerprints, selectors, verification expectations, Browser Profile/session identifiers, BYOK material, workload tokens, evidence references, and chain-of-thought remain excluded from browser-visible diagnostics.
+- Browser/request data can no longer choose the paused workflow node used for human resume.
+- AgentCore Runtime still revalidates durable run/checkpoint/workflow state before browser/model side effects.
 
 ### Idempotency / concurrency / retry / verification
 
-- This is a read-only projection change. Run identity, workflow version pinning, checkpoint authority, locks, retries, verification, Scheduler delivery, human-resolution claims, resume leases, and recovery reconciliation are unchanged.
-- Target-auth repair remains fail-closed because the Runtime revalidates the durable run/checkpoint/node before any Browser side effect; the new boolean is only a presentation hint.
+- Human-resolution claim IDs, execution leases, heartbeat fencing, immutable workflow pinning, retries, and verification remain unchanged.
+- The fixed server-owned resolution ID remains the at-least-once idempotency identity for authenticated explicit-HUMAN continuation.
+- A stale browser snapshot can at most submit a resume request; the control plane reloads durable state and fails closed if the run moved or checkpoint identity disagrees.
 
 ### Cost / observability / user recovery
 
-- No additional DynamoDB/S3/AgentCore/model request is added. The same run, checkpoint, and optional workflow reads are performed.
+- No new DynamoDB/S3/AgentCore/model request is added. The resume route already loaded the run detail for eligibility, and the resume service already loaded run/checkpoint state before execution.
 - Existing CloudWatch/SES reporting is unchanged.
-- Human takeover/resume remains available, but the browser receives less internal control-plane metadata while presenting the same safe repair UX.
+- Human takeover/resume UX remains available while less execution-control metadata crosses the web boundary.
 
 ### Regression coverage
 
-Tests now prove:
+Tests prove:
 
-- semantic progress remains available while internal node/artifact identities are absent from the returned run-detail object;
+- semantic progress remains available while internal node/artifact identities are absent from run-detail responses;
 - failure/checkpoint evidence is represented only by bounded counts;
-- target-auth repair eligibility is derived server-side without exposing the paused node identity;
-- malformed/unbounded durable evidence references still fail closed;
+- target-auth repair eligibility is derived server-side without exposing paused-node identity;
+- human resume derives the expected node from durable checkpoint state;
+- forged HTTP `expectedNodeId`/tenant/user/resolution fields cannot select the resume boundary;
+- mismatched durable run/checkpoint nodes fail before execution;
 - cross-tenant/cross-automation access remains `NOT_FOUND`;
-- workflow-store outages preserve basic diagnostics while semantic/HUMAN eligibility fails closed.
+- malformed/unbounded durable evidence state still fails closed.
+
+### CI #284 root cause and corrective action
+
+CI #284 on `716fb6bd30199b5cecbccc219d036d428b5f7ae9` passed deterministic lock verification and frozen installation, then failed `pnpm check` in `apps/web` because `run-resume-state.ts` and its tests still referenced the intentionally removed `RunDetailView.currentNodeId` / `RunCheckpointView.currentNodeId` fields. Packaging and tests were correctly skipped.
+
+The corrective change moves resume-node selection into the trusted provider-neutral control-plane service rather than restoring those identifiers to the sanitized API. No type or CI check is weakened.
 
 ### Validation status
 
-Exact-head GitHub Actions is authoritative. No pass is claimed for this slice until the PR workflow completes successfully on the exact commit.
+The corrective exact-head GitHub Actions run is authoritative. No pass is claimed until it completes successfully on the corrective commit.
 
 ## Known production risks intentionally left visible
 

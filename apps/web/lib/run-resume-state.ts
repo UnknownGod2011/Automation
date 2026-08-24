@@ -1,13 +1,10 @@
 import type { RunDetailView } from "@automation/core";
 
 /**
- * Resolves the paused node exclusively from the latest authenticated server-side
- * run detail. Browser form fields never choose the durable resume boundary.
+ * Presentation-only check for whether the authenticated run detail advertises an
+ * explicit HUMAN continuation. Durable paused-node selection remains exclusively
+ * inside the provider-neutral control-plane resume service.
  */
-export function serverResolvedHumanResumeNode(run: RunDetailView): string | null {
-  if (!run.humanResumeEligible) return null;
-  const runNodeId = run.currentNodeId;
-  const checkpointNodeId = run.checkpoint?.currentNodeId;
-  if (runNodeId && checkpointNodeId && runNodeId !== checkpointNodeId) return null;
-  return checkpointNodeId ?? runNodeId ?? null;
+export function serverAllowsHumanResume(run: RunDetailView): boolean {
+  return run.status === "WAITING_FOR_HUMAN" && run.humanResumeEligible;
 }
