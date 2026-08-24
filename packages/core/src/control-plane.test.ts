@@ -283,7 +283,7 @@ describe("AutomationControlPlaneService", () => {
       kind: "NOT_CONFIGURED",
       reason: "AgentCore capture is not configured",
     });
-    expect(captureSessions.start).toHaveBeenCalledWith(owner, expect.objectContaining({ automationId: "auto-1" }));
+    expect(captureSessions.start).not.toHaveBeenCalled();
   });
 
   it("rejects duplicate automation identifiers before lifecycle side effects", async () => {
