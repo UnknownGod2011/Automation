@@ -3,11 +3,10 @@ import type { AutomationRecord, RunRecord } from "@automation/contracts";
 import { InMemoryCaptureSessionStore } from "./capture-completion.js";
 import {
   AutomationControlPlaneService,
-  AutomationControlPlaneHttpHandler,
   type AutomationLifecyclePort,
   type CaptureSessionStarter,
 } from "./control-plane.js";
-import { ControlPlaneError } from "./control-plane.js";
+import { AutomationControlPlaneHttpHandler } from "./control-plane-http.js";
 import { InMemoryAutomationRepository, InMemoryRunRepository } from "./memory.js";
 import type { OwnershipScope, RunRepository } from "./index.js";
 

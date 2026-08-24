@@ -54,7 +54,10 @@ Recovery/crash machinery remains intentionally parked unless the real vertical e
 
 ## Validation status
 
-This implementation, regression coverage, and progress record are batched into one normal multi-file Git-data commit. GitHub Actions on the exact PR head is authoritative. No green claim is made until that workflow completes successfully.
+- Normal head `fac870e3276a020ebcfa0a893e1dc42369f7843d` triggered CI #303.
+- CI #303 passed deterministic lock verification and frozen installation, then failed at strict `pnpm check` on one new regression-test import: `AutomationControlPlaneHttpHandler` was imported from `./control-plane.js` instead of its real `./control-plane-http.js` module.
+- Production code was not implicated; packaging and tests were correctly skipped after the type-check failure.
+- The single corrective commit changes only that test integration import plus this validation record. Exact-head GitHub Actions on the corrective head remains authoritative; no green claim is made until it completes successfully.
 
 ## Known production risks intentionally left visible
 
