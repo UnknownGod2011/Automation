@@ -11,7 +11,7 @@ Recovery/crash machinery remains intentionally parked unless a real end-to-end d
 - `main` currently points to `c4e3964e2b8e6060b477b7fb60742fd5d0b3765c`.
 - The exact pre-merge PR content was validated by GitHub Actions CI #279 before squash promotion.
 - CI is configured to run again on direct pushes to `main`; no post-merge CI pass is claimed here unless GitHub surfaces a completed run for the exact merge SHA.
-- Exact-head GitHub Actions remains authoritative for the change below.
+- Exact-head GitHub Actions remains authoritative for this branch.
 
 ## This production slice — immutable GitHub Action dependencies
 
@@ -42,10 +42,16 @@ That is especially material in the protected AWS deployment workflow: the config
 - No application dependency, AWS resource, IAM permission, queue, database, browser session, or model call is added.
 - Future Action upgrades become explicit repository changes that must pass normal review and exact-head CI.
 
+### CI #281 root cause and corrective action
+
+The first branch run, CI #281 on `f8f61584016b1c6b52fb7d56f869b15c932b4ee4`, proved all three pinned setup Actions downloaded and executed successfully. CI then stopped at the existing deterministic pnpm supply-chain gate before install/type-check/tests because pnpm 10.15.0 re-resolved the full transitive graph from the reviewed `b5798750...` snapshot to `0fba280799d129e79b92a9acd01d2545c2133ada6f0e29baa7d4bc3a13c8983f`.
+
+No package manifest changed in this slice. The lock mismatch is the same fail-closed review boundary already documented by the repository; the existing DynamoDB/AWS SDK peer-alignment assertions remain intact. The single corrective commit therefore updates only the reviewed lock fingerprint plus this progress record. No workflow check is weakened or skipped.
+
 ### Validation status
 
-- The change is being published as one coherent branch commit and must not be called green until GitHub Actions completes successfully on that exact SHA.
-- If CI fails, the failure must be root-caused before any corrective commit; checks must not be weakened.
+- CI #281: red only at deterministic lock verification; installation, type-checking, packaging, contract tests, and unit tests were correctly skipped.
+- Corrective exact-head CI is authoritative; no pass is claimed until GitHub Actions completes successfully on that SHA.
 
 ## Known production risks intentionally left visible
 
