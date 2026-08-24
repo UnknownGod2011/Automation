@@ -7,6 +7,7 @@ import {
   type CreateCredentialCommand,
   type PublishAutomationCommand,
   type RotateCredentialCommand,
+  type RunSummaryView,
   type TestAutomationCommand,
   type UpdateAutomationScheduleCommand,
   type UpdateNotificationPreferencesCommand,
@@ -20,7 +21,6 @@ function jsonObject(value: unknown): Record<string, unknown> { if (!value || typ
 function stringField(body: Record<string, unknown>, name: string): string { const value = body[name]; if (typeof value !== "string") throw new ControlPlaneError("BAD_REQUEST", `${name} must be a string`); return value; }
 function booleanField(body: Record<string, unknown>, name: string): boolean | undefined { const value = body[name]; if (value === undefined) return undefined; if (typeof value !== "boolean") throw new ControlPlaneError("BAD_REQUEST", `${name} must be a boolean`); return value; }
 function requiredBooleanField(body: Record<string, unknown>, name: string): boolean { const value = booleanField(body, name); if (value === undefined) throw new ControlPlaneError("BAD_REQUEST", `${name} is required`); return value; }
-function integerField(body: Record<string, unknown>, name: string): number { const value = body[name]; if (!Number.isInteger(value) || (value as number) < 1) throw new ControlPlaneError("BAD_REQUEST", `${name} must be a positive integer`); return value as number; }
 function priorityField(body: Record<string, unknown>): number { const value = body.priority; if (!Number.isInteger(value) || (value as number) < 0 || (value as number) > 10_000) throw new ControlPlaneError("BAD_REQUEST", "priority must be an integer between 0 and 10000"); return value as number; }
 function stringMapField(body: Record<string, unknown>, name: string): Readonly<Record<string, string>> | undefined {
   const value = body[name]; if (value === undefined) return undefined;
@@ -46,6 +46,15 @@ function generatedFreshTestRunId(factory: () => string): string {
     throw new ControlPlaneError("CONFLICT", "fresh-test run identity could not be generated");
   }
   return runId;
+}
+function latestSuccessfulFreshTestWorkflowVersion(runs: readonly RunSummaryView[]): number {
+  const workflowVersion = runs
+    .filter((run) => run.status === "SUCCEEDED" && run.runKind === "FRESH_TEST" && Number.isInteger(run.workflowVersion) && run.workflowVersion > 0)
+    .reduce<number | undefined>((latest, run) => latest === undefined || run.workflowVersion > latest ? run.workflowVersion : latest, undefined);
+  if (workflowVersion === undefined) {
+    throw new ControlPlaneError("CONFLICT", "a successful fresh test is required before publication");
+  }
+  return workflowVersion;
 }
 
 export class AutomationControlPlaneHttpHandler {
@@ -107,7 +116,8 @@ export class AutomationControlPlaneHttpHandler {
       }
       if (request.method === "POST" && parts[3] === "publish" && parts.length === 4) {
         const body = jsonObject(request.body); const scheduledNonSecretInputs = stringMapField(body, "scheduledNonSecretInputs"); const scheduledInputsAreNonSecret = booleanField(body, "scheduledInputsAreNonSecret");
-        const command: PublishAutomationCommand = { workflowVersion: integerField(body, "workflowVersion"), schedule: scheduleField(body.schedule), ...(scheduledNonSecretInputs !== undefined ? { scheduledNonSecretInputs } : {}), ...(scheduledInputsAreNonSecret !== undefined ? { scheduledInputsAreNonSecret } : {}) };
+        const workflowVersion = latestSuccessfulFreshTestWorkflowVersion(await this.service.history(context.scope, automationId));
+        const command: PublishAutomationCommand = { workflowVersion, schedule: scheduleField(body.schedule), ...(scheduledNonSecretInputs !== undefined ? { scheduledNonSecretInputs } : {}), ...(scheduledInputsAreNonSecret !== undefined ? { scheduledInputsAreNonSecret } : {}) };
         return { status: 200, body: await this.service.publishAutomation(context.scope, automationId, command) };
       }
       if (request.method === "POST" && parts[3] === "schedule" && parts.length === 4) { const body = jsonObject(request.body); const command: UpdateAutomationScheduleCommand = { schedule: scheduleField(body.schedule) }; return { status: 200, body: await this.service.updateAutomationSchedule(context.scope, automationId, command) }; }

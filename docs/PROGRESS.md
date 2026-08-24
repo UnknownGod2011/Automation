@@ -8,60 +8,61 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end defec
 
 ## Incoming validation
 
-- Incoming PR #1 head for this run: `49fb49aa54076a94318968c9d81517b814ff791a` (`Keep capture traces behind trusted worker boundary`).
-- GitHub Actions CI #275 completed successfully on that exact head: deterministic lock verification, frozen install, strict `pnpm check`, all production package builds, AWS hosting/federation/release/deployment/demo/live-smoke/OIDC contracts, and the full test suite passed.
+- Incoming PR #1 head for this run: `52ed8ba82cdf3a5f1403faae04f425f30ba1de65` (`Keep Fresh Test run identity server-owned`).
+- GitHub Actions CI #276 completed successfully on that exact head: deterministic lock verification, frozen install, strict `pnpm check`, all production package builds, AWS hosting/federation/release/deployment/demo/live-smoke/OIDC contracts, and the full test suite passed.
 - PR #1 is open, ready for review, mergeable, and unmerged.
-- Exact-head GitHub Actions remains authoritative for the Fresh Test identity change below; no pass is claimed until a completed successful run exists for the new commit.
+- Exact-head GitHub Actions remains authoritative for the publish-authority change below; no pass is claimed until a completed successful run exists for the new commit.
 
-## This product slice — keep Fresh Test run identity server-owned at the authenticated API boundary
+## This product slice — keep Publish workflow version server-owned at the authenticated API boundary
 
 ### Product/security defect
 
-The Next.js product stopped asking users for Fresh Test run IDs earlier, but the ordinary authenticated control-plane HTTP route still parsed `runId` from request JSON and forwarded it as the durable Fresh Test/idempotency identity.
+The Next.js product had already stopped asking the user to choose a workflow version during approval/publish, but the ordinary authenticated control-plane HTTP route still parsed `workflowVersion` from request JSON and forwarded it as publication authority.
 
-A normal Cognito-authenticated caller could therefore choose an internal run identity directly, including attempting collisions with another intentional Fresh Test for the same automation. Tenant ownership and execution admission still prevented cross-tenant execution, but durable run identity should not be caller authority in the end-user API at all.
+The core publish lifecycle still validates `READY_TO_PUBLISH` and rejects a workflow version that is not the latest immutable tested version, so this was not a direct bypass. However, an end-user API should not let the caller choose an internal workflow-version identity when the durable successful Fresh Test history already determines the only legitimate publication candidate.
 
 ### Behavior
 
-- `AutomationControlPlaneHttpHandler` now mints a bounded `test-...` run identity itself for every accepted authenticated Fresh Test submission.
-- A request-body `runId` is ignored and has no execution authority.
-- The authenticated HTTP request no longer requires a run ID; runtime variables remain the only Fresh Test execution data accepted from that body.
-- The provider-neutral `AutomationControlPlaneService.runFreshTest()` contract still accepts an explicit run ID for trusted internal/local composition. This slice narrows only the end-user HTTP transport boundary.
-- The generated run ID is returned only through the existing accepted/run result, where it is required for durable history/polling correlation.
-- Generated identities are format-bounded and an invalid server-side identity factory fails closed before Fresh Test submission.
+- `POST /v1/automations/:automationId/publish` no longer parses caller-supplied `workflowVersion` as authority.
+- The authenticated HTTP boundary resolves run history under the trusted tenant/user scope and selects the highest workflow version whose run is both `SUCCEEDED` and classified `FRESH_TEST`.
+- Successful scheduled runs and failed Fresh Tests cannot authorize publication.
+- A caller-supplied `workflowVersion`, tenant ID, or user ID is ignored for publication authority.
+- If there is no successful Fresh Test in durable history, Publish returns sanitized `409 CONFLICT` before `publishAutomation()` is invoked.
+- `AutomationControlPlaneService.publishAutomation()` and the provider-neutral lifecycle still accept an explicit workflow version for trusted internal/local composition. This slice narrows only the ordinary end-user HTTP transport.
+- The existing lifecycle remains the final authority for `READY_TO_PUBLISH`, latest immutable workflow version, scheduled-input requirements, and scheduler activation. A race that changes workflow state after history resolution still fails closed at that final gate.
 
 ### Security / tenant isolation
 
-- Tenant/user ownership continues to come exclusively from authenticated context; spoofed body ownership fields have no authority.
-- A client can no longer manufacture the durable Fresh Test occurrence identity used by downstream idempotency/run state.
-- Runtime variables remain subject to the existing product-level closed `capture_input_N` requirement set and execution-plane validation.
-- BYOK keys, AgentCore workload tokens, Browser Profile/session identifiers, selectors, raw provider/browser errors, and capture trace identities remain outside this request authority.
+- Run-history lookup uses the authenticated scope; request-body ownership fields cannot influence the selected tested version.
+- Browser Profile/session identifiers, capture trace IDs, selectors, runtime variables, BYOK keys, AgentCore workload tokens, and provider/browser error text remain outside the publish request authority.
+- Removing caller control over workflow version reduces the authenticated action-authority surface without changing the provider-neutral workflow representation.
 
 ### Idempotency / concurrency / retry / timeout
 
-- The existing durable Fresh Test occurrence key and automation execution lease remain the cross-process duplicate/concurrency authority after submission.
-- This change does not add an HTTP retry key. A genuinely repeated user submission is still a distinct intentional Fresh Test, while the UI suppresses a second test during an active run and the durable automation lease provides the final overlap fence.
-- Asynchronous AgentCore execution remains unchanged: the control plane receives the accepted server-generated run ID promptly and durable run/checkpoint state remains authoritative for completion.
-- No retry loop, outbox, lease, queue, heartbeat, or crash-recovery subsystem is added.
+- Publication idempotency and schedule mutation ordering remain owned by the existing lifecycle/Scheduler adapter.
+- A concurrent recompile or new Fresh Test between history resolution and publish cannot make an older version silently publish: the lifecycle revalidates durable automation state and latest workflow version.
+- No new retry loop, queue, lease, outbox, heartbeat, or recovery subsystem is introduced.
 
 ### Side-effect verification / recovery
 
-- Browser execution, semantic fallback, expected-effect verification, profile-save-before-success, checkpoints, human takeover/resume, and crash reconciliation are unchanged.
-- The change only removes end-user authority over the Fresh Test run identity that reaches those existing execution controls.
+- This change does not execute browser/model work and does not alter workflow effect verification, checkpoints, scheduled-run idempotency, human takeover/resume, or crash reconciliation.
+- It only tightens which tested workflow identity the authenticated publication transport may request.
 
 ### Cost / observability
 
-- No additional AWS request, Browser session, model invocation, database operation, metric dimension, IAM permission, dependency, or retained GitHub Actions artifact is added.
-- Invalid server-generated identities stop before AgentCore/local Fresh Test execution submission, avoiding execution-plane cost.
-- Existing run IDs remain available as bounded internal correlation identifiers in durable history/telemetry; raw caller-supplied values no longer enter that namespace through this API.
+- Publish now performs the already-existing sanitized run-history read before the scheduler-backed publication call. This is bounded to the automation's existing run history and creates no Browser/model compute.
+- Invalid publish attempts without a successful Fresh Test stop before Scheduler mutation.
+- No AWS resource, IAM permission, dependency, storage schema, metric dimension, or retained GitHub Actions artifact is added.
 
 ### Regression coverage
 
-Provider-neutral HTTP tests prove:
+A new focused provider-neutral HTTP suite proves:
 
-- a caller-supplied `runId` and spoofed tenant/user values cannot alter the server-generated Fresh Test command;
-- an authenticated Fresh Test request with no `runId` is accepted and receives the server-minted identity;
-- malformed server-side identity generation returns sanitized `CONFLICT` and makes zero Fresh Test submission calls.
+- a caller-supplied workflow version cannot override a lower successful Fresh Test version;
+- a numerically higher successful scheduled run cannot authorize publication;
+- a failed newer Fresh Test cannot authorize publication;
+- spoofed tenant/user fields cannot influence the trusted scope;
+- durable history with no successful Fresh Test returns `409 CONFLICT` and makes zero publish calls.
 
 ## Known production risks intentionally left visible
 
@@ -82,9 +83,10 @@ After exact-head CI is green, deliberately promote the reviewed PR to the truste
 2. sign in through Cognito/Google and configure a usable OpenAI BYOK credential;
 3. verify the same automation-creation attempt converges after an intentionally uncertain/repeated submission without a second Browser Profile;
 4. capture a real workflow through AgentCore Live View and verify only the trusted worker completion path can make it compile-ready;
-5. finish capture, compile, inspect the semantic plan, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state; also verify an attempted caller-provided Fresh Test run ID cannot choose the durable run identity;
-6. exercise `capture`, `cloudExecution`, and `scheduling` `NOT_CONFIGURED` states and confirm each causes zero corresponding cloud work;
-7. publish with recurrence/timezone and any explicitly non-secret recurring inputs, then verify Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution plus effect verification/history/CloudWatch/SES;
-8. deliberately expire target authentication, repair through the hardened Live View handoff, save the repaired Browser Profile, resume, and follow the terminal result.
+5. finish capture, compile, inspect the semantic plan, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
+6. attempt to forge both Fresh Test run ID and Publish workflow version through the authenticated API and confirm neither can choose the durable identity;
+7. exercise `capture`, `cloudExecution`, and `scheduling` `NOT_CONFIGURED` states and confirm each causes zero corresponding cloud work;
+8. publish with recurrence/timezone and any explicitly non-secret recurring inputs, then verify Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution plus effect verification/history/CloudWatch/SES;
+9. deliberately expire target authentication, repair through the hardened Live View handoff, save the repaired Browser Profile, resume, and follow the terminal result.
 
 Further engineering should be driven primarily by concrete failures from that live path, not additional recovery micro-hardening.
