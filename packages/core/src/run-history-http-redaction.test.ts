@@ -78,7 +78,7 @@ async function handlerWithPausedRun() {
     status: "WAITING_FOR_HUMAN",
     scheduledAt: "2026-08-25T00:05:00.000Z",
     currentNodeId: INTERNAL_NODE_ID,
-    failure: { code: "TARGET_AUTH_REQUIRED", message: "server-only failure detail", retryable: false },
+    failure: { code: "TARGET_AUTH_REQUIRED", message: "server-only failure detail", retryable: false, evidenceRefs: [] },
   };
   await automations.put(record);
   await runs.createIfAbsent(run);
