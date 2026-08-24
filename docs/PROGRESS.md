@@ -29,13 +29,14 @@ That was not merely a stale test. If node identities are server-only, the web ti
 - The human-resume control-plane service now derives `expectedNodeId` exclusively from the latest authenticated durable checkpoint after validating run/checkpoint identity and agreement.
 - `POST /v1/automations/:automationId/runs/:runId/resume` no longer accepts node identity as request authority. Extra/spoofed `expectedNodeId`, tenant, user, resolution, or branch fields are ignored.
 - The Next.js resume route checks only the sanitized `humanResumeEligible` hint before submission; the provider-neutral control plane and AgentCore Runtime remain the final action authorities.
+- Target-auth takeover completion now calls the same three-argument server-authoritative resume API; it no longer forwards a paused-node identifier after profile repair.
 - The obsolete web node-resolution helper and its identifier-bearing fixtures are removed.
 
 ### Security / tenant isolation
 
 - Tenant/user ownership checks remain unchanged and occur before run/checkpoint state is returned or resume execution is submitted.
 - Raw browser/provider errors, workflow variables, page fingerprints, selectors, verification expectations, Browser Profile/session identifiers, BYOK material, workload tokens, evidence references, and chain-of-thought remain excluded from browser-visible diagnostics.
-- Browser/request data can no longer choose the paused workflow node used for human resume.
+- Browser/request/takeover-adjacent data can no longer choose the paused workflow node used for human resume.
 - AgentCore Runtime still revalidates durable run/checkpoint/workflow state before browser/model side effects.
 
 ### Idempotency / concurrency / retry / verification
@@ -43,10 +44,11 @@ That was not merely a stale test. If node identities are server-only, the web ti
 - Human-resolution claim IDs, execution leases, heartbeat fencing, immutable workflow pinning, retries, and verification remain unchanged.
 - The fixed server-owned resolution ID remains the at-least-once idempotency identity for authenticated explicit-HUMAN continuation.
 - A stale browser snapshot can at most submit a resume request; the control plane reloads durable state and fails closed if the run moved or checkpoint identity disagrees.
+- Target-auth takeover still validates the repair session against the same durable checkpoint before saving the profile, and the resume service reloads the authoritative checkpoint again before execution.
 
 ### Cost / observability / user recovery
 
-- No new DynamoDB/S3/AgentCore/model request is added. The resume route already loaded the run detail for eligibility, and the resume service already loaded run/checkpoint state before execution.
+- No new DynamoDB/S3/AgentCore/model request is added. The resume route already loaded the run detail for eligibility, and the resume/takeover services already load durable run/checkpoint state before execution.
 - Existing CloudWatch/SES reporting is unchanged.
 - Human takeover/resume UX remains available while less execution-control metadata crosses the web boundary.
 
@@ -61,7 +63,8 @@ Tests prove:
 - forged HTTP `expectedNodeId`/tenant/user/resolution fields cannot select the resume boundary;
 - mismatched durable run/checkpoint nodes fail before execution;
 - cross-tenant/cross-automation access remains `NOT_FOUND`;
-- malformed/unbounded durable evidence state still fails closed.
+- malformed/unbounded durable evidence state still fails closed;
+- target-auth repair continues to save the repaired Browser Profile and invoke the same idempotent resume authority without passing node selection into the public resume API.
 
 ### CI #284 root cause and corrective action
 
@@ -75,9 +78,15 @@ CI #285 on `989200bd1958a12205377feaa0f75acb318e3829` passed deterministic lock 
 
 The follow-up correction keeps the same server-authoritative design: takeover still validates run/checkpoint/node agreement before saving the repaired Browser Profile, then invokes `HumanResumeControlPlaneService.resume(scope, automationId, runId)`. The resume service independently reloads and validates the durable checkpoint before submitting execution. No node identifier is restored to the web/API contract and no check is weakened.
 
+### CI #286 dependency-review root cause and corrective action
+
+CI #286 on `c60a846083054aa5f6d04c5568c02e088c1acefc` stopped before installation or code validation at the deterministic pnpm supply-chain gate. No package manifest changed. pnpm `10.15.0` re-resolved upstream transitive dependencies and produced the authoritative lock SHA-256 `c87b71a17552dc8774acfd425cf7695f8e7ff644035c1f83f1dbf80282069753` instead of the previously reviewed `0fba2807...` snapshot.
+
+The single corrective commit updates only the reviewed lock fingerprint plus this progress record. The existing AWS SDK/DynamoDB peer-alignment assertions remain unchanged; the gate is not bypassed or weakened.
+
 ### Validation status
 
-Exact-head GitHub Actions on the follow-up correction is authoritative. No pass is claimed until that workflow completes successfully.
+Exact-head GitHub Actions on the lock-snapshot corrective commit is authoritative. No pass is claimed until that workflow completes successfully.
 
 ## Known production risks intentionally left visible
 
