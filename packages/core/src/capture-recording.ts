@@ -32,7 +32,6 @@ export type CaptureRecordingView =
   | { kind: "NONE" }
   | {
       kind: "ACTIVE";
-      captureSessionId: string;
       phase: "AUTH_SETUP" | "WORKFLOW";
       finishRequested: boolean;
       expiresAt: string;
@@ -45,7 +44,6 @@ export type CaptureCancellationResult =
 export interface CaptureRecordingCommand {
   scope: OwnershipScope;
   automationId: string;
-  captureSessionId: string;
 }
 
 function token(value: string, name: string): string {
@@ -102,7 +100,6 @@ export class CaptureRecordingControlPlaneService {
     });
     return {
       kind: "ACTIVE",
-      captureSessionId: record.captureSessionId,
       phase: state.phase,
       finishRequested: state.finishRequested,
       expiresAt: record.expiresAt,
@@ -121,12 +118,8 @@ export class CaptureRecordingControlPlaneService {
 
   private async requireCurrent(command: CaptureRecordingCommand): Promise<CaptureSessionRecord> {
     const automationId = token(command.automationId, "automationId");
-    const captureSessionId = token(command.captureSessionId, "captureSessionId");
     const record = await this.current({ scope: command.scope, automationId });
     if (!record) throw new ControlPlaneError("NOT_FOUND", "active capture not found");
-    if (record.captureSessionId !== captureSessionId) {
-      throw new ControlPlaneError("CONFLICT", "capture command does not target the current session");
-    }
     return record;
   }
 
@@ -209,18 +202,6 @@ function parts(path: string): readonly string[] {
   }
 }
 
-function bodyObject(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new ControlPlaneError("BAD_REQUEST", "request body must be a JSON object");
-  }
-  return value as Record<string, unknown>;
-}
-
-function captureId(value: unknown): string {
-  if (typeof value !== "string") throw new ControlPlaneError("BAD_REQUEST", "captureSessionId must be a string");
-  return token(value, "captureSessionId");
-}
-
 function errorResponse(error: unknown): ControlPlaneHttpResponse {
   if (error instanceof ControlPlaneError) {
     const status = error.code === "BAD_REQUEST" ? 400 : error.code === "NOT_FOUND" ? 404 : error.code === "NOT_CONFIGURED" ? 503 : 409;
@@ -253,12 +234,9 @@ export class CaptureAwareControlPlaneHttpHandler implements ControlPlaneHttpHand
         return { status: 200, body: await this.capture.cancel(context.scope, automationId) };
       }
       if (request.method === "POST" && route.length === 5 && (route[4] === "start" || route[4] === "finish")) {
-        const body = bodyObject(request.body);
-        const command = {
-          scope: context.scope,
-          automationId,
-          captureSessionId: captureId(body.captureSessionId),
-        };
+        // The authenticated caller chooses only the automation and command. The control plane
+        // resolves the current durable capture session and never accepts session identity from JSON.
+        const command = { scope: context.scope, automationId };
         const result = route[4] === "start"
           ? await this.capture.startWorkflow(command)
           : await this.capture.finish(command);

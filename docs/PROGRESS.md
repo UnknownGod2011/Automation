@@ -8,59 +8,68 @@ Recovery/crash machinery remains intentionally parked unless a real end-to-end d
 
 ## Incoming validation
 
-- `main` points to `27ebb8d8596924cdbf8026da5fb20f6342b59bc6` (`Keep run diagnostic identities server-side`).
-- That production content was validated on exact pre-merge PR head by GitHub Actions CI #288 before squash promotion.
-- PR #4 (`Keep compiled workflow graph server-side`) is the active production slice.
-- PR #4 normal head `38e09c8fec457cc586346d44dfb2311b0191e81e` narrowed the authenticated Compile response to a bounded acknowledgement.
-- Corrective head `52381a6af98128957452f5b9f7667c2db8ccb5fc` fixed a parser defect from the manual batched rewrite, but CI #291 then stopped at one strict test-fixture typing error before packaging/tests.
+- `main` points to `741314d3362d6544a1615d8cb903e1cd8a683dfc` (`Keep compiled workflow graph server-side`).
+- That production content was validated on exact pre-merge PR head by GitHub Actions CI #292 before squash promotion.
+- PR #5 (`Keep capture recording identity server-side`) is the active production slice.
+- Normal head `7d354bf3466be98ff8b1949e7174c01f543d4276` contains the product/security change described below.
+- GitHub Actions CI #294 stopped before installation or code validation at the deterministic pnpm lock-snapshot gate.
 - Exact-head GitHub Actions remains authoritative; no pass is claimed until it exists.
 
-## This product/security slice — keep the compiled executable workflow server-side
+## This product/security slice — keep capture recording identity server-side
 
-### Product boundary
+### Defect
 
-The authenticated `POST /v1/automations/:automationId/compile` endpoint now returns only:
+The product forms no longer contained a capture-session identifier, but the authenticated web client and provider-neutral capture-recording HTTP wrapper still supported sending `captureSessionId` on Start/Finish commands. `CaptureRecordingView` also serialized the current durable capture-session ID back to the browser.
 
-`{ kind: "COMPILED", workflowVersion }`
+That was unnecessary execution-control metadata. The authenticated user should choose only the automation and the recording action; the control plane already owns the durable current-capture pointer and can resolve the authoritative session itself.
 
-The executable `WorkflowGraph` remains server-side in the immutable workflow repository. Fresh Test, publication, scheduling, Runtime execution, verification, and semantic workflow inspection continue to use the same persisted graph.
+### Behavior
 
-The user-facing review surface remains the sanitized workflow-inspection endpoint; the Compile mutation no longer serializes internal workflow/node identities, execution structure, bindings, initial variables, capture identity, or Browser Profile metadata back to the authenticated client.
+- `CaptureRecordingView` exposes only `ACTIVE/NONE`, phase, finish-requested state, and expiry. The durable capture-session ID is no longer browser-visible.
+- Start/Finish recording commands now carry only authenticated tenant/user scope plus automation identity.
+- The provider-neutral control plane resolves the current unexpired `STARTED` capture from durable state, then uses its server-owned session ID internally for control transitions and Runtime collector launch.
+- The authenticated HTTP wrapper ignores forged `captureSessionId`, tenant, or user fields in request JSON; those fields cannot select the capture session.
+- The Next.js server client sends `{}` for Start/Finish recording and no longer needs a preliminary capture-state read merely to recover an internal session ID.
+- Cancellation already used the server-resolved current capture and remains unchanged.
 
 ### Security and tenant isolation
 
-- Tenant/user ownership and trusted capture-completion provenance remain authoritative before compilation.
-- Browser Profile references, capture trace IDs, internal workflow/node IDs, compiled variable values, selectors, bindings, and execution strategy data remain server-side.
-- No new credential, browser-session, model, Scheduler, or recovery authority is introduced.
+- Tenant/user ownership remains derived only from authenticated context.
+- Browser session IDs, Browser Profile references, capture-session IDs, Live View credentials, and provider credentials remain server-side.
+- A stale browser can submit only “start current workflow recording” or “finish current workflow recording”; it cannot target an older/different capture session.
+- The durable active-capture pointer and capture-control store remain the concurrency and replay authority.
 
 ### Idempotency / concurrency / retry / verification
 
-- Compiler versioning, immutable workflow persistence, capture provenance, Fresh Test admission, Scheduler publication, automation locks, retries, and effect verification are unchanged.
-- No retry or recovery subsystem is added.
-- The known compile cross-store partial-write limitation remains: if immutable workflow persistence succeeds but the automation-state write definitely fails, a later retry can create another workflow version from the same capture. This uncommon case remains visible rather than being expanded into another recovery subsystem before live evidence requires it.
+- Duplicate Start still replays the durable `AUTH_SETUP -> WORKFLOW` transition and may retry Runtime launch; duplicate Finish remains replay-safe.
+- Expired captures remain restartable and are not treated as active command targets.
+- No workflow execution retry, verification, Scheduler, lease, or human-recovery behavior changed.
 
 ### Cost / observability / user recovery
 
-- No extra DynamoDB, S3, AgentCore, browser, model, queue, Scheduler, SES, or CloudWatch operation is added.
-- The authenticated Compile response is smaller and carries less implementation detail.
-- Existing human takeover/resume behavior is unchanged.
+- Start/Finish no longer require the Next.js mutation route to fetch capture state solely to obtain the internal session ID, removing one control-plane request per command.
+- No DynamoDB/S3/AgentCore/browser/model resource is added.
+- Existing cancel/restart UX and capture-readiness polling remain unchanged.
 
-## CI #290 and #291 root causes
+## CI #294 root cause and corrective dependency review
 
-CI #290 passed deterministic lock verification and frozen installation, then TypeScript found a missing closing brace in `packages/core/src/control-plane-http.ts` introduced during the manual Git-data batch. The single corrective commit restored exactly that syntax without weakening checks.
+CI #294 completed pnpm 10.15.0 lockfile-only resolution, then the deterministic supply-chain gate detected upstream transitive drift before install, type-checking, packaging, or tests. No package manifest changed.
 
-CI #291 passed deterministic lock verification and frozen installation, then stopped in strict `pnpm check` on `packages/core/src/control-plane-http-compile-redaction.test.ts`: the fixture forwarded `record.browserProfileRef`, statically typed `string | undefined`, into a capture-session field requiring `string`.
+The reviewed lock fingerprint changed from:
 
-The production Compile transport was not implicated. This run fixes only the fixture authority by using one explicit known test constant (`server-profile-ref`) for both the automation record and capture-session record. TypeScript remains strict and the raw executable graph is not restored to the response.
+`c87b71a17552dc8774acfd425cf7695f8e7ff644035c1f83f1dbf80282069753`
+
+to the exact CI-produced SHA-256:
+
+`17c21e89f7aa6c41459972158807fa6ed47d7a5bb3f53dbb598f87dc85fa7b4f`
+
+The corrective commit authenticates only that exact graph. The pinned pnpm version remains `10.15.0`, and the existing AWS SDK/DynamoDB peer-alignment assertions remain unchanged. The lock gate is not bypassed or weakened.
 
 ## Validation status for this run
 
-This run publishes one coherent commit containing:
+The normal commit contains the provider-neutral capture command/view narrowing, authenticated HTTP and Next.js client changes, regression coverage for server-owned capture identity and response redaction, and this progress record.
 
-- the strict fixture correction for CI #291;
-- this `docs/PROGRESS.md` update.
-
-GitHub Actions on the exact resulting head is authoritative. No green claim is made before the workflow completes successfully.
+After CI #294 root-cause inspection, the single permitted corrective commit updates only the reviewed deterministic lock fingerprint plus this validation record. GitHub Actions on the exact corrective head is authoritative. No green claim is made before the workflow completes successfully.
 
 ## Known production risks intentionally left visible
 
@@ -79,9 +88,9 @@ After exact-head CI is green, promote the reviewed slice and run the protected r
 
 1. deploy immutable artifacts and pass live public/auth smoke;
 2. sign in through Cognito/Google and configure an OpenAI BYOK credential;
-3. create an automation and exercise replay-safe creation under request uncertainty;
-4. capture a real workflow through AgentCore Live View and trusted worker completion;
-5. compile it, verify the executable graph remains server-side while the sanitized semantic inspection remains user-visible, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
+3. create an automation and launch one authoritative AgentCore Live View capture;
+4. start/finish recording without any browser-selected capture-session identity and let the trusted worker complete profile/trace persistence;
+5. compile and inspect the semantic workflow, then run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
 6. publish with server-owned tested-workflow selection, recurrence/timezone, and any explicitly non-secret recurring inputs;
 7. verify Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution, effect verification, sanitized diagnostics/history, CloudWatch, and SES;
 8. deliberately expire target authentication, repair through the hardened Live View handoff, save the repaired Browser Profile, resume, and follow the terminal result.

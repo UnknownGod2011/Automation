@@ -186,15 +186,15 @@ export class WebControlPlaneClient {
     return this.request(`/v1/automations/${encodeURIComponent(automationId)}/capture-recording`, { method: "GET" });
   }
 
-  async startCaptureRecording(automationId: string, captureSessionId: string): Promise<CaptureRecordingView> {
+  async startCaptureRecording(automationId: string): Promise<CaptureRecordingView> {
     return this.request(`/v1/automations/${encodeURIComponent(automationId)}/capture-recording/start`, {
-      method: "POST", body: JSON.stringify({ captureSessionId }),
+      method: "POST", body: "{}",
     });
   }
 
-  async finishCaptureRecording(automationId: string, captureSessionId: string): Promise<CaptureRecordingView> {
+  async finishCaptureRecording(automationId: string): Promise<CaptureRecordingView> {
     return this.request(`/v1/automations/${encodeURIComponent(automationId)}/capture-recording/finish`, {
-      method: "POST", body: JSON.stringify({ captureSessionId }),
+      method: "POST", body: "{}",
     });
   }
 

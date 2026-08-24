@@ -79,18 +79,19 @@ describe("CaptureRecordingControlPlaneService", () => {
 
     expect(state).toEqual({
       kind: "ACTIVE",
-      captureSessionId: "capture-1",
       phase: "AUTH_SETUP",
       finishRequested: false,
       expiresAt: "2026-08-21T01:00:00.000Z",
     });
-    expect(JSON.stringify(state)).not.toContain("browser-session-secret");
-    expect(JSON.stringify(state)).not.toContain("browser-profile-secret");
+    const serialized = JSON.stringify(state);
+    expect(serialized).not.toContain("capture-1");
+    expect(serialized).not.toContain("browser-session-secret");
+    expect(serialized).not.toContain("browser-profile-secret");
   });
 
   it("drives AUTH_SETUP to workflow recording and then a replay-safe finish request", async () => {
     const { service } = await setup();
-    const command = { scope: owner, automationId: "auto-1", captureSessionId: "capture-1" };
+    const command = { scope: owner, automationId: "auto-1" };
 
     await expect(service.startWorkflow(command)).resolves.toMatchObject({
       kind: "ACTIVE",
@@ -105,16 +106,20 @@ describe("CaptureRecordingControlPlaneService", () => {
     await expect(service.finish(command)).resolves.toMatchObject({ finishRequested: true });
   });
 
-  it("launches the cloud collector after the durable WORKFLOW transition and retries launch on replay", async () => {
+  it("launches the cloud collector with the server-resolved capture identity and retries launch on replay", async () => {
     const start = vi.fn(async () => undefined);
     const { service, controls } = await setup({ start });
-    const command = { scope: owner, automationId: "auto-1", captureSessionId: "capture-1" };
+    const command = { scope: owner, automationId: "auto-1" };
 
     await service.startWorkflow(command);
     await service.startWorkflow(command);
 
     expect(start).toHaveBeenCalledTimes(2);
-    expect(start).toHaveBeenCalledWith(command);
+    expect(start).toHaveBeenCalledWith({
+      scope: owner,
+      automationId: "auto-1",
+      captureSessionId: "capture-1",
+    });
     await expect(controls.getState(owner, "capture-1")).resolves.toEqual({
       phase: "WORKFLOW",
       finishRequested: false,
@@ -124,7 +129,7 @@ describe("CaptureRecordingControlPlaneService", () => {
   it("keeps WORKFLOW durable when collector launch is uncertain so Start can be retried", async () => {
     const start = vi.fn().mockRejectedValueOnce(new Error("runtime unavailable")).mockResolvedValueOnce(undefined);
     const { service, controls } = await setup({ start });
-    const command = { scope: owner, automationId: "auto-1", captureSessionId: "capture-1" };
+    const command = { scope: owner, automationId: "auto-1" };
 
     await expect(service.startWorkflow(command)).rejects.toMatchObject({ code: "CONFLICT" });
     await expect(controls.getState(owner, "capture-1")).resolves.toEqual({
@@ -171,13 +176,11 @@ describe("CaptureRecordingControlPlaneService", () => {
     await expect(service.state(owner, "auto-1")).resolves.toEqual({ kind: "NONE" });
   });
 
-  it("rejects cross-tenant and stale-session commands before changing control state", async () => {
+  it("rejects cross-tenant commands before changing control state", async () => {
     const { service, controls } = await setup();
 
-    await expect(service.startWorkflow({ scope: attacker, automationId: "auto-1", captureSessionId: "capture-1" }))
+    await expect(service.startWorkflow({ scope: attacker, automationId: "auto-1" }))
       .rejects.toMatchObject({ code: "NOT_FOUND" });
-    await expect(service.startWorkflow({ scope: owner, automationId: "auto-1", captureSessionId: "capture-old" }))
-      .rejects.toMatchObject({ code: "CONFLICT" });
     await expect(controls.getState(owner, "capture-1")).resolves.toEqual({
       phase: "AUTH_SETUP",
       finishRequested: false,
@@ -186,7 +189,7 @@ describe("CaptureRecordingControlPlaneService", () => {
 });
 
 describe("CaptureAwareControlPlaneHttpHandler", () => {
-  it("uses trusted authenticated scope for recording commands and delegates unrelated routes", async () => {
+  it("uses trusted authenticated scope and server-owned capture identity for recording commands", async () => {
     const { service } = await setup();
     const base: ControlPlaneHttpHandlerPort = {
       async handle() { return { status: 204, body: null }; },
@@ -199,13 +202,18 @@ describe("CaptureAwareControlPlaneHttpHandler", () => {
       body: {
         tenantId: attacker.tenantId,
         userId: attacker.userId,
-        captureSessionId: "capture-1",
+        captureSessionId: "forged-capture",
       },
     }, { scope: owner });
     const delegated = await handler.handle({ method: "GET", path: "/v1/automations/auto-1" }, { scope: owner });
 
     expect(started.status).toBe(200);
     expect(started.body).toMatchObject({ kind: "ACTIVE", phase: "WORKFLOW" });
+    const serialized = JSON.stringify(started.body);
+    expect(serialized).not.toContain("forged-capture");
+    expect(serialized).not.toContain("capture-1");
+    expect(serialized).not.toContain("browser-session-secret");
+    expect(serialized).not.toContain("browser-profile-secret");
     expect(delegated).toEqual({ status: 204, body: null });
   });
 
@@ -232,10 +240,11 @@ describe("CaptureAwareControlPlaneHttpHandler", () => {
     const response = await handler.handle({
       method: "POST",
       path: "/v1/automations/auto-1/capture-recording/finish",
-      body: { captureSessionId: "capture-1" },
+      body: { captureSessionId: "forged-capture" },
     }, { scope: owner });
 
     expect(response.status).toBe(409);
+    expect(JSON.stringify(response.body)).not.toContain("forged-capture");
     expect(JSON.stringify(response.body)).not.toContain("browser-session-secret");
     expect(JSON.stringify(response.body)).not.toContain("browser-profile-secret");
   });

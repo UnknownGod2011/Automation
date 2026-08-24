@@ -84,13 +84,12 @@ describe("WebControlPlaneClient", () => {
     expect(rotateInit?.body).toBe(JSON.stringify({ apiKey: "replacement-secret" }));
   });
 
-  it("routes capture recording state and commands through authenticated server requests", async () => {
+  it("routes capture recording state and commands without browser-selected capture identity", async () => {
     const fetchImpl = vi.fn<FetchLike>(async (input) => new Response(JSON.stringify(
       String(input).endsWith("/cancel")
         ? { kind: "CANCELED", cleanupPending: true }
         : {
             kind: "ACTIVE",
-            captureSessionId: "capture-1",
             phase: "WORKFLOW",
             finishRequested: false,
             expiresAt: "2026-08-21T10:00:00.000Z",
@@ -101,11 +100,12 @@ describe("WebControlPlaneClient", () => {
       fetchImpl,
     );
 
-    await client.captureRecording("customer/demo");
-    await client.startCaptureRecording("customer/demo", "capture-1");
-    await client.finishCaptureRecording("customer/demo", "capture-1");
+    const state = await client.captureRecording("customer/demo");
+    await client.startCaptureRecording("customer/demo");
+    await client.finishCaptureRecording("customer/demo");
     await expect(client.cancelCaptureRecording("customer/demo")).resolves.toEqual({ kind: "CANCELED", cleanupPending: true });
 
+    expect(JSON.stringify(state)).not.toContain("captureSessionId");
     expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(
       "https://control.example.test/v1/automations/customer%2Fdemo/capture-recording",
     );
@@ -113,10 +113,11 @@ describe("WebControlPlaneClient", () => {
     expect(String(fetchImpl.mock.calls[1]?.[0])).toBe(
       "https://control.example.test/v1/automations/customer%2Fdemo/capture-recording/start",
     );
-    expect(fetchImpl.mock.calls[1]?.[1]?.body).toBe(JSON.stringify({ captureSessionId: "capture-1" }));
+    expect(fetchImpl.mock.calls[1]?.[1]?.body).toBe("{}");
     expect(String(fetchImpl.mock.calls[2]?.[0])).toBe(
       "https://control.example.test/v1/automations/customer%2Fdemo/capture-recording/finish",
     );
+    expect(fetchImpl.mock.calls[2]?.[1]?.body).toBe("{}");
     expect(String(fetchImpl.mock.calls[3]?.[0])).toBe(
       "https://control.example.test/v1/automations/customer%2Fdemo/capture-recording/cancel",
     );
