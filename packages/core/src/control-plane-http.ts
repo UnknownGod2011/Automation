@@ -1,4 +1,4 @@
-import type { AutomationSchedule, CaptureTrace } from "@automation/contracts";
+import type { AutomationSchedule } from "@automation/contracts";
 import type { OwnershipScope } from "./index.js";
 import {
   AutomationControlPlaneService,
@@ -88,7 +88,6 @@ export class AutomationControlPlaneHttpHandler {
         return { status: 200, body: await this.service.updateScheduledInputValues(context.scope, automationId, command) };
       }
       if (request.method === "POST" && parts[3] === "capture" && parts.length === 4) { const result = await this.service.beginCapture(context.scope, automationId); return result.kind === "READY" ? { status: 201, body: result } : { status: 503, body: result }; }
-      if (request.method === "POST" && parts[3] === "capture-trace" && parts.length === 4) { const body = jsonObject(request.body); const trace = body.trace as CaptureTrace | undefined; if (!trace) throw new ControlPlaneError("BAD_REQUEST", "trace is required"); return { status: 202, body: await this.service.ingestCapture(context.scope, trace) }; }
       if (request.method === "POST" && parts[3] === "compile" && parts.length === 4) return { status: 200, body: await this.service.compileAutomation(context.scope, automationId) };
       if (request.method === "POST" && parts[3] === "test" && parts.length === 4) {
         const body = jsonObject(request.body); const runtimeVariables = body.runtimeVariables;
