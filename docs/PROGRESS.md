@@ -69,9 +69,15 @@ CI #284 on `716fb6bd30199b5cecbccc219d036d428b5f7ae9` passed deterministic lock 
 
 The corrective change moves resume-node selection into the trusted provider-neutral control-plane service rather than restoring those identifiers to the sanitized API. No type or CI check is weakened.
 
+### CI #285 root cause and follow-up correction
+
+CI #285 on `989200bd1958a12205377feaa0f75acb318e3829` passed deterministic lock verification and frozen installation, then failed `pnpm check` at `packages/core/src/human-takeover.ts` because `HumanTakeoverService.finish()` still called the removed four-argument resume signature with browser-adjacent `expectedNodeId` authority.
+
+The follow-up correction keeps the same server-authoritative design: takeover still validates run/checkpoint/node agreement before saving the repaired Browser Profile, then invokes `HumanResumeControlPlaneService.resume(scope, automationId, runId)`. The resume service independently reloads and validates the durable checkpoint before submitting execution. No node identifier is restored to the web/API contract and no check is weakened.
+
 ### Validation status
 
-The corrective exact-head GitHub Actions run is authoritative. No pass is claimed until it completes successfully on the corrective commit.
+Exact-head GitHub Actions on the follow-up correction is authoritative. No pass is claimed until that workflow completes successfully.
 
 ## Known production risks intentionally left visible
 
