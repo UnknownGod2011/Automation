@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { serverResolvedCaptureSessionId } from "../../../../../../lib/capture-command-state";
 import { createCaptureLiveViewHandoff } from "../../../../../../lib/capture-live-view-handoff";
 import { canCompileLatestCapture } from "../../../../../../lib/compile-readiness";
 import { WebControlPlaneError } from "../../../../../../lib/control-plane-client";
@@ -30,11 +29,13 @@ export async function POST(request: Request, context: { params: Promise<{ automa
       await client.cancelCaptureRecording(automationId);
       return redirectBack(request, automationId, "capture-canceled");
     }
-    if (command === "record-workflow" || command === "finish-capture") {
-      const recording = await client.captureRecording(automationId); const captureSessionId = serverResolvedCaptureSessionId(recording, command);
-      if (!captureSessionId) return redirectBack(request, automationId, "invalid-input");
-      if (command === "record-workflow") { await client.startCaptureRecording(automationId, captureSessionId); return redirectBack(request, automationId, "recording-started"); }
-      await client.finishCaptureRecording(automationId, captureSessionId); return redirectBack(request, automationId, "capture-finishing");
+    if (command === "record-workflow") {
+      await client.startCaptureRecording(automationId);
+      return redirectBack(request, automationId, "recording-started");
+    }
+    if (command === "finish-capture") {
+      await client.finishCaptureRecording(automationId);
+      return redirectBack(request, automationId, "capture-finishing");
     }
     if (command === "compile") {
       const automation = await client.automation(automationId);
