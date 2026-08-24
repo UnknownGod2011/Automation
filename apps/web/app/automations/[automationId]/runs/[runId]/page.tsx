@@ -40,13 +40,6 @@ export default async function RunDetailPage({
     return <section className="card stack"><h1>Run unavailable</h1><p>The request failed safely. Provider, browser, and credential error text is intentionally hidden.</p><Link className="button" href={`/automations/${encodeURIComponent(automationId)}`}>Back to automation</Link></section>;
   }
 
-  const pausedNodeId = run.checkpoint?.currentNodeId ?? run.currentNodeId;
-  const targetAuthRepairEligible = Boolean(
-    run.needsHumanAttention &&
-    pausedNodeId &&
-    run.checkpoint?.lastFailure?.code === "TARGET_AUTH_REQUIRED" &&
-    run.checkpoint.lastFailure.nodeId === pausedNodeId,
-  );
   const currentStep = run.semantic?.current;
   const failureStep = run.semantic?.failure;
   const completedSteps = run.semantic?.completed ?? [];
@@ -57,7 +50,7 @@ export default async function RunDetailPage({
       <section className="hero">
         <div>
           <div className="eyebrow">Run diagnostics</div>
-          <h1>{run.runId}</h1>
+          <h1>Execution details</h1>
           <p className="muted">Workflow version {run.workflowVersion} · scheduled {run.scheduledAt}</p>
           <Link href={`/automations/${encodeURIComponent(automationId)}`}>Back to automation</Link>
         </div>
@@ -89,17 +82,17 @@ export default async function RunDetailPage({
               </form>
               <p className="muted">The browser does not choose the paused node, branch, claim ID, or execution credential. The authenticated server reloads the latest durable run state before submitting the idempotent resolution.</p>
             </>
-          ) : targetAuthRepairEligible ? (
+          ) : run.targetAuthRepairEligible ? (
             <>
               <p>The target website requires you to repair its authenticated session. Open the isolated repair browser and sign in or complete any required MFA yourself. The platform will not solve or bypass CAPTCHA, MFA, or other security controls.</p>
               <form action={`/api/ui/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}/takeover/start`} method="post" target="_blank">
                 <button className="button" type="submit">Open secure repair browser</button>
               </form>
-              <p>When the site is usable again, return here and save the repaired session. The same paused node will then resume through the existing durable resolution authority.</p>
+              <p>When the site is usable again, return here and save the repaired session. The same paused step will then resume through the existing durable resolution authority.</p>
               <form action={`/api/ui/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}/takeover/finish`} method="post">
                 <button className="button" type="submit">Save repaired session &amp; resume</button>
               </form>
-              <p className="muted">Browser session IDs and Browser Profile references stay server-side. Duplicate repair starts reuse the active repair session, and Runtime revalidates the durable run/node before execution.</p>
+              <p className="muted">Browser session IDs and Browser Profile references stay server-side. Duplicate repair starts reuse the active repair session, and Runtime revalidates the durable run/step before execution.</p>
             </>
           ) : (
             <p className="muted">This pause does not expose a safe automated continuation. The platform will keep the run paused rather than guessing or bypassing a security/policy boundary.</p>
@@ -116,7 +109,7 @@ export default async function RunDetailPage({
               <div className="row"><span>Retryable</span><span>{run.failure.retryable ? "Yes" : "No"}</span></div>
               <div className="row"><span>Step</span><span>{stepHeading(failureStep)}</span></div>
               {failureStep ? <p>{failureStep.objective}</p> : null}
-              <div><h3>Evidence</h3><p className="muted">{evidenceSummary(run.failure.evidenceRefs.length)} Artifact identifiers and contents remain server-side.</p></div>
+              <div><h3>Evidence</h3><p className="muted">{evidenceSummary(run.failure.evidenceCount)} Artifact identifiers and contents remain server-side.</p></div>
             </>
           ) : <p className="muted">No terminal or attention failure is recorded on the run.</p>}
         </div>
@@ -132,20 +125,20 @@ export default async function RunDetailPage({
               <div>
                 <h3>Completed steps</h3>
                 {completedSteps.length === 0 ? (
-                  <p className="muted">{run.checkpoint.completedNodeIds.length === 0 ? "None yet." : `${run.checkpoint.completedNodeIds.length} completed step(s); semantic labels are temporarily unavailable.`}</p>
+                  <p className="muted">{run.checkpoint.completedStepCount === 0 ? "None yet." : `${run.checkpoint.completedStepCount} completed step(s); semantic labels are temporarily unavailable.`}</p>
                 ) : (
                   <ul>{completedSteps.map((step) => <li key={step.step}><strong>Step {step.step} · {step.kind}</strong> — {step.objective}</li>)}</ul>
                 )}
               </div>
               {run.checkpoint.lastFailure ? <div><h3>Last checkpoint failure</h3><p><strong>{run.checkpoint.lastFailure.code}</strong>{failureStep ? ` at Step ${failureStep.step}` : ""}</p></div> : null}
-              <div><h3>Checkpoint evidence</h3><p className="muted">{evidenceSummary(run.checkpoint.evidenceRefs.length)} Artifact identifiers and contents remain server-side.</p></div>
+              <div><h3>Checkpoint evidence</h3><p className="muted">{evidenceSummary(run.checkpoint.evidenceCount)} Artifact identifiers and contents remain server-side.</p></div>
             </>
           ) : <p className="muted">No checkpoint has been persisted for this run.</p>}
         </div>
       </section>
 
       <section className="card" style={{ marginTop: 18 }}>
-        <p className="muted">This view intentionally excludes internal workflow/node identifiers from the rendered diagnostics, runtime variables, raw provider/browser errors, selectors, page fingerprints, artifact references and contents, cookies, Browser Profile data, BYOK secrets, workload tokens, and model chain-of-thought.</p>
+        <p className="muted">This view intentionally excludes internal workflow/node identifiers, runtime variables, raw provider/browser errors, selectors, page fingerprints, artifact references and contents, cookies, Browser Profile data, BYOK secrets, workload tokens, and model chain-of-thought.</p>
       </section>
     </>
   );

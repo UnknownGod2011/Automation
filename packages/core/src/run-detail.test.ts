@@ -139,7 +139,7 @@ async function setup() {
 }
 
 describe("RunDetailService", () => {
-  it("returns bounded semantic progress without exposing executable workflow metadata", async () => {
+  it("returns bounded semantic progress while keeping node and artifact identities server-side", async () => {
     const { service } = await setup();
 
     const detail = await service.get(owner, "auto-1", "run-1");
@@ -149,18 +149,19 @@ describe("RunDetailService", () => {
       automationId: "auto-1",
       workflowVersion: 3,
       status: "WAITING_FOR_HUMAN",
-      currentNodeId: "submit",
       needsHumanAttention: true,
+      humanResumeEligible: false,
+      targetAuthRepairEligible: false,
       failure: {
         code: "EFFECT_NOT_VERIFIED",
         retryable: false,
-        nodeId: "submit",
+        evidenceCount: 1,
       },
       checkpoint: {
-        currentNodeId: "submit",
-        completedNodeIds: ["open", "fill"],
+        completedStepCount: 2,
         attempt: 2,
         fingerprintRepeatCount: 2,
+        evidenceCount: 1,
         updatedAt: "2026-08-21T08:00:10.000Z",
       },
       semantic: {
@@ -172,6 +173,14 @@ describe("RunDetailService", () => {
         failure: { step: 3, kind: "CLICK", objective: "Submit the form" },
       },
     });
+    expect(detail.failure).not.toHaveProperty("nodeId");
+    expect(detail.failure).not.toHaveProperty("evidenceRefs");
+    expect(detail.checkpoint).not.toHaveProperty("currentNodeId");
+    expect(detail.checkpoint).not.toHaveProperty("completedNodeIds");
+    expect(detail.checkpoint).not.toHaveProperty("evidenceRefs");
+    expect(detail.checkpoint?.lastFailure).not.toHaveProperty("nodeId");
+    expect(detail.checkpoint?.lastFailure).not.toHaveProperty("evidenceRefs");
+
     const serialized = JSON.stringify(detail);
     expect(serialized).not.toContain("must-never-be-returned");
     expect(serialized).not.toContain("private-runtime-value");
@@ -182,6 +191,38 @@ describe("RunDetailService", () => {
     expect(serialized).not.toContain("private_binding_name");
     expect(serialized).not.toContain("private expected value");
     expect(serialized).not.toContain("#success-secret");
+    expect(serialized).not.toContain("evidence/run-1/submit/attempt-2");
+  });
+
+  it("derives target-auth repair eligibility server-side without exposing paused node identity", async () => {
+    const { runs, checkpoints, workflows } = await setup();
+    await runs.update({
+      ...pausedRun({
+        failure: {
+          code: "TARGET_AUTH_REQUIRED",
+          message: "private auth detail",
+          retryable: false,
+          nodeId: "submit",
+          evidenceRefs: ["evidence/private-auth"],
+        },
+      }),
+    });
+    await checkpoints.put(owner, pausedCheckpoint({
+      lastFailure: {
+        code: "TARGET_AUTH_REQUIRED",
+        message: "private auth detail",
+        retryable: false,
+        nodeId: "submit",
+        evidenceRefs: ["evidence/private-auth"],
+      },
+    }));
+
+    const detail = await new RunDetailService(runs, checkpoints, workflows).get(owner, "auto-1", "run-1");
+
+    expect(detail.targetAuthRepairEligible).toBe(true);
+    expect(detail).not.toHaveProperty("currentNodeId");
+    expect(detail.checkpoint).not.toHaveProperty("currentNodeId");
+    expect(JSON.stringify(detail)).not.toContain("evidence/private-auth");
   });
 
   it("keeps status/checkpoint diagnostics available when workflow inspection is unavailable", async () => {
@@ -247,8 +288,10 @@ describe("RunDetailControlPlaneHttpHandler", () => {
     expect(detail.body).toMatchObject({
       runId: "run-1",
       needsHumanAttention: true,
+      targetAuthRepairEligible: false,
       semantic: { current: { step: 3, objective: "Submit the form" } },
     });
+    expect(JSON.stringify(detail.body)).not.toContain("evidence/run-1/submit/attempt-2");
     expect(delegated).toEqual({ status: 418, body: { delegated: true } });
   });
 
