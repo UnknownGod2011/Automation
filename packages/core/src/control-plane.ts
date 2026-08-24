@@ -139,7 +139,9 @@ export class AutomationControlPlaneService {
   }
 
   private credentialManagement(): ProviderCredentialManagementPort { if (!this.dependencies.credentials) throw new ControlPlaneError("NOT_CONFIGURED", "BYOK credential management is not configured"); return this.dependencies.credentials; }
-  private scheduleManagement(): AutomationScheduleLifecyclePort { if (!this.dependencies.scheduleLifecycle) throw new ControlPlaneError("NOT_CONFIGURED", "automation schedule management is not configured"); return this.dependencies.scheduleLifecycle; }
+  private requireSchedulingCapability(): void { if (this.dependencies.capabilities.scheduling === "NOT_CONFIGURED") throw new ControlPlaneError("NOT_CONFIGURED", "automation scheduling is not configured"); }
+  private scheduleManagement(): AutomationScheduleLifecyclePort { this.requireSchedulingCapability(); if (!this.dependencies.scheduleLifecycle) throw new ControlPlaneError("NOT_CONFIGURED", "automation schedule management is not configured"); return this.dependencies.scheduleLifecycle; }
+  private async requireOwnedAutomation(scope: OwnershipScope, automationId: string): Promise<AutomationRecord> { const automation = await this.dependencies.automations.get(scope, automationId); if (!automation) throw new ControlPlaneError("NOT_FOUND", "automation not found"); return automation; }
   private async summaryFor(record: AutomationRecord): Promise<AutomationSummaryView> {
     const scope = { tenantId: record.tenantId, userId: record.userId };
     const [runs, latestCapture] = await Promise.all([this.dependencies.runs.listForAutomation(scope, record.automationId), this.dependencies.captureState.latestCompletedForAutomation(scope, record.automationId)]);
@@ -272,27 +274,34 @@ export class AutomationControlPlaneService {
     catch { throw new ControlPlaneError("CONFLICT", "automation is not ready for a fresh test"); }
   }
   async publishAutomation(scope: OwnershipScope, automationId: string, command: PublishAutomationCommand): Promise<AutomationSummaryView> {
+    const id = requireToken(automationId, "automationId");
+    await this.requireOwnedAutomation(scope, id);
+    this.requireSchedulingCapability();
     try {
       const published = await this.dependencies.lifecycle.publish({
         scope,
-        automationId: requireToken(automationId, "automationId"),
+        automationId: id,
         workflowVersion: command.workflowVersion,
         schedule: structuredClone(command.schedule),
         ...(command.scheduledNonSecretInputs ? { scheduledNonSecretInputs: structuredClone(command.scheduledNonSecretInputs) } : {}),
         ...(command.scheduledInputsAreNonSecret !== undefined ? { scheduledInputsAreNonSecret: command.scheduledInputsAreNonSecret } : {}),
       });
       return await this.summaryFor(published);
-    } catch { throw new ControlPlaneError("CONFLICT", "automation is not ready to publish with this schedule"); }
+    } catch (error) { if (error instanceof ControlPlaneError) throw error; throw new ControlPlaneError("CONFLICT", "automation is not ready to publish with this schedule"); }
   }
   async updateAutomationSchedule(scope: OwnershipScope, automationId: string, command: UpdateAutomationScheduleCommand): Promise<AutomationSummaryView> {
-    try { const updated = await this.scheduleManagement().updateSchedule({ scope, automationId: requireToken(automationId, "automationId"), schedule: structuredClone(command.schedule) }); return await this.summaryFor(updated); }
+    const id = requireToken(automationId, "automationId");
+    await this.requireOwnedAutomation(scope, id);
+    try { const updated = await this.scheduleManagement().updateSchedule({ scope, automationId: id, schedule: structuredClone(command.schedule) }); return await this.summaryFor(updated); }
     catch (error) { if (error instanceof ControlPlaneError) throw error; throw new ControlPlaneError("CONFLICT", "automation schedule could not be updated"); }
   }
   async pauseAutomation(scope: OwnershipScope, automationId: string): Promise<AutomationSummaryView> { return this.changeScheduleState(scope, automationId, "pause"); }
   async resumeAutomation(scope: OwnershipScope, automationId: string): Promise<AutomationSummaryView> { return this.changeScheduleState(scope, automationId, "resume"); }
   async disableAutomation(scope: OwnershipScope, automationId: string): Promise<AutomationSummaryView> { return this.changeScheduleState(scope, automationId, "disable"); }
   private async changeScheduleState(scope: OwnershipScope, automationId: string, operation: "pause" | "resume" | "disable"): Promise<AutomationSummaryView> {
-    try { const lifecycle = this.scheduleManagement(); const request = { scope, automationId: requireToken(automationId, "automationId") }; const updated = await lifecycle[operation](request); return await this.summaryFor(updated); }
+    const id = requireToken(automationId, "automationId");
+    await this.requireOwnedAutomation(scope, id);
+    try { const lifecycle = this.scheduleManagement(); const request = { scope, automationId: id }; const updated = await lifecycle[operation](request); return await this.summaryFor(updated); }
     catch (error) { if (error instanceof ControlPlaneError) throw error; throw new ControlPlaneError("CONFLICT", `automation could not be ${operation}d`); }
   }
   async history(scope: OwnershipScope, automationId: string): Promise<readonly RunSummaryView[]> {
