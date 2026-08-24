@@ -40,9 +40,19 @@ function errorResponse(error: unknown): ControlPlaneHttpResponse {
   if (error instanceof ControlPlaneError) { const status = error.code === "BAD_REQUEST" ? 400 : error.code === "NOT_FOUND" ? 404 : error.code === "NOT_CONFIGURED" ? 503 : 409; return { status, body: { error: { code: error.code, message: error.message } } }; }
   return { status: 500, body: { error: { code: "INTERNAL", message: "control-plane request failed" } } };
 }
+function generatedFreshTestRunId(factory: () => string): string {
+  const runId = factory().trim();
+  if (!/^test-[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(runId)) {
+    throw new ControlPlaneError("CONFLICT", "fresh-test run identity could not be generated");
+  }
+  return runId;
+}
 
 export class AutomationControlPlaneHttpHandler {
-  constructor(private readonly service: AutomationControlPlaneService) {}
+  constructor(
+    private readonly service: AutomationControlPlaneService,
+    private readonly freshTestRunIdFactory: () => string = () => `test-${globalThis.crypto.randomUUID()}`,
+  ) {}
   async handle(request: ControlPlaneHttpRequest, context: AuthenticatedControlPlaneContext): Promise<ControlPlaneHttpResponse> {
     try {
       const parts = routeParts(request.path);
@@ -92,7 +102,7 @@ export class AutomationControlPlaneHttpHandler {
       if (request.method === "POST" && parts[3] === "test" && parts.length === 4) {
         const body = jsonObject(request.body); const runtimeVariables = body.runtimeVariables;
         if (runtimeVariables !== undefined && (!runtimeVariables || typeof runtimeVariables !== "object" || Array.isArray(runtimeVariables))) throw new ControlPlaneError("BAD_REQUEST", "runtimeVariables must be a JSON object");
-        const command: TestAutomationCommand = { runId: stringField(body, "runId"), ...(runtimeVariables ? { runtimeVariables: runtimeVariables as Readonly<Record<string, unknown>> } : {}) };
+        const command: TestAutomationCommand = { runId: generatedFreshTestRunId(this.freshTestRunIdFactory), ...(runtimeVariables ? { runtimeVariables: runtimeVariables as Readonly<Record<string, unknown>> } : {}) };
         return { status: 200, body: await this.service.runFreshTest(context.scope, automationId, command) };
       }
       if (request.method === "POST" && parts[3] === "publish" && parts.length === 4) {

@@ -8,55 +8,60 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end defec
 
 ## Incoming validation
 
-- Incoming PR #1 head for this run: `efd90ae226eb160efc030ba54d12d677c96e99f1` (`Make automation creation retries converge`).
-- GitHub Actions CI #274 completed successfully on that exact head: deterministic lock verification, frozen install, strict `pnpm check`, all production package builds, AWS hosting/federation/release/deployment/demo/live-smoke/OIDC contracts, and the full test suite passed.
+- Incoming PR #1 head for this run: `49fb49aa54076a94318968c9d81517b814ff791a` (`Keep capture traces behind trusted worker boundary`).
+- GitHub Actions CI #275 completed successfully on that exact head: deterministic lock verification, frozen install, strict `pnpm check`, all production package builds, AWS hosting/federation/release/deployment/demo/live-smoke/OIDC contracts, and the full test suite passed.
 - PR #1 is open, ready for review, mergeable, and unmerged.
-- Exact-head GitHub Actions remains authoritative for the capture-transport change below; no pass is claimed until a completed successful run exists for the new commit.
+- Exact-head GitHub Actions remains authoritative for the Fresh Test identity change below; no pass is claimed until a completed successful run exists for the new commit.
 
-## This product slice — keep capture trace ingestion behind the trusted worker boundary
+## This product slice — keep Fresh Test run identity server-owned at the authenticated API boundary
 
 ### Product/security defect
 
-The ordinary Cognito-authenticated `AutomationControlPlaneHttpHandler` still exposed `POST /v1/automations/:automationId/capture-trace`. That route accepted a caller-supplied `CaptureTrace` and forwarded it directly to lifecycle capture persistence.
+The Next.js product stopped asking users for Fresh Test run IDs earlier, but the ordinary authenticated control-plane HTTP route still parsed `runId` from request JSON and forwarded it as the durable Fresh Test/idempotency identity.
 
-Production capture already has a separate trusted completion boundary whose ordering is Browser Profile save -> immutable trace persistence -> durable capture completion. Its handler requires deployment-authenticated capture-worker context, and the AWS deployment exposes that boundary separately through IAM authorization. Leaving raw trace ingestion on the end-user API undermined that separation: a normal signed-in user could inject capture material without proving it came from the active AgentCore capture session or that the Browser Profile was saved first.
+A normal Cognito-authenticated caller could therefore choose an internal run identity directly, including attempting collisions with another intentional Fresh Test for the same automation. Tenant ownership and execution admission still prevented cross-tenant execution, but durable run identity should not be caller authority in the end-user API at all.
 
 ### Behavior
 
-- The ordinary authenticated control-plane HTTP router no longer exposes a `capture-trace` route.
-- A `POST /v1/automations/:automationId/capture-trace` request now falls through to the normal sanitized 404 response and performs zero capture-persistence work.
-- The provider-neutral lifecycle/service method remains available for deterministic local/mock/internal composition; this slice narrows only the end-user HTTP transport authority.
-- Production capture completion remains owned by `TrustedCaptureCompletionHandler` and its deployment-authenticated worker context.
-- Compilation continues to resolve only the latest durable completed capture server-side. The browser supplies neither trace ID nor workflow ID.
+- `AutomationControlPlaneHttpHandler` now mints a bounded `test-...` run identity itself for every accepted authenticated Fresh Test submission.
+- A request-body `runId` is ignored and has no execution authority.
+- The authenticated HTTP request no longer requires a run ID; runtime variables remain the only Fresh Test execution data accepted from that body.
+- The provider-neutral `AutomationControlPlaneService.runFreshTest()` contract still accepts an explicit run ID for trusted internal/local composition. This slice narrows only the end-user HTTP transport boundary.
+- The generated run ID is returned only through the existing accepted/run result, where it is required for durable history/polling correlation.
+- Generated identities are format-bounded and an invalid server-side identity factory fails closed before Fresh Test submission.
 
 ### Security / tenant isolation
 
-- Cognito authentication proves user identity, but it is no longer sufficient authority to manufacture a capture trace or mark teaching evidence acceptable.
-- The trusted completion path continues to validate tenant/user/automation/session/Profile/trace identity before completion.
-- Browser session IDs, Browser Profile references, trace IDs, BYOK secrets, workload tokens, and raw provider/browser errors remain server-side.
-- Removing the public route reduces the action-authority surface presented to an authenticated but potentially malicious client.
+- Tenant/user ownership continues to come exclusively from authenticated context; spoofed body ownership fields have no authority.
+- A client can no longer manufacture the durable Fresh Test occurrence identity used by downstream idempotency/run state.
+- Runtime variables remain subject to the existing product-level closed `capture_input_N` requirement set and execution-plane validation.
+- BYOK keys, AgentCore workload tokens, Browser Profile/session identifiers, selectors, raw provider/browser errors, and capture trace identities remain outside this request authority.
 
 ### Idempotency / concurrency / retry / timeout
 
-- Existing capture-session claims, create-only/conditional persistence, same-trace replay behavior, and strongly consistent contention reads remain authoritative.
-- No new retry loop, queue, lease, outbox, heartbeat, or recovery subsystem is introduced.
-- Public rejected requests stop before S3/DynamoDB trace persistence, Browser Profile mutation, Browser allocation, model work, or compile work.
+- The existing durable Fresh Test occurrence key and automation execution lease remain the cross-process duplicate/concurrency authority after submission.
+- This change does not add an HTTP retry key. A genuinely repeated user submission is still a distinct intentional Fresh Test, while the UI suppresses a second test during an active run and the durable automation lease provides the final overlap fence.
+- Asynchronous AgentCore execution remains unchanged: the control plane receives the accepted server-generated run ID promptly and durable run/checkpoint state remains authoritative for completion.
+- No retry loop, outbox, lease, queue, heartbeat, or crash-recovery subsystem is added.
 
 ### Side-effect verification / recovery
 
-- Workflow compilation, deterministic/semantic execution, effect verification, checkpoints, human takeover/resume, and crash reconciliation are unchanged.
-- This change protects the provenance of the capture evidence from which those immutable workflows are compiled.
+- Browser execution, semantic fallback, expected-effect verification, profile-save-before-success, checkpoints, human takeover/resume, and crash reconciliation are unchanged.
+- The change only removes end-user authority over the Fresh Test run identity that reaches those existing execution controls.
 
 ### Cost / observability
 
-- Forged/legacy public trace-ingestion calls now cost only the normal authenticated API request and do not create trace-storage writes.
-- No AWS resource, IAM permission, dependency, storage schema, metric dimension, or retained GitHub Actions artifact is added.
+- No additional AWS request, Browser session, model invocation, database operation, metric dimension, IAM permission, dependency, or retained GitHub Actions artifact is added.
+- Invalid server-generated identities stop before AgentCore/local Fresh Test execution submission, avoiding execution-plane cost.
+- Existing run IDs remain available as bounded internal correlation identifiers in durable history/telemetry; raw caller-supplied values no longer enter that namespace through this API.
 
 ### Regression coverage
 
-- A new provider-neutral HTTP regression proves the former `capture-trace` path returns sanitized `404 NOT_FOUND`.
-- The same regression proves `AutomationLifecyclePort.persistCapture()` receives zero calls from that public request.
-- Existing trusted capture-completion tests continue to cover worker authentication, profile-before-trace ordering, durable completion, replay, tenant isolation, and sanitized failures.
+Provider-neutral HTTP tests prove:
+
+- a caller-supplied `runId` and spoofed tenant/user values cannot alter the server-generated Fresh Test command;
+- an authenticated Fresh Test request with no `runId` is accepted and receives the server-minted identity;
+- malformed server-side identity generation returns sanitized `CONFLICT` and makes zero Fresh Test submission calls.
 
 ## Known production risks intentionally left visible
 
@@ -77,7 +82,7 @@ After exact-head CI is green, deliberately promote the reviewed PR to the truste
 2. sign in through Cognito/Google and configure a usable OpenAI BYOK credential;
 3. verify the same automation-creation attempt converges after an intentionally uncertain/repeated submission without a second Browser Profile;
 4. capture a real workflow through AgentCore Live View and verify only the trusted worker completion path can make it compile-ready;
-5. finish capture, compile, inspect the semantic plan, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
+5. finish capture, compile, inspect the semantic plan, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state; also verify an attempted caller-provided Fresh Test run ID cannot choose the durable run identity;
 6. exercise `capture`, `cloudExecution`, and `scheduling` `NOT_CONFIGURED` states and confirm each causes zero corresponding cloud work;
 7. publish with recurrence/timezone and any explicitly non-secret recurring inputs, then verify Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution plus effect verification/history/CloudWatch/SES;
 8. deliberately expire target authentication, repair through the hardened Live View handoff, save the repaired Browser Profile, resume, and follow the terminal result.
