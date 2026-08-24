@@ -132,7 +132,7 @@ export class AutomationControlPlaneHttpHandler {
         if (parts[3] === "disable") return { status: 200, body: await this.service.disableAutomation(context.scope, automationId) };
       }
       if (request.method === "GET" && parts[3] === "runs" && parts.length === 4) return { status: 200, body: { runs: await this.service.history(context.scope, automationId) } };
-      return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } };
+      return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
     } catch (error) { return errorResponse(error); }
   }
 }

@@ -51,9 +51,15 @@ This was an unnecessary public transport seam, not required execution authority.
 
 A dedicated control-plane HTTP regression proves that a successful compile returns only the bounded acknowledgement and does not serialize the internal workflow ID, node ID, compiled initial variable, trace identity, or Browser Profile reference.
 
+### CI #290 root cause and corrective action
+
+CI #290 on normal head `38e09c8fec457cc586346d44dfb2311b0191e81e` passed deterministic lock verification and `pnpm install --frozen-lockfile`, then failed strict `pnpm check` in `packages/core`. The product change itself was type-compatible; the manually batched Git-data rewrite of `control-plane-http.ts` accidentally omitted one closing `}` from the pre-existing terminal 404 response. TypeScript correctly reported parser errors at the end of the handler and all packaging/tests were skipped.
+
+The single permitted corrective commit restores exactly that missing brace and records this root cause. The bounded compile acknowledgement and regression test are unchanged; no type/CI check is weakened.
+
 ### Validation status
 
-This run will publish at most one normal batched Git-data commit containing the transport change, regression coverage, and this progress update. GitHub Actions on that exact head is authoritative; no pass is claimed before it exists.
+GitHub Actions on the corrective exact head is authoritative. No pass is claimed before the corrective workflow completes successfully.
 
 ## Known production risks intentionally left visible
 
