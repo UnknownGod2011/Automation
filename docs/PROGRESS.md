@@ -64,7 +64,8 @@ Tests prove:
 - mismatched durable run/checkpoint nodes fail before execution;
 - cross-tenant/cross-automation access remains `NOT_FOUND`;
 - malformed/unbounded durable evidence state still fails closed;
-- target-auth repair continues to save the repaired Browser Profile and invoke the same idempotent resume authority without passing node selection into the public resume API.
+- target-auth repair continues to save the repaired Browser Profile and invoke the same idempotent resume authority without passing node selection into the public resume API;
+- the authenticated web client submits an empty resume command body and cannot choose the paused node.
 
 ### CI #284 root cause and corrective action
 
@@ -84,9 +85,15 @@ CI #286 on `c60a846083054aa5f6d04c5568c02e088c1acefc` stopped before installatio
 
 The single corrective commit updates only the reviewed lock fingerprint plus this progress record. The existing AWS SDK/DynamoDB peer-alignment assertions remain unchanged; the gate is not bypassed or weakened.
 
+### CI #287 root cause and correction
+
+CI #287 on `e74aa276d9c54ce52835349384c827935d67a92e` passed deterministic lock verification and frozen installation, then exposed one stale web regression test. `apps/web/lib/human-resume-client.test.ts` still called `resumeRun(automationId, runId, expectedNodeId)` and expected `{ expectedNodeId }` in the authenticated POST body even though production intentionally changed the contract to `resumeRun(automationId, runId)` with an empty JSON body.
+
+The correction changes only that obsolete test expectation. It explicitly proves that the web client sends no paused-node authority; durable node selection remains inside the provider-neutral control plane. No production behavior, type safety, or CI gate is weakened.
+
 ### Validation status
 
-Exact-head GitHub Actions on the lock-snapshot corrective commit is authoritative. No pass is claimed until that workflow completes successfully.
+Exact-head GitHub Actions on the stale-test correction is authoritative. No pass is claimed until that workflow completes successfully.
 
 ## Known production risks intentionally left visible
 
