@@ -3,8 +3,10 @@ import type { OwnershipScope } from "./index.js";
 import {
   AutomationControlPlaneService,
   ControlPlaneError,
+  type AutomationSummaryView,
   type CreateAutomationCommand,
   type CreateCredentialCommand,
+  type DashboardView,
   type PublishAutomationCommand,
   type RotateCredentialCommand,
   type RunSummaryView,
@@ -19,6 +21,9 @@ export interface ControlPlaneHttpRequest { method: "GET" | "POST"; path: string;
 export interface AuthenticatedControlPlaneContext { scope: OwnershipScope; }
 export interface ControlPlaneHttpResponse { status: number; body: unknown; }
 export interface CompileAutomationHttpView { kind: "COMPILED"; workflowVersion: number; }
+type PublicRunSummaryView = Omit<RunSummaryView, "currentNodeId">;
+type PublicAutomationSummaryView = Omit<AutomationSummaryView, "lastRun"> & { lastRun?: PublicRunSummaryView };
+interface PublicDashboardView { capabilities: DashboardView["capabilities"]; automations: readonly PublicAutomationSummaryView[]; }
 function jsonObject(value: unknown): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new ControlPlaneError("BAD_REQUEST", "request body must be a JSON object"); return value as Record<string, unknown>; }
 function stringField(body: Record<string, unknown>, name: string): string { const value = body[name]; if (typeof value !== "string") throw new ControlPlaneError("BAD_REQUEST", `${name} must be a string`); return value; }
 function booleanField(body: Record<string, unknown>, name: string): boolean | undefined { const value = body[name]; if (value === undefined) return undefined; if (typeof value !== "boolean") throw new ControlPlaneError("BAD_REQUEST", `${name} must be a boolean`); return value; }
@@ -58,6 +63,20 @@ function latestSuccessfulFreshTestWorkflowVersion(runs: readonly RunSummaryView[
   }
   return workflowVersion;
 }
+function publicRunSummary(run: RunSummaryView): PublicRunSummaryView {
+  const { currentNodeId: _currentNodeId, ...safe } = run;
+  return safe;
+}
+function publicAutomationSummary(automation: AutomationSummaryView): PublicAutomationSummaryView {
+  const { lastRun, ...safe } = automation;
+  return { ...safe, ...(lastRun ? { lastRun: publicRunSummary(lastRun) } : {}) };
+}
+function publicDashboard(dashboard: DashboardView): PublicDashboardView {
+  return {
+    capabilities: structuredClone(dashboard.capabilities),
+    automations: dashboard.automations.map(publicAutomationSummary),
+  };
+}
 
 export class AutomationControlPlaneHttpHandler {
   constructor(
@@ -82,18 +101,18 @@ export class AutomationControlPlaneHttpHandler {
         return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
       }
       if (parts[1] !== "automations") return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
-      if (request.method === "GET" && parts.length === 2) return { status: 200, body: await this.service.dashboard(context.scope) };
+      if (request.method === "GET" && parts.length === 2) return { status: 200, body: publicDashboard(await this.service.dashboard(context.scope)) };
       if (request.method === "POST" && parts.length === 2) {
         const body = jsonObject(request.body); const notifyOnSuccess = booleanField(body, "notifyOnSuccess"); const notifyOnFailure = booleanField(body, "notifyOnFailure");
         const command: CreateAutomationCommand = { automationId: stringField(body, "automationId"), name: stringField(body, "name"), websiteUrl: stringField(body, "websiteUrl"), objective: stringField(body, "objective"), consentAcknowledged: booleanField(body, "consentAcknowledged") ?? false, ...(notifyOnSuccess !== undefined ? { notifyOnSuccess } : {}), ...(notifyOnFailure !== undefined ? { notifyOnFailure } : {}) };
-        return { status: 201, body: await this.service.createAutomation(context.scope, command) };
+        return { status: 201, body: publicAutomationSummary(await this.service.createAutomation(context.scope, command)) };
       }
       const automationId = parts[2]; if (!automationId) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
-      if (request.method === "GET" && parts.length === 3) return { status: 200, body: await this.service.getAutomation(context.scope, automationId) };
+      if (request.method === "GET" && parts.length === 3) return { status: 200, body: publicAutomationSummary(await this.service.getAutomation(context.scope, automationId)) };
       if (request.method === "POST" && parts[3] === "objective" && parts.length === 4) {
         const body = jsonObject(request.body);
         const command: UpdateAutomationObjectiveCommand = { objective: stringField(body, "objective") };
-        return { status: 200, body: await this.service.updateAutomationObjective(context.scope, automationId, command) };
+        return { status: 200, body: publicAutomationSummary(await this.service.updateAutomationObjective(context.scope, automationId, command)) };
       }
       if (request.method === "POST" && parts[3] === "notifications" && parts.length === 4) {
         const body = jsonObject(request.body);
@@ -101,7 +120,7 @@ export class AutomationControlPlaneHttpHandler {
           notifyOnSuccess: requiredBooleanField(body, "notifyOnSuccess"),
           notifyOnFailure: requiredBooleanField(body, "notifyOnFailure"),
         };
-        return { status: 200, body: await this.service.updateNotificationPreferences(context.scope, automationId, command) };
+        return { status: 200, body: publicAutomationSummary(await this.service.updateNotificationPreferences(context.scope, automationId, command)) };
       }
       if (request.method === "POST" && parts[3] === "scheduled-inputs" && parts.length === 4) {
         const body = jsonObject(request.body);
@@ -111,7 +130,7 @@ export class AutomationControlPlaneHttpHandler {
           scheduledNonSecretInputs,
           scheduledInputsAreNonSecret: requiredBooleanField(body, "scheduledInputsAreNonSecret"),
         };
-        return { status: 200, body: await this.service.updateScheduledInputValues(context.scope, automationId, command) };
+        return { status: 200, body: publicAutomationSummary(await this.service.updateScheduledInputValues(context.scope, automationId, command)) };
       }
       if (request.method === "POST" && parts[3] === "capture" && parts.length === 4) { const result = await this.service.beginCapture(context.scope, automationId); return result.kind === "READY" ? { status: 201, body: result } : { status: 503, body: result }; }
       if (request.method === "POST" && parts[3] === "compile" && parts.length === 4) {
@@ -129,15 +148,15 @@ export class AutomationControlPlaneHttpHandler {
         const body = jsonObject(request.body); const schedule = scheduleField(body.schedule); const scheduledNonSecretInputs = stringMapField(body, "scheduledNonSecretInputs"); const scheduledInputsAreNonSecret = booleanField(body, "scheduledInputsAreNonSecret");
         const workflowVersion = latestSuccessfulFreshTestWorkflowVersion(await this.service.history(context.scope, automationId));
         const command: PublishAutomationCommand = { workflowVersion, schedule, ...(scheduledNonSecretInputs !== undefined ? { scheduledNonSecretInputs } : {}), ...(scheduledInputsAreNonSecret !== undefined ? { scheduledInputsAreNonSecret } : {}) };
-        return { status: 200, body: await this.service.publishAutomation(context.scope, automationId, command) };
+        return { status: 200, body: publicAutomationSummary(await this.service.publishAutomation(context.scope, automationId, command)) };
       }
-      if (request.method === "POST" && parts[3] === "schedule" && parts.length === 4) { const body = jsonObject(request.body); const command: UpdateAutomationScheduleCommand = { schedule: scheduleField(body.schedule) }; return { status: 200, body: await this.service.updateAutomationSchedule(context.scope, automationId, command) }; }
+      if (request.method === "POST" && parts[3] === "schedule" && parts.length === 4) { const body = jsonObject(request.body); const command: UpdateAutomationScheduleCommand = { schedule: scheduleField(body.schedule) }; return { status: 200, body: publicAutomationSummary(await this.service.updateAutomationSchedule(context.scope, automationId, command)) }; }
       if (request.method === "POST" && parts.length === 4) {
-        if (parts[3] === "pause") return { status: 200, body: await this.service.pauseAutomation(context.scope, automationId) };
-        if (parts[3] === "resume") return { status: 200, body: await this.service.resumeAutomation(context.scope, automationId) };
-        if (parts[3] === "disable") return { status: 200, body: await this.service.disableAutomation(context.scope, automationId) };
+        if (parts[3] === "pause") return { status: 200, body: publicAutomationSummary(await this.service.pauseAutomation(context.scope, automationId)) };
+        if (parts[3] === "resume") return { status: 200, body: publicAutomationSummary(await this.service.resumeAutomation(context.scope, automationId)) };
+        if (parts[3] === "disable") return { status: 200, body: publicAutomationSummary(await this.service.disableAutomation(context.scope, automationId)) };
       }
-      if (request.method === "GET" && parts[3] === "runs" && parts.length === 4) return { status: 200, body: { runs: await this.service.history(context.scope, automationId) } };
+      if (request.method === "GET" && parts[3] === "runs" && parts.length === 4) return { status: 200, body: { runs: (await this.service.history(context.scope, automationId)).map(publicRunSummary) } };
       return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
     } catch (error) { return errorResponse(error); }
   }
