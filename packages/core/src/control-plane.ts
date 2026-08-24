@@ -233,7 +233,7 @@ export class AutomationControlPlaneService {
     const id = requireToken(automationId, "automationId"); const automation = await this.dependencies.automations.get(scope, id);
     if (!automation) throw new ControlPlaneError("NOT_FOUND", "automation not found");
     if (this.dependencies.capabilities.capture === "NOT_CONFIGURED") {
-      return { kind: "NOT_CONFIGURED", reason: "cloud capture is not configured" };
+      return { kind: "NOT_CONFIGURED", reason: "AgentCore capture is not configured" };
     }
     const result = await this.dependencies.captureSessions.start(scope, automation); return result.kind === "NOT_CONFIGURED" ? result : { ...result };
   }

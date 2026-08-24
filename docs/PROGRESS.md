@@ -8,10 +8,12 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end corre
 
 ## Incoming validation
 
-- Incoming PR #1 head: `7456348acde590bbbb0751acecda81552c327533` (`Fail closed when Fresh Test is not configured`).
-- GitHub Actions CI #269 passed completely on that exact head.
+- Incoming PR #1 head for this corrective pass: `a949b047b6df65ceef9c1732d45a33c17836c49b` (`Fail closed when Capture is not configured`).
+- GitHub Actions CI #270 reached and passed deterministic lock verification, frozen install, strict `pnpm check`, all production packaging paths, and all AWS deployment/security/demo/OIDC contract checks.
+- CI #270 then failed only in `pnpm test` on two pre-existing capture-unavailable assertions because the new admission guard changed the stable public reason from `AgentCore capture is not configured` to `cloud capture is not configured`.
+- The new zero-allocation capture capability tests themselves passed.
 - PR #1 is open, ready for review, mergeable, and unmerged.
-- Exact-head GitHub Actions remains authoritative for this new slice; no pass is claimed until the new commit receives a completed successful run.
+- Exact-head GitHub Actions remains authoritative for the corrective commit; no pass is claimed until that commit receives a completed successful run.
 
 ## This product slice — make Capture capability state fail closed
 
@@ -22,11 +24,17 @@ Recovery/crash machinery remains intentionally parked unless an end-to-end corre
 Capture admission now mirrors the explicit Fresh Test capability discipline:
 
 - ownership and automation existence are checked first under the trusted tenant/user scope;
-- `capture = NOT_CONFIGURED` returns a stable `NOT_CONFIGURED` result before the capture starter is called;
+- `capture = NOT_CONFIGURED` returns the established stable `NOT_CONFIGURED` result before the capture starter is called;
 - `capture = CONFIGURED` and `capture = LOCAL_MOCK` continue through the existing `CaptureSessionStarter` port;
 - the existing HTTP route maps the fail-closed result to 503 without browser/session allocation.
 
 The starter remains independently responsible for lifecycle state, active-capture concurrency, Browser Profile ownership, Live View safety, and AWS-specific configuration after admission.
+
+### CI #270 root cause and corrective action
+
+The normal implementation introduced the correct zero-allocation behavior but used a new sanitized reason string. Existing service/HTTP tests intentionally locked the prior public response text `AgentCore capture is not configured`; changing that text was unnecessary to close the capability bug.
+
+The corrective change therefore preserves the existing public response string while keeping the new capability guard and its zero-starter-call behavior. The new regression suite is aligned to that established contract. No product behavior, test gate, TypeScript strictness, or deployment validation is weakened.
 
 ### Security / tenant isolation
 
@@ -53,11 +61,12 @@ The starter remains independently responsible for lifecycle state, active-captur
 
 ### Regression coverage
 
-New provider-neutral tests prove:
+Provider-neutral tests prove:
 
-- `NOT_CONFIGURED` returns a stable unavailable result and makes zero `CaptureSessionStarter.start()` calls;
+- `NOT_CONFIGURED` returns the established unavailable result and makes zero `CaptureSessionStarter.start()` calls;
 - the HTTP boundary returns 503 without starting capture;
-- both `CONFIGURED` and `LOCAL_MOCK` still call the configured capture starter and preserve the existing ready result.
+- both `CONFIGURED` and `LOCAL_MOCK` still call the configured capture starter and preserve the existing ready result;
+- pre-existing service and HTTP capture-unavailable response contracts remain unchanged.
 
 ## Known production risks intentionally left visible
 

@@ -76,7 +76,7 @@ describe("Capture capability dispatch", () => {
 
     await expect(service.beginCapture(owner, "auto-1")).resolves.toEqual({
       kind: "NOT_CONFIGURED",
-      reason: "cloud capture is not configured",
+      reason: "AgentCore capture is not configured",
     });
 
     expect(captureSessions.start).not.toHaveBeenCalled();
@@ -95,7 +95,7 @@ describe("Capture capability dispatch", () => {
       status: 503,
       body: {
         kind: "NOT_CONFIGURED",
-        reason: "cloud capture is not configured",
+        reason: "AgentCore capture is not configured",
       },
     });
     expect(captureSessions.start).not.toHaveBeenCalled();
