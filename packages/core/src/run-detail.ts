@@ -16,16 +16,14 @@ import type {
 export interface RunFailureView {
   code: RunFailure["code"];
   retryable: boolean;
-  nodeId?: string;
-  evidenceRefs: readonly string[];
+  evidenceCount: number;
 }
 
 export interface RunCheckpointView {
-  currentNodeId: string;
-  completedNodeIds: readonly string[];
+  completedStepCount: number;
   attempt: number;
   fingerprintRepeatCount: number;
-  evidenceRefs: readonly string[];
+  evidenceCount: number;
   lastFailure?: RunFailureView;
   updatedAt: string;
 }
@@ -50,13 +48,14 @@ export interface RunDetailView {
   scheduledAt: string;
   startedAt?: string;
   finishedAt?: string;
-  currentNodeId?: string;
   failure?: RunFailureView;
   checkpoint?: RunCheckpointView;
   semantic?: RunSemanticProgressView;
   needsHumanAttention: boolean;
   /** Read-only UX hint. Runtime validation remains the execution authority. */
   humanResumeEligible: boolean;
+  /** Read-only UX hint for TARGET_AUTH_REQUIRED repair. Runtime revalidates before side effects. */
+  targetAuthRepairEligible: boolean;
 }
 
 const MAX_REFERENCE_COUNT = 100;
@@ -71,7 +70,7 @@ function token(value: string, name: string): string {
   return trimmed;
 }
 
-function safeReferences(values: readonly string[]): readonly string[] {
+function safeReferenceCount(values: readonly string[]): number {
   if (values.length > MAX_REFERENCE_COUNT) {
     throw new ControlPlaneError("CONFLICT", "run evidence state is invalid");
   }
@@ -80,15 +79,14 @@ function safeReferences(values: readonly string[]): readonly string[] {
       throw new ControlPlaneError("CONFLICT", "run evidence state is invalid");
     }
   }
-  return [...values];
+  return values.length;
 }
 
 function failureView(failure: RunFailure): RunFailureView {
   return {
     code: failure.code,
     retryable: failure.retryable,
-    ...(failure.nodeId ? { nodeId: failure.nodeId } : {}),
-    evidenceRefs: safeReferences(failure.evidenceRefs),
+    evidenceCount: safeReferenceCount(failure.evidenceRefs),
   };
 }
 
@@ -97,11 +95,10 @@ function checkpointView(checkpoint: RunCheckpoint): RunCheckpointView {
     throw new ControlPlaneError("CONFLICT", "run checkpoint state is invalid");
   }
   return {
-    currentNodeId: checkpoint.currentNodeId,
-    completedNodeIds: [...checkpoint.completedNodeIds],
+    completedStepCount: checkpoint.completedNodeIds.length,
     attempt: checkpoint.attempt,
     fingerprintRepeatCount: checkpoint.fingerprintRepeatCount,
-    evidenceRefs: safeReferences(checkpoint.evidenceRefs),
+    evidenceCount: safeReferenceCount(checkpoint.evidenceRefs),
     ...(checkpoint.lastFailure ? { lastFailure: failureView(checkpoint.lastFailure) } : {}),
     updatedAt: checkpoint.updatedAt,
   };
@@ -169,10 +166,10 @@ function semanticProgress(
 /**
  * Read-only user-facing run diagnostics. The view intentionally excludes workflow
  * variables, raw failure messages, state fingerprints, browser/profile state,
- * provider payloads, and evidence contents. When the immutable workflow is
- * available, semantic progress contains only step ordinal, kind, and objective;
- * selectors, bindings, expected values, and internal graph identifiers remain out
- * of that user-facing semantic projection.
+ * provider payloads, internal workflow/node identifiers, and evidence artifact
+ * identifiers/contents. When the immutable workflow is available, semantic progress
+ * contains only step ordinal, kind, and objective; selectors, bindings, expected
+ * values, and internal graph identifiers remain server-side.
  */
 export class RunDetailService {
   constructor(
@@ -233,6 +230,13 @@ export class RunDetailService {
         Boolean(successors[0] && graph.nodes[successors[0]]);
     }
 
+    const targetAuthRepairEligible = Boolean(
+      run.status === "WAITING_FOR_HUMAN" &&
+      checkpoint &&
+      nodeStateMatches &&
+      checkpoint.lastFailure?.code === "TARGET_AUTH_REQUIRED" &&
+      checkpoint.lastFailure.nodeId === checkpoint.currentNodeId,
+    );
     const semantic = graph ? semanticProgress(graph, run, checkpoint) : undefined;
 
     return {
@@ -243,12 +247,12 @@ export class RunDetailService {
       scheduledAt: run.scheduledAt,
       ...(run.startedAt ? { startedAt: run.startedAt } : {}),
       ...(run.finishedAt ? { finishedAt: run.finishedAt } : {}),
-      ...(run.currentNodeId ? { currentNodeId: run.currentNodeId } : {}),
       ...(run.failure ? { failure: failureView(run.failure) } : {}),
       ...(checkpoint ? { checkpoint: checkpointView(checkpoint) } : {}),
       ...(semantic ? { semantic } : {}),
       needsHumanAttention: run.status === "WAITING_FOR_HUMAN",
       humanResumeEligible,
+      targetAuthRepairEligible,
     };
   }
 }

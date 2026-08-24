@@ -34,10 +34,6 @@ export interface HumanResumeExecutionPort {
   execute(request: HumanResumeSubmission): Promise<HumanResumeSubmissionResult>;
 }
 
-export interface HumanResumeCommand {
-  expectedNodeId: string;
-}
-
 function token(value: string, name: string, max = 160): string {
   const normalized = value.trim();
   if (!normalized) throw new ControlPlaneError("BAD_REQUEST", `${name} is required`);
@@ -45,10 +41,19 @@ function token(value: string, name: string, max = 160): string {
   return normalized;
 }
 
+function durableNodeId(value: string): string {
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 160) {
+    throw new ControlPlaneError("CONFLICT", "paused run checkpoint node identity is invalid");
+  }
+  return normalized;
+}
+
 /**
- * Authenticated control-plane guard around action-capable human resume. This is
- * deliberately limited to confirming a durable pause boundary; it does not expose
- * lease tokens, browser sessions, provider errors, branch selection, or claim IDs.
+ * Authenticated control-plane guard around action-capable human resume. The paused
+ * node is derived only from the latest durable checkpoint; browser/API request data
+ * cannot choose it. Lease tokens, browser sessions, provider errors, branch
+ * selection, and claim IDs remain outside this boundary.
  */
 export class HumanResumeControlPlaneService {
   constructor(
@@ -61,11 +66,9 @@ export class HumanResumeControlPlaneService {
     scope: OwnershipScope,
     automationIdInput: string,
     runIdInput: string,
-    command: HumanResumeCommand,
   ): Promise<HumanResumeSubmissionResult> {
     const automationId = token(automationIdInput, "automationId");
     const runId = token(runIdInput, "runId");
-    const expectedNodeId = token(command.expectedNodeId, "expectedNodeId");
 
     const run = await this.runs.get(scope, runId);
     if (!run || run.automationId !== automationId) {
@@ -86,9 +89,8 @@ export class HumanResumeControlPlaneService {
     ) {
       throw new ControlPlaneError("CONFLICT", "paused run checkpoint identity is invalid");
     }
-    if (checkpoint.currentNodeId !== expectedNodeId) {
-      throw new ControlPlaneError("CONFLICT", "paused run moved to another node");
-    }
+
+    const expectedNodeId = durableNodeId(checkpoint.currentNodeId);
     if (run.currentNodeId && run.currentNodeId !== expectedNodeId) {
       throw new ControlPlaneError("CONFLICT", "paused run state does not match its checkpoint");
     }
@@ -115,21 +117,6 @@ function pathParts(path: string): readonly string[] {
   } catch {
     return [];
   }
-}
-
-function objectBody(value: unknown): Readonly<Record<string, unknown>> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new ControlPlaneError("BAD_REQUEST", "request body must be a JSON object");
-  }
-  return value as Readonly<Record<string, unknown>>;
-}
-
-function stringField(body: Readonly<Record<string, unknown>>, name: string): string {
-  const value = body[name];
-  if (typeof value !== "string") {
-    throw new ControlPlaneError("BAD_REQUEST", `${name} must be a string`);
-  }
-  return value;
 }
 
 function errorResponse(error: unknown): ControlPlaneHttpResponse {
@@ -178,12 +165,9 @@ export class HumanResumeControlPlaneHttpHandler implements ControlPlaneHttpHandl
     }
 
     try {
-      const body = objectBody(request.body);
       return {
         status: 200,
-        body: await this.service.resume(context.scope, route[2], route[4], {
-          expectedNodeId: stringField(body, "expectedNodeId"),
-        }),
+        body: await this.service.resume(context.scope, route[2], route[4]),
       };
     } catch (error) {
       return errorResponse(error);

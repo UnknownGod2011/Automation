@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { WebControlPlaneError } from "../../../../../../../../lib/control-plane-client";
 import { isSameOriginMutation } from "../../../../../../../../lib/mutation-security";
-import { serverResolvedHumanResumeNode } from "../../../../../../../../lib/run-resume-state";
 import { createAuthenticatedWebControlPlaneClient, WebAuthError } from "../../../../../../../../lib/server-auth";
 
 function redirectBack(request: Request, automationId: string, runId: string, notice: string): NextResponse {
@@ -22,9 +21,8 @@ export async function POST(
   try {
     const client = await createAuthenticatedWebControlPlaneClient();
     const run = await client.run(automationId, runId);
-    const expectedNodeId = serverResolvedHumanResumeNode(run);
-    if (!expectedNodeId) return redirectBack(request, automationId, runId, "resume-failed");
-    const result = await client.resumeRun(automationId, runId, expectedNodeId);
+    if (!run.humanResumeEligible) return redirectBack(request, automationId, runId, "resume-failed");
+    const result = await client.resumeRun(automationId, runId);
     return redirectBack(
       request,
       automationId,

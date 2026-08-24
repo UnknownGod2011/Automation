@@ -54,7 +54,7 @@ const base = {
 };
 
 describe("human resume control-plane boundary", () => {
-  it("forwards only authenticated ownership and a server-owned resolution identity", async () => {
+  it("derives the paused node from durable state and forwards only authenticated ownership plus a server-owned resolution identity", async () => {
     const { runs, checkpoints } = repositories();
     const execution: HumanResumeExecutionPort = {
       execute: vi.fn(async (request) => ({
@@ -65,9 +65,11 @@ describe("human resume control-plane boundary", () => {
     };
     const service = new HumanResumeControlPlaneService(runs, checkpoints, execution);
 
-    await expect(service.resume(scope, "auto-1", "run-1", {
-      expectedNodeId: "human-approve",
-    })).resolves.toEqual({ kind: "RESUMED", runId: "run-1", status: "SUCCEEDED" });
+    await expect(service.resume(scope, "auto-1", "run-1")).resolves.toEqual({
+      kind: "RESUMED",
+      runId: "run-1",
+      status: "SUCCEEDED",
+    });
 
     expect(execution.execute).toHaveBeenCalledWith({
       scope,
@@ -84,30 +86,41 @@ describe("human resume control-plane boundary", () => {
     const execution: HumanResumeExecutionPort = { execute: vi.fn() };
     const service = new HumanResumeControlPlaneService(runs, checkpoints, execution);
 
-    await expect(service.resume(scope, "auto-1", "run-1", {
-      expectedNodeId: "human-approve",
-    })).resolves.toEqual({ kind: "NOT_WAITING", runId: "run-1", status: "SUCCEEDED" });
+    await expect(service.resume(scope, "auto-1", "run-1")).resolves.toEqual({
+      kind: "NOT_WAITING",
+      runId: "run-1",
+      status: "SUCCEEDED",
+    });
     expect(execution.execute).not.toHaveBeenCalled();
   });
 
-  it("rejects cross-automation and stale-node commands before execution", async () => {
+  it("rejects cross-automation access and mismatched durable run/checkpoint nodes before execution", async () => {
     const { runs, checkpoints } = repositories();
     const execution: HumanResumeExecutionPort = { execute: vi.fn() };
     const service = new HumanResumeControlPlaneService(runs, checkpoints, execution);
 
-    await expect(service.resume(scope, "other-auto", "run-1", {
-      expectedNodeId: "human-approve",
-    })).rejects.toMatchObject({ code: "NOT_FOUND" });
-    await expect(service.resume(scope, "auto-1", "run-1", {
-      expectedNodeId: "other-node",
-    })).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(service.resume(scope, "other-auto", "run-1")).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    const mismatched = repositories({
+      checkpoint: { ...checkpoint, currentNodeId: "another-node" },
+    });
+    const mismatchedService = new HumanResumeControlPlaneService(
+      mismatched.runs,
+      mismatched.checkpoints,
+      execution,
+    );
+    await expect(mismatchedService.resume(scope, "auto-1", "run-1")).rejects.toMatchObject({ code: "CONFLICT" });
     expect(execution.execute).not.toHaveBeenCalled();
   });
 
-  it("ignores ownership and resolution spoofing fields in the HTTP body", async () => {
+  it("ignores ownership, resolution, and expected-node spoofing fields in the HTTP body", async () => {
     const { runs, checkpoints } = repositories();
     const execution: HumanResumeExecutionPort = {
-      execute: vi.fn(async () => ({ kind: "BUSY" as const, runId: "run-1", status: "WAITING_FOR_HUMAN" as const })),
+      execute: vi.fn(async () => ({
+        kind: "BUSY" as const,
+        runId: "run-1",
+        status: "WAITING_FOR_HUMAN" as const,
+      })),
     };
     const handler = new HumanResumeControlPlaneHttpHandler(
       base,
@@ -121,7 +134,7 @@ describe("human resume control-plane boundary", () => {
         tenantId: "attacker",
         userId: "attacker",
         resolutionId: "attacker-choice",
-        expectedNodeId: "human-approve",
+        expectedNodeId: "attacker-node",
       },
     }, { scope });
 
@@ -129,9 +142,12 @@ describe("human resume control-plane boundary", () => {
       status: 200,
       body: { kind: "BUSY", runId: "run-1", status: "WAITING_FOR_HUMAN" },
     });
-    expect(execution.execute).toHaveBeenCalledWith(expect.objectContaining({
+    expect(execution.execute).toHaveBeenCalledWith({
       scope,
+      automationId: "auto-1",
+      runId: "run-1",
+      expectedNodeId: "human-approve",
       resolutionId: "authenticated-user-confirm-v1",
-    }));
+    });
   });
 });

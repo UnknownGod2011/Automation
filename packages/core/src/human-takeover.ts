@@ -225,9 +225,7 @@ export class HumanTakeoverService {
       }
     }
 
-    return this.resume.resume(scope, boundary.automation.automationId, boundary.run.runId, {
-      expectedNodeId: boundary.checkpoint.currentNodeId,
-    });
+    return this.resume.resume(scope, boundary.automation.automationId, boundary.run.runId);
   }
 
   private async repairBoundary(scope: OwnershipScope, automationIdInput: string, runIdInput: string): Promise<RepairBoundary> {
