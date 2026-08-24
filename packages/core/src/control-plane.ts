@@ -11,11 +11,12 @@ import type { CaptureSessionRecord } from "./capture-completion.js";
 import type { ProviderCredentialManagementPort } from "./credential-management.js";
 import type { ProviderCredentialSummary } from "./credential-pool.js";
 import type { AutomationRepository, OwnershipScope, RunRepository } from "./index.js";
-import type {
-  AutomationProductLifecycleService,
-  FreshTestRunRequest,
-  FreshTestRunResult,
-  PublishAutomationRequest,
+import {
+  AUTOMATION_DRAFT_LIMITS,
+  type AutomationProductLifecycleService,
+  type FreshTestRunRequest,
+  type FreshTestRunResult,
+  type PublishAutomationRequest,
 } from "./product-lifecycle.js";
 import { normalizeAutomationTargetUrl } from "./target-url-policy.js";
 
@@ -34,6 +35,7 @@ export interface RunSummaryView {
 }
 export interface DashboardView { capabilities: ControlPlaneCapabilities; automations: readonly AutomationSummaryView[]; }
 export interface CreateAutomationCommand { automationId: string; name: string; websiteUrl: string; objective: string; consentAcknowledged: boolean; notifyOnSuccess?: boolean; notifyOnFailure?: boolean; }
+export interface UpdateAutomationObjectiveCommand { objective: string; }
 export interface TestAutomationCommand { runId: string; runtimeVariables?: Readonly<Record<string, unknown>>; }
 export interface PublishAutomationCommand {
   workflowVersion: number;
@@ -74,10 +76,18 @@ export class ControlPlaneError extends Error {
   constructor(readonly code: "BAD_REQUEST" | "NOT_FOUND" | "CONFLICT" | "NOT_CONFIGURED", message: string) { super(message); }
 }
 const attentionStatuses = new Set<AutomationStatus>(["NEEDS_AUTH", "NEEDS_API_KEY", "NEEDS_ATTENTION", "PAUSED"]);
+const OBJECTIVE_REVISION_STATUSES = new Set<AutomationStatus>(["DRAFT", "COMPILING", "READY_TO_TEST", "READY_TO_PUBLISH", "DISABLED"]);
 const MAX_SCHEDULED_INPUTS = 64;
 const MAX_SCHEDULED_INPUT_VALUE_CHARS = 4_096;
 const MAX_SCHEDULED_INPUT_TOTAL_CHARS = 32_768;
 function requireToken(value: string, name: string): string { const trimmed = value.trim(); if (!trimmed) throw new ControlPlaneError("BAD_REQUEST", `${name} is required`); if (trimmed.length > 160) throw new ControlPlaneError("BAD_REQUEST", `${name} is too long`); return trimmed; }
+function normalizeObjective(value: string): string {
+  if (value.length > AUTOMATION_DRAFT_LIMITS.objective) throw new ControlPlaneError("BAD_REQUEST", `objective must be at most ${AUTOMATION_DRAFT_LIMITS.objective} characters`);
+  const trimmed = value.trim();
+  if (!trimmed) throw new ControlPlaneError("BAD_REQUEST", "objective is required");
+  return trimmed;
+}
+export function canUpdateAutomationObjective(status: AutomationStatus): boolean { return OBJECTIVE_REVISION_STATUSES.has(status); }
 function matchesCreateReplay(record: AutomationRecord, command: CreateAutomationCommand): boolean {
   if (command.consentAcknowledged !== true) return false;
   try {
@@ -197,6 +207,29 @@ export class AutomationControlPlaneService {
         ...(command.notifyOnSuccess !== undefined ? { notifyOnSuccess: command.notifyOnSuccess } : {}), ...(command.notifyOnFailure !== undefined ? { notifyOnFailure: command.notifyOnFailure } : {}) });
       return toAutomationSummary(created, []);
     } catch (error) { if (error instanceof ControlPlaneError) throw error; throw new ControlPlaneError("BAD_REQUEST", "automation draft is invalid"); }
+  }
+  async updateAutomationObjective(scope: OwnershipScope, automationId: string, command: UpdateAutomationObjectiveCommand): Promise<AutomationSummaryView> {
+    const id = requireToken(automationId, "automationId");
+    const automation = await this.dependencies.automations.get(scope, id);
+    if (!automation) throw new ControlPlaneError("NOT_FOUND", "automation not found");
+    if (!canUpdateAutomationObjective(automation.status)) {
+      throw new ControlPlaneError("CONFLICT", "automation must be in a non-executing authoring state before its objective can be changed");
+    }
+    const objective = normalizeObjective(command.objective);
+    if (automation.prompt === objective) return this.summaryFor(automation);
+    const { scheduledNonSecretInputs: _staleScheduledInputs, ...withoutScheduledInputs } = automation;
+    const updated: AutomationRecord = {
+      ...withoutScheduledInputs,
+      prompt: objective,
+      status: automation.publishedWorkflowVersion === undefined ? "DRAFT" : "DISABLED",
+      updatedAt: this.now().toISOString(),
+    };
+    try {
+      await this.dependencies.automations.put(updated);
+      return await this.summaryFor(updated);
+    } catch {
+      throw new ControlPlaneError("CONFLICT", "automation objective could not be updated");
+    }
   }
   async updateNotificationPreferences(scope: OwnershipScope, automationId: string, command: UpdateNotificationPreferencesCommand): Promise<AutomationSummaryView> {
     const id = requireToken(automationId, "automationId");

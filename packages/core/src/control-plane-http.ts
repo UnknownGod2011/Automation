@@ -9,6 +9,7 @@ import {
   type RotateCredentialCommand,
   type RunSummaryView,
   type TestAutomationCommand,
+  type UpdateAutomationObjectiveCommand,
   type UpdateAutomationScheduleCommand,
   type UpdateNotificationPreferencesCommand,
   type UpdateScheduledInputValuesCommand,
@@ -89,6 +90,11 @@ export class AutomationControlPlaneHttpHandler {
       }
       const automationId = parts[2]; if (!automationId) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
       if (request.method === "GET" && parts.length === 3) return { status: 200, body: await this.service.getAutomation(context.scope, automationId) };
+      if (request.method === "POST" && parts[3] === "objective" && parts.length === 4) {
+        const body = jsonObject(request.body);
+        const command: UpdateAutomationObjectiveCommand = { objective: stringField(body, "objective") };
+        return { status: 200, body: await this.service.updateAutomationObjective(context.scope, automationId, command) };
+      }
       if (request.method === "POST" && parts[3] === "notifications" && parts.length === 4) {
         const body = jsonObject(request.body);
         const command: UpdateNotificationPreferencesCommand = {
