@@ -11,6 +11,7 @@ import { InMemoryAutomationRepository, InMemoryRunRepository } from "./memory.js
 import type { OwnershipScope } from "./index.js";
 
 const scope: OwnershipScope = { tenantId: "tenant-compile", userId: "user-compile" };
+const browserProfileRef = "server-profile-ref";
 
 function automation(): AutomationRecord {
   return {
@@ -21,7 +22,7 @@ function automation(): AutomationRecord {
     websiteUrl: "https://example.com/app",
     prompt: "Submit the verified workflow",
     status: "COMPILING",
-    browserProfileRef: "server-profile-ref",
+    browserProfileRef,
     notifyOnSuccess: false,
     notifyOnFailure: true,
     createdAt: "2026-08-24T12:00:00.000Z",
@@ -86,7 +87,7 @@ describe("AutomationControlPlaneHttpHandler compile response", () => {
       automationId: record.automationId,
       captureSessionId: "capture-session-server-id",
       browserSessionId: "browser-session-server-id",
-      browserProfileRef: record.browserProfileRef,
+      browserProfileRef,
       startedAt: "2026-08-24T12:00:00.000Z",
       expiresAt: "2026-08-24T13:00:00.000Z",
       status: "STARTED",
@@ -126,6 +127,6 @@ describe("AutomationControlPlaneHttpHandler compile response", () => {
     expect(serialized).not.toContain("internal-end-node");
     expect(serialized).not.toContain("internal-compiled-value");
     expect(serialized).not.toContain("trace-server-id");
-    expect(serialized).not.toContain("server-profile-ref");
+    expect(serialized).not.toContain(browserProfileRef);
   });
 });

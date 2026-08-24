@@ -8,64 +8,65 @@ Recovery/crash machinery remains intentionally parked unless a real end-to-end d
 
 ## Incoming validation
 
-- `main` currently points to `27ebb8d8596924cdbf8026da5fb20f6342b59bc6` (`Keep run diagnostic identities server-side`).
-- That content was validated on exact pre-merge PR head by GitHub Actions CI #288 before squash promotion. The connector has not surfaced a separate push-triggered `main` run for the squash SHA, so no post-merge CI claim is made here.
-- No pull request was open when this development run began.
-- Exact-head GitHub Actions remains authoritative for every new branch change.
+- `main` points to `27ebb8d8596924cdbf8026da5fb20f6342b59bc6` (`Keep run diagnostic identities server-side`).
+- That production content was validated on exact pre-merge PR head by GitHub Actions CI #288 before squash promotion.
+- PR #4 (`Keep compiled workflow graph server-side`) is the active production slice.
+- PR #4 normal head `38e09c8fec457cc586346d44dfb2311b0191e81e` narrowed the authenticated Compile response to a bounded acknowledgement.
+- Corrective head `52381a6af98128957452f5b9f7667c2db8ccb5fc` fixed a parser defect from the manual batched rewrite, but CI #291 then stopped at one strict test-fixture typing error before packaging/tests.
+- Exact-head GitHub Actions remains authoritative; no pass is claimed until it exists.
 
 ## This product/security slice — keep the compiled executable workflow server-side
 
-### Defect
+### Product boundary
 
-The product already exposes a dedicated sanitized semantic workflow-inspection view for users, but the authenticated `POST /v1/automations/:automationId/compile` transport still returned the complete executable `WorkflowGraph` after compilation. A direct authenticated caller could therefore receive internal workflow/node identities, deterministic execution structure, bindings, initial variables, and other implementation-level graph data even though the Next.js product immediately discarded that response and later used the sanitized inspection endpoint.
+The authenticated `POST /v1/automations/:automationId/compile` endpoint now returns only:
 
-This was an unnecessary public transport seam, not required execution authority.
+`{ kind: "COMPILED", workflowVersion }`
 
-### Behavior
+The executable `WorkflowGraph` remains server-side in the immutable workflow repository. Fresh Test, publication, scheduling, Runtime execution, verification, and semantic workflow inspection continue to use the same persisted graph.
 
-- Compilation still resolves the latest trusted completed capture server-side and invokes the same provider-neutral lifecycle/compiler.
-- The authenticated compile transport now returns only `{ kind: "COMPILED", workflowVersion }`.
-- The executable `WorkflowGraph` remains server-side in the immutable workflow repository and continues to be used by Fresh Test, publication, scheduling, Runtime execution, and the sanitized workflow-inspection service.
-- The Next.js compile mutation already ignored the response body, so the user flow remains Capture -> Compile -> inspect semantic plan -> Fresh Test.
+The user-facing review surface remains the sanitized workflow-inspection endpoint; the Compile mutation no longer serializes internal workflow/node identities, execution structure, bindings, initial variables, capture identity, or Browser Profile metadata back to the authenticated client.
 
-### Security / tenant isolation
+### Security and tenant isolation
 
-- Tenant/user ownership, capture-completion provenance, and authoring-state validation are unchanged and remain authoritative before compilation.
-- The compile response no longer exposes workflow IDs, node IDs, internal variable values, bindings, deterministic strategy details, Browser Profile references, capture trace IDs, or other executable-graph data.
-- This does not hide user-authored objective text from the owner; it narrows the transport to the minimum acknowledgement needed by the product.
-- The sanitized workflow-inspection endpoint remains the supported human-readable review surface.
+- Tenant/user ownership and trusted capture-completion provenance remain authoritative before compilation.
+- Browser Profile references, capture trace IDs, internal workflow/node IDs, compiled variable values, selectors, bindings, and execution strategy data remain server-side.
+- No new credential, browser-session, model, Scheduler, or recovery authority is introduced.
 
 ### Idempotency / concurrency / retry / verification
 
-- Compiler versioning, immutable workflow persistence, capture provenance, Fresh Test admission, Scheduler publication, execution leases, retries, and effect verification are unchanged.
-- No additional retry or recovery state machine is introduced.
-- The known compile partial-write limitation remains: if immutable workflow storage succeeds but the automation-state write definitely fails, a later retry can create another workflow version from the same capture. This slice does not broaden that uncommon cross-store recovery surface.
+- Compiler versioning, immutable workflow persistence, capture provenance, Fresh Test admission, Scheduler publication, automation locks, retries, and effect verification are unchanged.
+- No retry or recovery subsystem is added.
+- The known compile cross-store partial-write limitation remains: if immutable workflow persistence succeeds but the automation-state write definitely fails, a later retry can create another workflow version from the same capture. This uncommon case remains visible rather than being expanded into another recovery subsystem before live evidence requires it.
 
 ### Cost / observability / user recovery
 
-- No additional DynamoDB, S3, AgentCore, browser, model, queue, or Scheduler operation is added.
-- The response is smaller, reducing unnecessary authenticated API payload size.
-- Existing CloudWatch/SES and human takeover/resume behavior is unchanged.
+- No extra DynamoDB, S3, AgentCore, browser, model, queue, Scheduler, SES, or CloudWatch operation is added.
+- The authenticated Compile response is smaller and carries less implementation detail.
+- Existing human takeover/resume behavior is unchanged.
 
-### Regression coverage
+## CI #290 and #291 root causes
 
-A dedicated control-plane HTTP regression proves that a successful compile returns only the bounded acknowledgement and does not serialize the internal workflow ID, node ID, compiled initial variable, trace identity, or Browser Profile reference.
+CI #290 passed deterministic lock verification and frozen installation, then TypeScript found a missing closing brace in `packages/core/src/control-plane-http.ts` introduced during the manual Git-data batch. The single corrective commit restored exactly that syntax without weakening checks.
 
-### CI #290 root cause and corrective action
+CI #291 passed deterministic lock verification and frozen installation, then stopped in strict `pnpm check` on `packages/core/src/control-plane-http-compile-redaction.test.ts`: the fixture forwarded `record.browserProfileRef`, statically typed `string | undefined`, into a capture-session field requiring `string`.
 
-CI #290 on normal head `38e09c8fec457cc586346d44dfb2311b0191e81e` passed deterministic lock verification and `pnpm install --frozen-lockfile`, then failed strict `pnpm check` in `packages/core`. The product change itself was type-compatible; the manually batched Git-data rewrite of `control-plane-http.ts` accidentally omitted one closing `}` from the pre-existing terminal 404 response. TypeScript correctly reported parser errors at the end of the handler and all packaging/tests were skipped.
+The production Compile transport was not implicated. This run fixes only the fixture authority by using one explicit known test constant (`server-profile-ref`) for both the automation record and capture-session record. TypeScript remains strict and the raw executable graph is not restored to the response.
 
-The single permitted corrective commit restores exactly that missing brace and records this root cause. The bounded compile acknowledgement and regression test are unchanged; no type/CI check is weakened.
+## Validation status for this run
 
-### Validation status
+This run publishes one coherent commit containing:
 
-GitHub Actions on the corrective exact head is authoritative. No pass is claimed before the corrective workflow completes successfully.
+- the strict fixture correction for CI #291;
+- this `docs/PROGRESS.md` update.
+
+GitHub Actions on the exact resulting head is authoritative. No green claim is made before the workflow completes successfully.
 
 ## Known production risks intentionally left visible
 
 - The protected AWS deployment and full live vertical demonstration still need to run in a real environment with approved GitHub Environment/OIDC role/VPC inputs.
 - VPC-mode AgentCore Browser is required, but real subnet/route/DNS/security-group/firewall policy still needs live proof that private/link-local/control-plane targets stay unreachable after DNS resolution and redirects.
-- Live Cognito/Google/SES/AgentCore behavior is structurally tested with fakes and deployment contracts but still needs the controlled real environment demonstration.
+- Live Cognito/Google/SES/AgentCore behavior is structurally tested with fakes and deployment contracts but still needs controlled real-environment validation.
 - Only OpenAI has a concrete production BYOK reasoning adapter today.
 - DynamoDB and EventBridge Scheduler cannot be mutated atomically; lifecycle ordering is fail-closed but operational reconciliation may still be required after a real partial infrastructure failure.
 - Browser Profile and credential-vault creation can leave bounded orphan resources after ambiguous/abandoned cross-service creation; cleanup must not guess under uncertain persistence.
@@ -74,13 +75,13 @@ GitHub Actions on the corrective exact head is authoritative. No pass is claimed
 
 ## Next product milestone
 
-After exact-head CI is green, deliberately promote the reviewed slice and run the protected real AWS vertical demonstration from `main`:
+After exact-head CI is green, promote the reviewed slice and run the protected real AWS vertical demonstration from `main`:
 
 1. deploy immutable artifacts and pass live public/auth smoke;
 2. sign in through Cognito/Google and configure an OpenAI BYOK credential;
 3. create an automation and exercise replay-safe creation under request uncertainty;
 4. capture a real workflow through AgentCore Live View and trusted worker completion;
-5. compile it, verify only the sanitized semantic inspection is user-visible, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
+5. compile it, verify the executable graph remains server-side while the sanitized semantic inspection remains user-visible, and run a Fresh Test lasting more than 30 seconds while the UI follows durable state;
 6. publish with server-owned tested-workflow selection, recurrence/timezone, and any explicitly non-secret recurring inputs;
 7. verify Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution, effect verification, sanitized diagnostics/history, CloudWatch, and SES;
 8. deliberately expire target authentication, repair through the hardened Live View handoff, save the repaired Browser Profile, resume, and follow the terminal result.
