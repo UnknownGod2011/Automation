@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deployment-owned VPC AgentCore Browser for cloud automation capture and execution.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+    AllowedPattern: '^[A-Za-z0-9-]+$'
+  BrowserName:
+    Type: String
+    AllowedPattern: '^[A-Za-z][A-Za-z0-9_]{0,47}$'
+    Description: Stable deployment-owned custom Browser name.
+  SecurityGroupIds:
+    Type: CommaDelimitedList
+    Description: Security groups controlling Browser VPC egress.
+  SubnetIds:
+    Type: CommaDelimitedList
+    Description: Subnets used by the custom Browser.
+
+Resources:
+  AutomationBrowser:
+    Type: AWS::BedrockAgentCore::BrowserCustom
+    Properties:
+      Name: !Ref BrowserName
+      Description: !Sub 'Automation platform ${EnvironmentName} browser'
+      NetworkConfiguration:
+        NetworkMode: VPC
+        VpcConfig:
+          SecurityGroups: !Ref SecurityGroupIds
+          Subnets: !Ref SubnetIds
+      Tags:
+        managedBy: automation-platform
+        environment: !Ref EnvironmentName
+
+Outputs:
+  BrowserId:
+    Description: AgentCore custom Browser identifier.
+    Value: !GetAtt AutomationBrowser.BrowserId
+  BrowserArn:
+    Description: AgentCore custom Browser ARN.
+    Value: !GetAtt AutomationBrowser.BrowserArn

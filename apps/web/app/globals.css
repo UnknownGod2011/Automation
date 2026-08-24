@@ -1,0 +1,57 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #0a0b0f;
+  color: #f5f7fb;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top left, #171b2d 0, #0a0b0f 42%); }
+a { color: inherit; text-decoration: none; }
+button, input, textarea, select { font: inherit; }
+.topbar { position: sticky; top: 0; z-index: 20; display: flex; justify-content: space-between; align-items: center; padding: 18px clamp(20px, 4vw, 56px); border-bottom: 1px solid #232635; background: rgba(10,11,15,.88); backdrop-filter: blur(18px); }
+.brand { font-weight: 800; letter-spacing: -.03em; }
+.nav { display: flex; gap: 18px; align-items: center; }
+.shell { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 42px 0 80px; }
+.hero { display: grid; grid-template-columns: 1.5fr 1fr; gap: 28px; align-items: end; margin-bottom: 28px; }
+h1 { font-size: clamp(38px, 6vw, 72px); line-height: .98; letter-spacing: -.055em; margin: 0 0 18px; }
+h2 { margin: 0 0 14px; font-size: 22px; letter-spacing: -.025em; }
+h3 { margin: 0 0 8px; font-size: 17px; }
+p { color: #a9afc2; line-height: 1.6; }
+.eyebrow { color: #8f9cff; text-transform: uppercase; letter-spacing: .14em; font-weight: 800; font-size: 12px; }
+.grid { display: grid; gap: 18px; }
+.grid.two { grid-template-columns: repeat(2, minmax(0,1fr)); }
+.grid.three { grid-template-columns: repeat(3, minmax(0,1fr)); }
+.card { border: 1px solid #25293a; background: rgba(19,21,30,.82); border-radius: 18px; padding: 22px; box-shadow: 0 18px 60px rgba(0,0,0,.18); }
+.card.subtle { background: rgba(15,17,24,.62); }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.stack { display: grid; gap: 14px; }
+.button { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 18px; border-radius: 12px; background: #eef0ff; color: #11131b; border: 0; font-weight: 800; cursor: pointer; }
+.button.secondary { background: #202536; color: #eef0ff; border: 1px solid #31374d; }
+.button.small { min-height: 36px; padding: 0 14px; border-radius: 10px; font-size: 14px; }
+.button[disabled] { opacity: .45; cursor: not-allowed; }
+.badge { display: inline-flex; align-items: center; min-height: 28px; padding: 0 10px; border-radius: 999px; background: #202536; color: #c9cee0; font-size: 12px; font-weight: 800; }
+.badge.success { background: #163227; color: #8ff0bc; }
+.badge.warning { background: #3a2d16; color: #ffd986; }
+.badge.danger { background: #3a1d22; color: #ff9ba9; }
+.badge.neutral { background: #202536; color: #c9cee0; }
+.capabilities { display: flex; flex-wrap: wrap; gap: 9px; }
+.list { display: grid; gap: 12px; }
+.list-item { display: grid; grid-template-columns: minmax(0,1.6fr) minmax(150px,.7fr) auto; gap: 18px; align-items: center; padding: 18px; border: 1px solid #25293a; border-radius: 15px; background: #11131a; }
+.muted { color: #7f879e; font-size: 14px; }
+.notice { padding: 14px 16px; border-radius: 12px; border: 1px solid #454d70; background: #171c31; color: #dce0ff; margin-bottom: 18px; }
+form { display: grid; gap: 14px; }
+label { display: grid; gap: 7px; color: #d9ddeb; font-size: 14px; font-weight: 700; }
+input, textarea, select { width: 100%; border: 1px solid #30354a; border-radius: 11px; background: #0e1017; color: #f5f7fb; padding: 12px 13px; outline: none; }
+input:focus, textarea:focus, select:focus { border-color: #7f8cff; box-shadow: 0 0 0 3px rgba(127,140,255,.12); }
+textarea { min-height: 120px; resize: vertical; }
+.checkbox { display: flex; align-items: flex-start; gap: 10px; font-weight: 500; color: #aeb4c8; }
+.checkbox input { width: auto; margin-top: 4px; }
+.step { display: grid; grid-template-columns: 34px 1fr; gap: 12px; }
+.step-number { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 10px; background: #202536; color: #b7c0ff; font-weight: 900; }
+code { color: #b8c1ff; }
+@media (max-width: 780px) {
+  .hero, .grid.two, .grid.three { grid-template-columns: 1fr; }
+  .list-item { grid-template-columns: 1fr; }
+  .topbar { align-items: flex-start; gap: 16px; }
+  .nav { gap: 10px; }
+}

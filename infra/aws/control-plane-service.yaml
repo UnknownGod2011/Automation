@@ -1,0 +1,388 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Production control-plane Lambda and trusted capture-completion boundary for the Automation platform.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: production
+  CodeBucketName:
+    Type: String
+  CodeObjectKey:
+    Type: String
+  CodeObjectVersion:
+    Type: String
+    Default: ''
+  StateTableName:
+    Type: String
+  ArtifactBucketName:
+    Type: String
+  ArtifactPrefix:
+    Type: String
+    Default: automation
+  ArtifactKmsKeyArn:
+    Type: String
+    Default: ''
+  TenantId:
+    Type: String
+    NoEcho: true
+  CognitoIssuer:
+    Type: String
+  CognitoAppClientId:
+    Type: String
+  AgentCoreRuntimeArn:
+    Type: String
+  AgentCoreBrowserIdentifier:
+    Type: String
+    Default: aws.browser.v1
+  ScheduleDispatchQueueArn:
+    Type: String
+  ScheduleDispatchDlqArn:
+    Type: String
+  SchedulerTargetRoleArn:
+    Type: String
+  SchedulerGroupName:
+    Type: String
+  ScheduledRunStateMachineArn:
+    Type: String
+  ReservedConcurrency:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    MaxValue: 100
+  CaptureCompletionReservedConcurrency:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 20
+
+Conditions:
+  HasCodeObjectVersion: !Not [!Equals [!Ref CodeObjectVersion, '']]
+  HasArtifactKmsKey: !Not [!Equals [!Ref ArtifactKmsKeyArn, '']]
+  IsAwsManagedBrowser: !Equals [!Ref AgentCoreBrowserIdentifier, aws.browser.v1]
+
+Resources:
+  ControlPlaneLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-control-plane
+      RetentionInDays: 30
+
+  CaptureCompletionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-capture-completion
+      RetentionInDays: 30
+
+  ControlPlaneRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: control-plane-state
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: StateTable
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:TransactWriteItems
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${StateTableName}
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${StateTableName}/index/*
+              - Sid: ArtifactObjects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::${ArtifactBucketName}/${ArtifactPrefix}/*
+              - !If
+                - HasArtifactKmsKey
+                - Sid: ArtifactKms
+                  Effect: Allow
+                  Action:
+                    - kms:Decrypt
+                    - kms:Encrypt
+                    - kms:GenerateDataKey
+                  Resource: !Ref ArtifactKmsKeyArn
+                - !Ref AWS::NoValue
+        - PolicyName: control-plane-agentcore
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ManagedBrowserSession
+                Effect: Allow
+                Action:
+                  - bedrock-agentcore:StartBrowserSession
+                  - bedrock-agentcore:GetBrowserSession
+                  - bedrock-agentcore:StopBrowserSession
+                  - bedrock-agentcore:UpdateBrowserStream
+                Resource:
+                  - !If
+                    - IsAwsManagedBrowser
+                    - !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:aws:browser/${AgentCoreBrowserIdentifier}
+                    - !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:browser-custom/${AgentCoreBrowserIdentifier}
+                  - !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:browser-profile/*
+              - Sid: BrowserLiveViewConnect
+                Effect: Allow
+                Action: bedrock-agentcore:ConnectBrowserLiveViewStream
+                Resource: '*'
+              - Sid: BrowserProfileCreate
+                Effect: Allow
+                Action: bedrock-agentcore:CreateBrowserProfile
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    aws:RequestTag/managedBy: automation-platform
+              - Sid: BrowserProfileManage
+                Effect: Allow
+                Action:
+                  - bedrock-agentcore:GetBrowserProfile
+                  - bedrock-agentcore:DeleteBrowserProfile
+                  - bedrock-agentcore:TagResource
+                Resource: !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:browser-profile/*
+              - Sid: CredentialProviderCreate
+                Effect: Allow
+                Action:
+                  - bedrock-agentcore:CreateApiKeyCredentialProvider
+                  - bedrock-agentcore:TagResource
+                Resource:
+                  - !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:token-vault/*
+                  - !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:token-vault/*/apikeycredentialprovider/automation_*
+                Condition:
+                  StringEquals:
+                    aws:RequestTag/managedBy: automation-platform
+              - Sid: CredentialProviderManage
+                Effect: Allow
+                Action:
+                  - bedrock-agentcore:UpdateApiKeyCredentialProvider
+                  - bedrock-agentcore:DeleteApiKeyCredentialProvider
+                Resource:
+                  - !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:token-vault/*
+                  - !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:token-vault/*/apikeycredentialprovider/automation_*
+              - Sid: FreshTestRuntime
+                Effect: Allow
+                Action:
+                  - bedrock-agentcore:InvokeAgentRuntime
+                  - bedrock-agentcore:InvokeAgentRuntimeForUser
+                Resource: !Ref AgentCoreRuntimeArn
+        - PolicyName: control-plane-scheduler
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AutomationSchedules
+                Effect: Allow
+                Action:
+                  - scheduler:GetSchedule
+                  - scheduler:CreateSchedule
+                  - scheduler:UpdateSchedule
+                  - scheduler:DeleteSchedule
+                Resource: !Sub arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/${SchedulerGroupName}/*
+              - Sid: PassSchedulerTargetRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !Ref SchedulerTargetRoleArn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: scheduler.amazonaws.com
+        - PolicyName: control-plane-logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub ${ControlPlaneLogGroup.Arn}:*
+
+  CaptureCompletionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: capture-completion-state
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: CaptureState
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                  - dynamodb:TransactWriteItems
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${StateTableName}
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${StateTableName}/index/*
+              - Sid: CaptureArtifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::${ArtifactBucketName}/${ArtifactPrefix}/*
+              - !If
+                - HasArtifactKmsKey
+                - Sid: CaptureArtifactKms
+                  Effect: Allow
+                  Action:
+                    - kms:Decrypt
+                    - kms:Encrypt
+                    - kms:GenerateDataKey
+                  Resource: !Ref ArtifactKmsKeyArn
+                - !Ref AWS::NoValue
+        - PolicyName: capture-completion-browser
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: FinalizeBrowserCapture
+                Effect: Allow
+                Action:
+                  - bedrock-agentcore:GetBrowserSession
+                  - bedrock-agentcore:StopBrowserSession
+                  - bedrock-agentcore:UpdateBrowserStream
+                Resource:
+                  - !If
+                    - IsAwsManagedBrowser
+                    - !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:aws:browser/${AgentCoreBrowserIdentifier}
+                    - !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:browser-custom/${AgentCoreBrowserIdentifier}
+                  - !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:browser-profile/*
+              - Sid: ReadCaptureProfile
+                Effect: Allow
+                Action: bedrock-agentcore:GetBrowserProfile
+                Resource: !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:browser-profile/*
+        - PolicyName: capture-completion-logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub ${CaptureCompletionLogGroup.Arn}:*
+
+  ControlPlaneFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: ControlPlaneLogGroup
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-control-plane
+      Runtime: nodejs22.x
+      Architectures: [arm64]
+      Handler: control-plane-lambda.handler
+      Role: !GetAtt ControlPlaneRole.Arn
+      MemorySize: 1024
+      Timeout: 29
+      ReservedConcurrentExecutions: !Ref ReservedConcurrency
+      Code:
+        S3Bucket: !Ref CodeBucketName
+        S3Key: !Ref CodeObjectKey
+        S3ObjectVersion: !If [HasCodeObjectVersion, !Ref CodeObjectVersion, !Ref AWS::NoValue]
+      Environment:
+        Variables: &ControlPlaneEnvironment
+          AUTOMATION_TENANT_ID: !Ref TenantId
+          AWS_STATE_TABLE: !Ref StateTableName
+          AWS_ARTIFACT_BUCKET: !Ref ArtifactBucketName
+          AWS_ARTIFACT_PREFIX: !Ref ArtifactPrefix
+          AWS_ARTIFACT_KMS_KEY_ARN: !Ref ArtifactKmsKeyArn
+          AWS_COGNITO_ISSUER: !Ref CognitoIssuer
+          AWS_COGNITO_APP_CLIENT_ID: !Ref CognitoAppClientId
+          AWS_AGENTCORE_RUNTIME_ARN: !Ref AgentCoreRuntimeArn
+          AWS_AGENTCORE_BROWSER_IDENTIFIER: !Ref AgentCoreBrowserIdentifier
+          AWS_SCHEDULE_DISPATCH_QUEUE_ARN: !Ref ScheduleDispatchQueueArn
+          AWS_SCHEDULE_DISPATCH_DLQ_ARN: !Ref ScheduleDispatchDlqArn
+          AWS_SCHEDULER_TARGET_ROLE_ARN: !Ref SchedulerTargetRoleArn
+          AWS_SCHEDULER_GROUP_NAME: !Ref SchedulerGroupName
+          AWS_SCHEDULED_RUN_STATE_MACHINE_ARN: !Ref ScheduledRunStateMachineArn
+
+  CaptureCompletionFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: CaptureCompletionLogGroup
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-capture-completion
+      Runtime: nodejs22.x
+      Architectures: [arm64]
+      Handler: capture-completion-lambda.handler
+      Role: !GetAtt CaptureCompletionRole.Arn
+      MemorySize: 1024
+      Timeout: 29
+      ReservedConcurrentExecutions: !Ref CaptureCompletionReservedConcurrency
+      Code:
+        S3Bucket: !Ref CodeBucketName
+        S3Key: !Ref CodeObjectKey
+        S3ObjectVersion: !If [HasCodeObjectVersion, !Ref CodeObjectVersion, !Ref AWS::NoValue]
+      Environment:
+        Variables: *ControlPlaneEnvironment
+
+  CaptureCompletionApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub ${AWS::StackName}-capture-completion
+      ProtocolType: HTTP
+      DisableExecuteApiEndpoint: false
+
+  CaptureCompletionIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref CaptureCompletionApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt CaptureCompletionFunction.Arn
+      PayloadFormatVersion: '2.0'
+      TimeoutInMillis: 29000
+
+  CaptureCompletionRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref CaptureCompletionApi
+      RouteKey: POST /capture/complete
+      AuthorizationType: AWS_IAM
+      Target: !Sub integrations/${CaptureCompletionIntegration}
+
+  CaptureCompletionStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref CaptureCompletionApi
+      StageName: $default
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+
+  CaptureCompletionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CaptureCompletionFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CaptureCompletionApi}/*/POST/capture/complete
+
+Outputs:
+  ControlPlaneLambdaArn:
+    Value: !GetAtt ControlPlaneFunction.Arn
+  ControlPlaneLambdaRoleArn:
+    Value: !GetAtt ControlPlaneRole.Arn
+  CaptureCompletionLambdaArn:
+    Value: !GetAtt CaptureCompletionFunction.Arn
+  CaptureCompletionLambdaRoleArn:
+    Value: !GetAtt CaptureCompletionRole.Arn
+  CaptureCompletionApiEndpoint:
+    Description: IAM-authenticated internal capture-completion endpoint; do not expose through the Cognito user API.
+    Value: !Sub https://${CaptureCompletionApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/capture/complete
+  CaptureCompletionInvokeArn:
+    Description: Grant execute-api:Invoke on this exact ARN only to the trusted capture worker role.
+    Value: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CaptureCompletionApi}/*/POST/capture/complete

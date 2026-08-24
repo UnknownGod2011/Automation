@@ -1,0 +1,205 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Automation scheduled-dispatch transport (EventBridge Scheduler -> SQS -> dispatcher -> Step Functions -> AgentCore Runtime)
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+    AllowedPattern: '^[A-Za-z0-9-]+$'
+  DispatcherCodeBucket:
+    Type: String
+    Description: Versioned S3 bucket containing the immutable Lambda artifact.
+  DispatcherCodeObjectKey:
+    Type: String
+    Description: S3 key of the immutable control-plane Lambda artifact containing dispatcher-lambda.mjs.
+  DispatcherCodeObjectVersion:
+    Type: String
+    Description: Exact S3 VersionId for the dispatcher Lambda artifact.
+  DispatcherReservedConcurrency:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    MaxValue: 100
+  AgentRuntimeArn:
+    Type: String
+    Description: ARN of the AgentCore Runtime hosting the scheduled-run entrypoint.
+  ScheduledRunTimeoutSeconds:
+    Type: Number
+    Default: 1800
+    MinValue: 60
+    MaxValue: 3600
+    Description: Hard Step Functions timeout for one AgentCore scheduled-run invocation.
+
+Resources:
+  DispatchDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'automation-${EnvironmentName}-dispatch-dlq'
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  DispatchQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'automation-${EnvironmentName}-dispatch'
+      VisibilityTimeout: 120
+      MessageRetentionPeriod: 345600
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DispatchDeadLetterQueue.Arn
+        maxReceiveCount: 5
+
+  ScheduleGroup:
+    Type: AWS::Scheduler::ScheduleGroup
+    Properties:
+      Name: !Sub 'automation-${EnvironmentName}'
+
+  SchedulerTargetRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SendScheduledOccurrences
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource:
+                  - !GetAtt DispatchQueue.Arn
+                  - !GetAtt DispatchDeadLetterQueue.Arn
+
+  ScheduledRunStateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeScheduledAgentRuntime
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock-agentcore:InvokeAgentRuntime
+                  - bedrock-agentcore:InvokeAgentRuntimeForUser
+                Resource: !Ref AgentRuntimeArn
+
+  ScheduledRunStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub 'automation-${EnvironmentName}-scheduled-run'
+      StateMachineType: STANDARD
+      RoleArn: !GetAtt ScheduledRunStateMachineRole.Arn
+      DefinitionString: !Sub |
+        {
+          "StartAt": "ExecuteScheduledRun",
+          "States": {
+            "ExecuteScheduledRun": {
+              "Type": "Task",
+              "Resource": "arn:${AWS::Partition}:states:::aws-sdk:bedrockagentcore:invokeAgentRuntime",
+              "Parameters": {
+                "AgentRuntimeArn": "${AgentRuntimeArn}",
+                "RuntimeUserId.$": "$.scope.userId",
+                "ContentType": "application/json",
+                "Accept": "application/json",
+                "Payload.$": "States.Base64Encode(States.JsonToString($))"
+              },
+              "TimeoutSeconds": ${ScheduledRunTimeoutSeconds},
+              "ResultPath": null,
+              "End": true
+            }
+          }
+        }
+
+  DispatcherFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: DispatchScheduledOccurrences
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt DispatchQueue.Arn
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref ScheduledRunStateMachine
+
+  DispatcherFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'automation-${EnvironmentName}-scheduled-dispatcher'
+      Runtime: nodejs22.x
+      Handler: dispatcher-lambda.handler
+      Role: !GetAtt DispatcherFunctionRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      ReservedConcurrentExecutions: !Ref DispatcherReservedConcurrency
+      Code:
+        S3Bucket: !Ref DispatcherCodeBucket
+        S3Key: !Ref DispatcherCodeObjectKey
+        S3ObjectVersion: !Ref DispatcherCodeObjectVersion
+      Environment:
+        Variables:
+          AWS_SCHEDULE_DISPATCH_QUEUE_ARN: !GetAtt DispatchQueue.Arn
+          AWS_SCHEDULE_DISPATCH_DLQ_ARN: !GetAtt DispatchDeadLetterQueue.Arn
+          AWS_SCHEDULER_TARGET_ROLE_ARN: !GetAtt SchedulerTargetRole.Arn
+          AWS_SCHEDULER_GROUP_NAME: !Ref ScheduleGroup
+          AWS_SCHEDULED_RUN_STATE_MACHINE_ARN: !Ref ScheduledRunStateMachine
+
+  DispatcherEventSource:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt DispatchQueue.Arn
+      FunctionName: !Ref DispatcherFunction
+      BatchSize: 10
+      MaximumBatchingWindowInSeconds: 5
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+      Enabled: true
+
+Outputs:
+  DispatchQueueArn:
+    Value: !GetAtt DispatchQueue.Arn
+  DispatchQueueUrl:
+    Value: !Ref DispatchQueue
+  DispatchDeadLetterQueueArn:
+    Value: !GetAtt DispatchDeadLetterQueue.Arn
+  SchedulerGroupName:
+    Value: !Ref ScheduleGroup
+  SchedulerTargetRoleArn:
+    Value: !GetAtt SchedulerTargetRole.Arn
+  ScheduledRunStateMachineArn:
+    Value: !Ref ScheduledRunStateMachine
+  ScheduledRunAgentRuntimeArn:
+    Value: !Ref AgentRuntimeArn
+  DispatcherFunctionArn:
+    Value: !GetAtt DispatcherFunction.Arn
+  DispatcherFunctionRoleArn:
+    Value: !GetAtt DispatcherFunctionRole.Arn

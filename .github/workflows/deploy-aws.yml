@@ -1,0 +1,141 @@
+name: Deploy AWS Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Protected GitHub Environment containing the AWS deployment configuration
+        required: true
+        type: environment
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-aws-${{ inputs.target_environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    environment: ${{ inputs.target_environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      AUTOMATION_RELEASE_BUCKET: ${{ vars.AUTOMATION_RELEASE_BUCKET }}
+      AUTOMATION_RELEASE_KMS_KEY_ID: ${{ vars.AUTOMATION_RELEASE_KMS_KEY_ID }}
+      AUTOMATION_AWS_ENVIRONMENT_JSON: ${{ vars.AUTOMATION_AWS_ENVIRONMENT_JSON }}
+    steps:
+      - name: Check out exact source revision
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.2
+
+      - name: Validate protected deployment variables
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$AWS_REGION" ]] || { echo 'AWS_REGION is not configured for this GitHub Environment' >&2; exit 2; }
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || { echo 'AWS_ACCOUNT_ID must be a 12-digit AWS account id' >&2; exit 2; }
+          [[ "$AWS_DEPLOY_ROLE_ARN" =~ ^arn:(aws|aws-us-gov|aws-cn):iam::${AWS_ACCOUNT_ID}:role/.+ ]] || { echo 'AWS_DEPLOY_ROLE_ARN must be an IAM role in AWS_ACCOUNT_ID' >&2; exit 2; }
+          [[ -n "$AUTOMATION_RELEASE_BUCKET" ]] || { echo 'AUTOMATION_RELEASE_BUCKET is not configured' >&2; exit 2; }
+          [[ -n "$AUTOMATION_AWS_ENVIRONMENT_JSON" ]] || { echo 'AUTOMATION_AWS_ENVIRONMENT_JSON is not configured' >&2; exit 2; }
+          printf '%s' "$AUTOMATION_AWS_ENVIRONMENT_JSON" > "$RUNNER_TEMP/automation-environment.json"
+          python3 - "$RUNNER_TEMP/automation-environment.json" "$AWS_REGION" <<'PY'
+          import json, sys
+          from pathlib import Path
+          path, expected_region = sys.argv[1], sys.argv[2]
+          document = json.loads(Path(path).read_text())
+          if document.get('schemaVersion') != 1:
+              raise SystemExit('AUTOMATION_AWS_ENVIRONMENT_JSON must use schemaVersion 1')
+          if document.get('region') != expected_region:
+              raise SystemExit('deployment environment region must equal AWS_REGION')
+          if not isinstance(document.get('stackPrefix'), str) or not document['stackPrefix']:
+              raise SystemExit('deployment environment must include stackPrefix')
+          PY
+
+      - name: Verify deterministic dependency graph
+        shell: bash
+        run: bash scripts/materialize-pnpm-lock.sh
+
+      - name: Install reviewed dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate source before assuming deployment role
+        run: |
+          pnpm check
+          pnpm test
+
+      - name: Configure short-lived AWS credentials through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-session-name: automation-${{ github.run_id }}
+          role-duration-seconds: 3600
+
+      - name: Verify assumed AWS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          [[ "$account" == "$AWS_ACCOUNT_ID" ]] || { echo 'OIDC role resolved to an unexpected AWS account' >&2; exit 3; }
+
+      - name: Package and upload immutable release
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_id="${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          args=(
+            --bucket "$AUTOMATION_RELEASE_BUCKET"
+            --release-id "$release_id"
+            --region "$AWS_REGION"
+            --output "$RUNNER_TEMP/aws-release.json"
+          )
+          if [[ -n "$AUTOMATION_RELEASE_KMS_KEY_ID" ]]; then
+            args+=(--kms-key-id "$AUTOMATION_RELEASE_KMS_KEY_ID")
+          fi
+          bash scripts/release-aws-artifacts.sh "${args[@]}"
+
+      - name: Deploy immutable release in dependency order
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/deploy-aws-release.sh \
+            --manifest "$RUNNER_TEMP/aws-release.json" \
+            --environment "$RUNNER_TEMP/automation-environment.json" \
+            --output "$RUNNER_TEMP/aws-deployment.json"
+
+      - name: Smoke deployed public/auth boundaries
+        shell: bash
+        run: bash scripts/smoke-aws-deployment.sh --deployment "$RUNNER_TEMP/aws-deployment.json"
+
+      - name: Record deployment summary
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo '### Automation AWS deployment'
+            echo
+            echo "- Environment: \`${{ inputs.target_environment }}\`"
+            echo "- Source commit: \`$GITHUB_SHA\`"
+            echo '- Authentication: GitHub OIDC -> short-lived AWS role session'
+            echo '- Live smoke: web finalized, Cognito PKCE redirect valid, protected APIs reject anonymous access'
+            echo '- Release/deployment manifests: runner-local only; no Actions artifacts retained'
+          } >> "$GITHUB_STEP_SUMMARY"

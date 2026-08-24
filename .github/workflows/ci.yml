@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.2
+      - name: Verify deterministic pnpm lock snapshot
+        shell: bash
+        run: bash scripts/materialize-pnpm-lock.sh
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - name: Package AgentCore Runtime
+        shell: bash
+        run: bash scripts/package-agentcore-runtime.sh "$RUNNER_TEMP/automation-agentcore-runtime.zip"
+      - name: Package control-plane Lambda
+        shell: bash
+        run: bash scripts/package-control-plane-lambda.sh "$RUNNER_TEMP/automation-control-plane.zip"
+      - name: Package Next.js web Lambda
+        shell: bash
+        run: bash scripts/package-web-lambda.sh "$RUNNER_TEMP/automation-web.zip"
+      - name: Verify web hosting security contract
+        shell: bash
+        run: bash scripts/test-web-hosting-contract.sh
+      - name: Verify Cognito Google federation contract
+        shell: bash
+        run: bash scripts/test-cognito-google-federation.sh
+      - name: Verify live Google demo-user contract
+        shell: bash
+        run: bash scripts/test-verify-google-demo-user.sh
+      - name: Verify AWS release artifact contract
+        shell: bash
+        run: bash scripts/test-release-aws-artifacts.sh
+      - name: Verify AWS deployment ordering contract
+        shell: bash
+        run: bash scripts/test-deploy-aws-release.sh
+      - name: Verify AWS web demo environment contract
+        shell: bash
+        run: bash scripts/test-prepare-web-demo-env.sh
+      - name: Verify AWS live deployment smoke contract
+        shell: bash
+        run: bash scripts/test-smoke-aws-deployment.sh
+      - name: Verify GitHub OIDC deployment workflow contract
+        shell: bash
+        run: bash scripts/test-github-oidc-deploy-workflow.sh
+      - run: pnpm test

@@ -1,0 +1,12 @@
+node_modules/
+.pnpm-store/
+dist/
+.next/
+coverage/
+.env
+.env.*
+!.env.example
+.DS_Store
+*.log
+cdk.out/
+.aws-sam/

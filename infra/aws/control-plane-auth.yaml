@@ -1,0 +1,201 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Cognito managed login and JWT-protected HTTP API perimeter for Automation Cloud.
+
+Parameters:
+  ControlPlaneLambdaArn:
+    Type: String
+    Default: ''
+    Description: Optional Lambda integration ARN. Leave empty only during the identity-bootstrap deployment phase.
+  WebCallbackUrl:
+    Type: String
+    Description: Exact HTTPS callback URL, for example https://app.example.com/api/auth/callback.
+  WebLogoutUrl:
+    Type: String
+    Description: Exact HTTPS post-logout URL, for example https://app.example.com/.
+  UserPoolDomainPrefix:
+    Type: String
+    AllowedPattern: '^[a-z0-9-]{1,63}$'
+    Description: Globally unique Cognito managed-login domain prefix in this region.
+  GoogleClientId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[A-Za-z0-9._-]+\.apps\.googleusercontent\.com$'
+    Description: Optional Google OAuth web client ID. Leave empty together with GoogleClientSecretArn to keep Cognito email sign-in only.
+  GoogleClientSecretArn:
+    Type: String
+    Default: ''
+    Description: Optional same-account Secrets Manager ARN whose entire SecretString is the Google OAuth client secret. The secret value is never a stack parameter.
+
+Rules:
+  GoogleFederationParameters:
+    Assertions:
+      - Assert:
+          Fn::Or:
+            - Fn::And:
+                - Fn::Not:
+                    - Fn::Equals: [!Ref GoogleClientId, '']
+                - Fn::Not:
+                    - Fn::Equals: [!Ref GoogleClientSecretArn, '']
+            - Fn::And:
+                - Fn::Equals: [!Ref GoogleClientId, '']
+                - Fn::Equals: [!Ref GoogleClientSecretArn, '']
+        AssertDescription: GoogleClientId and GoogleClientSecretArn must either both be configured or both be empty.
+
+Conditions:
+  HasControlPlaneLambda: !Not [!Equals [!Ref ControlPlaneLambdaArn, '']]
+  HasGoogleFederation: !And
+    - !Not [!Equals [!Ref GoogleClientId, '']]
+    - !Not [!Equals [!Ref GoogleClientSecretArn, '']]
+
+Resources:
+  AutomationUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${AWS::StackName}-users'
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+          TemporaryPasswordValidityDays: 7
+
+  AutomationGoogleIdentityProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Condition: HasGoogleFederation
+    Properties:
+      UserPoolId: !Ref AutomationUserPool
+      ProviderName: Google
+      ProviderType: Google
+      ProviderDetails:
+        authorize_scopes: 'email profile openid'
+        client_id: !Ref GoogleClientId
+        client_secret: !Sub '{{resolve:secretsmanager:${GoogleClientSecretArn}:SecretString}}'
+      AttributeMapping:
+        email: email
+        email_verified: email_verified
+        name: name
+
+  AutomationWebClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref AutomationUserPool
+      ClientName: !Sub '${AWS::StackName}-web'
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      CallbackURLs:
+        - !Ref WebCallbackUrl
+      LogoutURLs:
+        - !Ref WebLogoutUrl
+      SupportedIdentityProviders:
+        - COGNITO
+        - !If [HasGoogleFederation, !Ref AutomationGoogleIdentityProvider, !Ref 'AWS::NoValue']
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+
+  AutomationUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref UserPoolDomainPrefix
+      UserPoolId: !Ref AutomationUserPool
+
+  ControlPlaneApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${AWS::StackName}-api'
+      ProtocolType: HTTP
+      DisableExecuteApiEndpoint: false
+
+  ControlPlaneIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Condition: HasControlPlaneLambda
+    Properties:
+      ApiId: !Ref ControlPlaneApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Ref ControlPlaneLambdaArn
+      PayloadFormatVersion: '2.0'
+      TimeoutInMillis: 30000
+
+  ControlPlaneAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref ControlPlaneApi
+      AuthorizerType: JWT
+      IdentitySource:
+        - '$request.header.Authorization'
+      JwtConfiguration:
+        Audience:
+          - !Ref AutomationWebClient
+        Issuer: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${AutomationUserPool}'
+      Name: CognitoAccessToken
+
+  ControlPlaneDefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: HasControlPlaneLambda
+    Properties:
+      ApiId: !Ref ControlPlaneApi
+      RouteKey: '$default'
+      Target: !Sub 'integrations/${ControlPlaneIntegration}'
+      AuthorizationType: JWT
+      AuthorizerId: !Ref ControlPlaneAuthorizer
+      AuthorizationScopes:
+        - openid
+
+  ControlPlaneDefaultStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref ControlPlaneApi
+      StageName: '$default'
+      AutoDeploy: true
+      DefaultRouteSettings:
+        DetailedMetricsEnabled: true
+        ThrottlingBurstLimit: 100
+        ThrottlingRateLimit: 50
+
+  AllowApiGatewayInvokeControlPlane:
+    Type: AWS::Lambda::Permission
+    Condition: HasControlPlaneLambda
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ControlPlaneLambdaArn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ControlPlaneApi}/*/*'
+
+Outputs:
+  ControlPlaneUrl:
+    Value: !Sub 'https://${ControlPlaneApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
+  CognitoIssuer:
+    Value: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${AutomationUserPool}'
+  CognitoAppClientId:
+    Value: !Ref AutomationWebClient
+  CognitoUserPoolId:
+    Value: !Ref AutomationUserPool
+    Description: Trusted user-directory source for scheduled notification recipient resolution.
+  CognitoDomain:
+    Value: !Sub 'https://${UserPoolDomainPrefix}.auth.${AWS::Region}.amazoncognito.com'
+  GoogleFederationEnabled:
+    Value: !If [HasGoogleFederation, 'true', 'false']
+  RequiredWebEnvironment:
+    Value: 'AUTOMATION_CONTROL_PLANE_URL, AUTOMATION_COGNITO_DOMAIN, AWS_COGNITO_APP_CLIENT_ID, AUTOMATION_WEB_ORIGIN'
