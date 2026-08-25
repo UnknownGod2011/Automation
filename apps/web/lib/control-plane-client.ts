@@ -2,7 +2,6 @@ import type {
   AutomationSummaryView,
   CaptureCancellationResult,
   CaptureRecordingView,
-  CaptureStartResult,
   DashboardView,
   HumanResumeSubmissionResult,
   HumanTakeoverStartResult,
@@ -22,6 +21,15 @@ export interface WebControlPlaneStatus {
   configured: boolean;
   reason?: "MISSING_BASE_URL" | "MISSING_BEARER_TOKEN" | "INVALID_BASE_URL";
 }
+
+/**
+ * Browser-facing Capture-start contract. The durable capture-session identity is
+ * intentionally excluded; only the short-lived Live View capability and expiry cross
+ * the authenticated web boundary.
+ */
+export type WebCaptureStartResult =
+  | { kind: "READY"; liveViewUrl: string; expiresAt: string }
+  | { kind: "NOT_CONFIGURED"; reason: string };
 
 export class WebControlPlaneError extends Error {
   constructor(readonly code: "NOT_CONFIGURED" | "CONFLICT" | "BAD_RESPONSE" | "REQUEST_FAILED") {
@@ -188,7 +196,7 @@ export class WebControlPlaneClient {
     return this.request("/v1/automations", { method: "POST", body: JSON.stringify(body) });
   }
 
-  async capture(automationId: string): Promise<CaptureStartResult> {
+  async capture(automationId: string): Promise<WebCaptureStartResult> {
     return this.request(`/v1/automations/${encodeURIComponent(automationId)}/capture`, {
       method: "POST", body: "{}",
     });
