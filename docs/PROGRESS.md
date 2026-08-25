@@ -4,54 +4,52 @@ Updated: 2026-08-25
 
 ## Current baseline
 
-- `main` before this slice: `a51ffcac7c2302250a7e3ef97c617778d6b7478b` (`Isolate automation metadata from run history outages`).
-- GitHub Actions CI #311 completed successfully on that exact `main` SHA.
-- The AWS-first production vertical is structurally present: Cognito/Google auth, Next.js control plane, cloud capture + Browser Profile persistence, trace compiler, semantic workflow inspection, asynchronous AgentCore Fresh Test, publish/scheduling, AgentCore Browser/OpenAI BYOK execution, verification, sanitized history/diagnostics, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
-- Recovery/crash-reconciliation machinery is intentionally considered deep enough for the current product milestone. Do not add more recovery micro-hardening unless the vertical slice requires it or CI/live AWS exposes a real correctness defect.
+- `main` before this slice: `b92b5edbb1b598e8d395e12fbde023b786a944f4` (`Add authenticated run evidence viewer`).
+- GitHub Actions CI #313 completed successfully on that exact `main` SHA.
+- The AWS-first production vertical is structurally present: Cognito/Google auth, Next.js control plane, cloud capture + Browser Profile persistence, trace compiler, semantic workflow inspection, asynchronous AgentCore Fresh Test, publish/scheduling, AgentCore Browser/OpenAI BYOK execution, verification, sanitized history/diagnostics/evidence, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
+- Recovery/crash-reconciliation machinery is intentionally deep enough for the current product milestone. Do not add more recovery micro-hardening unless the vertical slice requires it or CI/live AWS exposes a real correctness defect.
 
-## This slice — authenticated run evidence viewing
+## This slice — user-facing execution timeline
 
 ### Product gap
 
-`END_GOAL.md` calls for a detailed run record with evidence. Browser execution already persisted redacted browser-state metadata and screenshots in the tenant-scoped artifact store, but the user-facing run diagnostics exposed only evidence counts. Raw S3 artifact references were intentionally hidden, leaving no supported way for the automation owner to inspect the actual safe evidence.
+`END_GOAL.md` calls for a detailed run timeline. Run diagnostics already exposed the current semantic step, completed semantic steps, failure classification, checkpoint counters, and authenticated evidence previews, but they did not assemble those safe facts into one ordered execution timeline. A user therefore had to infer what the run had done by comparing separate cards.
 
 ### Change
 
-- Added a provider-neutral `RunEvidenceService` and authenticated read-only route:
-  - `GET /v1/automations/:automationId/runs/:runId/evidence/:ordinal`.
-  - The browser selects only a bounded 1-based ordinal; the durable artifact reference is resolved from the authorized checkpoint server-side.
-  - Run/checkpoint tenant, automation, run and workflow-version identity are revalidated before artifact storage is read.
-- Evidence has a closed public schema:
-  - bounded PNG screenshots can be returned as base64 to the authenticated owner;
-  - known Playwright metadata is reduced to event kind, workflow action kind, sequence and safe origin;
-  - state fingerprints, DOM/page text, selectors, workflow node IDs, artifact references and arbitrary JSON fields are discarded;
-  - unknown formats remain opaque rather than returning raw bytes;
-  - previews above 2 MiB are reported as protected/too-large rather than serialized through the control plane.
-- AWS control-plane composition now connects this service to the existing tenant-scoped S3 artifact store.
-- The Next.js run page links checkpoint evidence by ordinal and a dedicated authenticated evidence page renders the safe preview. Artifact references never enter the URL or browser contract.
-- Added provider-neutral tests for screenshot redaction, metadata allowlisting, unknown-format opacity, cross-tenant suppression before artifact reads, bounded ordinals and GET-only routing, plus a web-client regression for ordinal-only access.
+- Added a web-only `buildRunTimeline()` presentation helper over the existing sanitized `RunSemanticProgressView`.
+- The run page now renders an ordered timeline from durable semantic progress:
+  - completed steps are labelled `Completed`;
+  - the current step is labelled `Current`;
+  - when a semantic failure exists it replaces the current marker with `Failed / needs attention`.
+- Repeated semantic step ordinals are deliberately retained so loop/revisit progress is not silently deduplicated or invented.
+- If immutable workflow metadata is temporarily unavailable, the timeline fails soft while durable status/checkpoint/failure diagnostics remain visible.
+- Added regression coverage for completed/current ordering, failure precedence, repeated-step preservation, and unavailable semantic metadata.
 
 ## Security / tenancy review
 
-- Evidence is accessible only after the existing Cognito-authenticated tenant/user scope resolves the durable run.
-- The browser cannot submit an S3 key or artifact reference. It can only request an ordinal that is mapped through the authorized checkpoint.
-- Cross-tenant/mismatched-run requests fail before `ArtifactStore.get`.
-- Browser-state JSON is allowlisted rather than passed through. Provider/browser raw payloads and state fingerprints remain server-side.
-- Screenshots can contain page content visible to the automation owner. They are therefore returned only through authenticated, no-store server rendering and are never embedded in URLs, logs, workflow metadata or notification payloads.
-- Existing TYPE verification screenshot suppression remains important: typed runtime values are not intentionally captured into post-input screenshots.
+- The timeline consumes only the already-authenticated, tenant-scoped `RunDetailView`; it adds no new endpoint or authority.
+- It contains only synthetic step ordinal, node kind, bounded objective text, and presentation state.
+- Internal workflow/node IDs, selectors, input/output bindings, runtime variables, verification expected values, evidence references, Browser Profile/session data, BYOK material, workload tokens, raw provider/browser errors, and model chain-of-thought remain excluded.
+- Cross-tenant isolation continues to be enforced by `RunDetailService` before any semantic workflow data is returned.
 
 ## Idempotency / concurrency / retry / timeout
 
-- The evidence path is read-only and has no execution authority, lease, retry or mutation side effect.
-- It resolves the latest persisted checkpoint at request time. A stale ordinal after checkpoint replacement can become `NOT_FOUND`; it cannot select an arbitrary artifact.
-- Artifact-store uncertainty returns a sanitized conflict while leaving durable run state unchanged.
-- No browser/model retry behavior or human-resume authority changed.
+- This slice is read-only presentation logic. It creates no run, checkpoint, lock, lease, retry, queue message, browser action, model request, or schedule mutation.
+- The page uses one authenticated run-detail snapshot. Concurrent execution can advance after that snapshot; the existing bounded run-status polling refreshes active runs and remains the freshness mechanism.
+- Timeline construction preserves the durable completed-step sequence supplied by the checkpoint instead of reordering it by graph topology.
+
+## Side-effect verification / recovery
+
+- Browser side-effect verification, deterministic-first execution, semantic fallback, and human-resume/takeover authority are unchanged.
+- A failed/attention timeline marker is presentation only and never authorizes retry or resume.
+- Existing Runtime validation and durable recovery claims remain authoritative for any continuation.
 
 ## Cost / observability
 
-- Run diagnostics themselves still perform no artifact reads. S3 evidence is read only when the user opens an evidence item.
-- A single evidence request reads one artifact. Screenshot serialization is capped at 2 MiB to bound API/Lambda response size and memory amplification.
-- No new AWS resource, queue, table, bucket, IAM permission or GitHub Actions artifact was added; the control plane reuses the existing encrypted artifact bucket and IAM scope.
+- No additional DynamoDB, S3, AgentCore Browser, AgentCore Runtime, OpenAI, Scheduler, SQS, Step Functions, SES, or CloudWatch call is introduced.
+- No dependency, IAM permission, AWS resource, GitHub Actions artifact, or persistence schema changed.
+- The timeline reuses the same run-detail response already required to render diagnostics.
 
 ## Validation
 
@@ -62,7 +60,7 @@ Required authoritative validation for the new commit:
 3. `pnpm check` including the Next.js production build/type boundary;
 4. AgentCore Runtime, control-plane Lambda and Next.js Lambda packaging;
 5. AWS release/deployment/demo/live-smoke/OIDC contract checks;
-6. full `pnpm test` suite including the new evidence regressions.
+6. full `pnpm test` suite including the new timeline regressions.
 
 Do not claim this slice green until GitHub Actions completes successfully on the exact published head.
 
@@ -75,6 +73,7 @@ Do not claim this slice green until GitHub Actions completes successfully on the
 - DynamoDB and EventBridge Scheduler mutations remain separate fail-closed systems rather than one transaction; live operation must validate reconciliation expectations.
 - Automation settings still use ordinary repository read/modify/write semantics; broad CAS machinery remains parked unless live concurrency shows material loss.
 - Evidence screenshots are intentionally owner-visible and may contain ordinary page data. Evidence retention/deletion policy should be revisited after live usage establishes operational needs.
+- The timeline intentionally does not expose model chain-of-thought. If future product research needs model-level explanations, add only bounded structured decision summaries, never private reasoning traces.
 
 ## Next product milestone
 
@@ -87,7 +86,7 @@ Run the protected real AWS vertical demonstration rather than deepening recovery
 5. AgentCore Live View capture and trusted completion;
 6. compile and inspect the semantic plan;
 7. run a Fresh Test lasting more than 30 seconds and observe its asynchronous durable result;
-8. inspect the run evidence through the new authenticated evidence viewer;
+8. inspect the ordered execution timeline and authenticated evidence;
 9. publish recurrence/timezone and verify EventBridge/SQS/Step Functions/AgentCore execution;
 10. verify run history, SES notification and CloudWatch telemetry;
 11. deliberately expire target authentication, repair through secure Live View and resume to a terminal outcome.
