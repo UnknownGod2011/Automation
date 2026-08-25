@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AutomationRecord } from "@automation/contracts";
-import type { CaptureCollectionSourceRequest } from "@automation/core";
+import type { ArtifactStore, CaptureCollectionSourceRequest } from "@automation/core";
 import { AgentCorePlaywrightCaptureEventSource } from "./capture-collector.js";
 import type { AgentCoreBrowserConnectionSigner } from "./browser-session.js";
 
@@ -54,11 +54,24 @@ function signer(): AgentCoreBrowserConnectionSigner {
   };
 }
 
+function artifactStore(put = vi.fn<ArtifactStore["put"]>(async (_scope, _path, content, contentType) => ({
+  ref: "aws-s3-artifact://capture-screenshot",
+  contentType,
+  sizeBytes: content.byteLength,
+}))): ArtifactStore {
+  return {
+    put,
+    get: vi.fn(async () => null),
+  };
+}
+
 describe("AgentCorePlaywrightCaptureEventSource", () => {
   beforeEach(() => playwright.connectOverCDP.mockReset());
 
-  it("starts in durable WORKFLOW phase and observes input without retaining the typed value", async () => {
+  it("starts in durable WORKFLOW phase and observes input without retaining or screenshotting the typed value", async () => {
     let binding: ((source: { page: unknown }, payload: unknown) => Promise<void>) | undefined;
+    const screenshot = vi.fn(async () => new Uint8Array([137, 80, 78, 71]));
+    const artifacts = artifactStore();
     const page = {
       evaluate: vi.fn(async (script: unknown) => {
         if (typeof script === "string") {
@@ -77,6 +90,7 @@ describe("AgentCorePlaywrightCaptureEventSource", () => {
       title: vi.fn(async () => "App"),
       url: vi.fn(() => "https://example.com/app?private=1"),
       waitForTimeout: vi.fn(async () => undefined),
+      screenshot,
     };
     const context = {
       exposeBinding: vi.fn(async (_name: string, callback: typeof binding) => { binding = callback; }),
@@ -89,6 +103,7 @@ describe("AgentCorePlaywrightCaptureEventSource", () => {
     const source = new AgentCorePlaywrightCaptureEventSource(signer(), "aws.browser.v1", {
       now: () => new Date("2026-08-21T00:01:00.000Z"),
       controlPollMs: 1,
+      artifacts,
     });
     const events = await source.collect(request());
 
@@ -106,12 +121,23 @@ describe("AgentCorePlaywrightCaptureEventSource", () => {
         mode: "CUSTOM",
         expected: "capture:input-filled",
       },
+      artifactRefs: [],
     });
     expect(JSON.stringify(events)).not.toContain("must-never-be-captured");
+    expect(screenshot).not.toHaveBeenCalled();
+    expect(artifacts.put).not.toHaveBeenCalled();
   });
 
-  it("records a redacted post-action structural digest for click verification", async () => {
+  it("records redacted structural verification plus a bounded post-action screenshot for clicks", async () => {
     let binding: ((source: { page: unknown }, payload: unknown) => Promise<void>) | undefined;
+    const screenshotBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]);
+    const screenshot = vi.fn(async () => screenshotBytes);
+    const put = vi.fn<ArtifactStore["put"]>(async (_scope, _path, content, contentType) => ({
+      ref: "aws-s3-artifact://capture-screenshot",
+      contentType,
+      sizeBytes: content.byteLength,
+    }));
+    const artifacts = artifactStore(put);
     const page = {
       evaluate: vi.fn(async (script: unknown) => {
         if (typeof script === "string") {
@@ -132,6 +158,7 @@ describe("AgentCorePlaywrightCaptureEventSource", () => {
       title: vi.fn(async () => "Private customer name"),
       url: vi.fn(() => "https://example.com/app?private=query#secret"),
       waitForTimeout: vi.fn(async () => undefined),
+      screenshot,
     };
     const context = {
       exposeBinding: vi.fn(async (_name: string, callback: typeof binding) => { binding = callback; }),
@@ -145,6 +172,7 @@ describe("AgentCorePlaywrightCaptureEventSource", () => {
       now: () => new Date("2026-08-21T00:01:00.000Z"),
       controlPollMs: 1,
       effectSettleMs: 1,
+      artifacts,
     });
     const events = await source.collect(request());
 
@@ -155,6 +183,61 @@ describe("AgentCorePlaywrightCaptureEventSource", () => {
     expect(expected).not.toContain("private=query");
     expect(expected).not.toContain("Private customer name");
     expect(expected).not.toContain("Save private note");
+    expect(events[0]?.artifactRefs).toEqual([{
+      ref: "aws-s3-artifact://capture-screenshot",
+      kind: "SCREENSHOT",
+      contentType: "image/png",
+    }]);
+    expect(screenshot).toHaveBeenCalledWith({ type: "png", fullPage: false });
+    expect(put).toHaveBeenCalledWith(
+      scope,
+      "capture/capture-a/event-1.png",
+      screenshotBytes,
+      "image/png",
+    );
+  });
+
+  it("keeps post-action screenshot failures supplementary instead of weakening verification", async () => {
+    let binding: ((source: { page: unknown }, payload: unknown) => Promise<void>) | undefined;
+    const artifacts = artifactStore(vi.fn<ArtifactStore["put"]>(async () => { throw new Error("s3 unavailable"); }));
+    const page = {
+      evaluate: vi.fn(async (script: unknown) => {
+        if (typeof script === "string") {
+          await binding?.({ page }, {
+            kind: "SUBMIT",
+            page: { url: "https://example.com/app", title: "App" },
+            target: { css: "form" },
+          });
+          return undefined;
+        }
+        return [{ tag: "form", id: "editor" }];
+      }),
+      on: vi.fn(),
+      mainFrame: vi.fn(),
+      title: vi.fn(async () => "App"),
+      url: vi.fn(() => "https://example.com/app"),
+      waitForTimeout: vi.fn(async () => undefined),
+      screenshot: vi.fn(async () => new Uint8Array([137, 80, 78, 71, 1])),
+    };
+    const context = {
+      exposeBinding: vi.fn(async (_name: string, callback: typeof binding) => { binding = callback; }),
+      addInitScript: vi.fn(async () => undefined),
+      pages: vi.fn(() => [page]),
+      on: vi.fn(),
+    };
+    playwright.connectOverCDP.mockResolvedValue({ contexts: () => [context] });
+
+    const source = new AgentCorePlaywrightCaptureEventSource(signer(), "aws.browser.v1", {
+      now: () => new Date("2026-08-21T00:01:00.000Z"),
+      controlPollMs: 1,
+      effectSettleMs: 1,
+      artifacts,
+    });
+    const events = await source.collect(request());
+
+    expect(events[0]?.kind).toBe("SUBMIT");
+    expect(events[0]?.expectedEffect?.expected).toMatch(/^capture:state:[0-9a-f]+$/);
+    expect(events[0]?.artifactRefs).toEqual([]);
   });
 
   it("does not allocate automation-stream work if finish was already durable", async () => {

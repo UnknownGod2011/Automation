@@ -1,5 +1,11 @@
-import type { CaptureEvent, CaptureSemanticTarget, VerificationSpec } from "@automation/contracts";
 import type {
+  CaptureArtifactRef,
+  CaptureEvent,
+  CaptureSemanticTarget,
+  VerificationSpec,
+} from "@automation/contracts";
+import type {
+  ArtifactStore,
   CaptureCollectionEventSource,
   CaptureCollectionSourceRequest,
 } from "@automation/core";
@@ -11,6 +17,7 @@ const DEFAULT_CONTROL_POLL_MS = 250;
 const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
 const DEFAULT_EFFECT_SETTLE_MS = 400;
 const MAX_TARGET_FIELD_LENGTH = 512;
+const MAX_CAPTURE_SCREENSHOT_BYTES = 2 * 1024 * 1024;
 
 const CAPTURE_INSTALLER = `(() => {
   const key = "__automationCaptureInstalled";
@@ -66,6 +73,7 @@ export interface AgentCorePlaywrightCaptureEventSourceOptions {
   controlPollMs?: number;
   connectTimeoutMs?: number;
   effectSettleMs?: number;
+  artifacts?: ArtifactStore;
   now?: () => Date;
 }
 
@@ -128,10 +136,36 @@ function inputVerification(): VerificationSpec {
   };
 }
 
+async function postActionScreenshot(
+  page: Page,
+  artifacts: ArtifactStore | undefined,
+  request: CaptureCollectionSourceRequest,
+  identity: ReservedEventIdentity,
+): Promise<readonly CaptureArtifactRef[]> {
+  if (!artifacts) return [];
+  try {
+    const bytes = await page.screenshot({ type: "png", fullPage: false });
+    if (bytes.byteLength === 0 || bytes.byteLength > MAX_CAPTURE_SCREENSHOT_BYTES) return [];
+    const stored = await artifacts.put(
+      request.scope,
+      `capture/${request.session.captureSessionId}/event-${identity.sequence}.png`,
+      Uint8Array.from(bytes),
+      "image/png",
+    );
+    return [{ ref: stored.ref, kind: "SCREENSHOT", contentType: "image/png" }];
+  } catch {
+    // Capture screenshots are supplementary authoring evidence, not verification
+    // authority. Browser/S3 uncertainty must not manufacture or weaken the expected
+    // effect contract that independently gates compilation and execution.
+    return [];
+  }
+}
+
 export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionEventSource {
   private readonly controlPollMs: number;
   private readonly connectTimeoutMs: number;
   private readonly effectSettleMs: number;
+  private readonly artifacts: ArtifactStore | undefined;
   private readonly now: () => Date;
 
   constructor(
@@ -143,6 +177,7 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
     this.controlPollMs = positiveInteger(options.controlPollMs ?? DEFAULT_CONTROL_POLL_MS, "capture control poll interval");
     this.connectTimeoutMs = positiveInteger(options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS, "capture connection timeout");
     this.effectSettleMs = positiveInteger(options.effectSettleMs ?? DEFAULT_EFFECT_SETTLE_MS, "capture effect settle interval");
+    this.artifacts = options.artifacts;
     this.now = options.now ?? (() => new Date());
   }
 
@@ -238,12 +273,18 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
           // if a trustworthy post-effect state could not be captured.
           expectedEffect = undefined;
         }
+        const artifactRefs = await postActionScreenshot(
+          source.page,
+          this.artifacts,
+          request,
+          identity,
+        );
         append(identity, {
           kind: payload.kind,
           page: { url, ...(title ? { title } : {}) },
           target,
           ...(expectedEffect ? { expectedEffect } : {}),
-          artifactRefs: [],
+          artifactRefs,
         });
       })();
       pendingEffects.add(task);

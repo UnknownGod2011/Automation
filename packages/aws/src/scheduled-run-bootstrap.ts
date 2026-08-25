@@ -264,6 +264,7 @@ export function createAwsScheduledRunBootstrap(
     new AgentCorePlaywrightCaptureEventSource(
       browserSigner,
       adapter.config.browserIdentifier,
+      { artifacts: artifactStore },
     ),
   );
   const captureCompletion = new CaptureCompletionService(
