@@ -4,77 +4,69 @@ Updated: 2026-08-26
 
 ## Current baseline
 
-- Incoming `main` is `c0369a91ceab07ffe52b38d2aa6ce7b505598631` (`Verify controlled demo workflow in live smoke`).
-- Push GitHub Actions CI #336 completed successfully on that exact SHA: deterministic lock verification, frozen install, strict checks/builds, all production packaging, AWS deployment/security contracts, and the full test suite were green.
+- Incoming `main` is `498d343ba568854d74269cf7b895c18039ccf272` (`Normalize native submit capture`).
+- Push GitHub Actions CI #339 completed successfully on that exact SHA: deterministic lock verification, frozen install, strict checks/builds, all production packaging, AWS deployment/security contracts, and the full test suite were green.
 - The AWS-first vertical is structurally present: Cognito/Google auth, Next.js control plane, controlled first-party demo target, AgentCore Live View capture + Browser Profile persistence, immutable capture traces, semantic workflow compilation/inspection, asynchronous AgentCore Fresh Test, publish/scheduling, AgentCore Browser/OpenAI BYOK execution, side-effect verification, sanitized history/timeline/reasoning/evidence, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
 - Recovery/crash-reconciliation depth remains intentionally parked unless CI or the real vertical exposes a correctness blocker.
 
-## This slice — normalize native form submission during live capture
+## This slice — keep action-driven navigation inside the captured action
 
 ### Product defect
 
-The production Playwright capture bridge observed both DOM `click` and DOM `submit` events independently. Clicking a native submit button therefore produced a captured CLICK followed by a captured SUBMIT. The compiler correctly treats both events as executable, verified workflow actions, so one demonstrated form submission could become two consequential replay steps. The controlled first-party `/demo-target` uses exactly this normal note + submit-button interaction, making the defect a blocker for the real capture -> compile -> Fresh Test vertical rather than a recovery edge case.
+The live collector records main-frame navigation events independently from CLICK/SUBMIT events. A normal action that navigates the page can therefore produce a verified browser action followed by a second executable NAVIGATION event. The controlled `/demo-target` exposes this directly: submitting the note POSTs to `/demo-target/action`; replaying a later captured NAVIGATION would then attempt a GET against that POST-only route after the submit had already succeeded.
+
+This is a Capture -> Compile -> Fresh Test correctness blocker, not a recovery edge case.
 
 ### Change
 
-- `AgentCorePlaywrightCaptureEventSource` now keeps an unsettled CLICK pending during the existing bounded post-action settle interval.
-- If a native SUBMIT arrives from the same page while that CLICK is pending, the initiating CLICK is suppressed and the SUBMIT becomes the single authoritative captured action.
-- Plain clicks that do not produce a form submission remain unchanged.
-- The injected browser observer now prefers the DOM `SubmitEvent.submitter` as the semantic target, so normal button-driven submissions retain the actionable button/test-id/role rather than degrading to the enclosing form.
-- Semantic target extraction now resolves nested click content to the nearest bounded interactive element, reducing brittle captures such as a `<span>` inside a button.
-- Because a suppressed pending click can consume an internal observation ordinal, returned capture events are re-numbered contiguously before trace validation. Event IDs remain opaque and immutable for that collection; only the public sequence is normalized.
-- No compiler verification rule is weakened: SUBMIT still requires a trustworthy captured post-action structural-state contract before the workflow can compile.
+- `AgentCorePlaywrightCaptureEventSource` now tracks pages with an unsettled captured CLICK/SUBMIT during the existing bounded post-action verification interval.
+- Main-frame navigation observed on that same page while the action is unsettled is treated as part of the action's resulting state and is not emitted as a second executable NAVIGATION event.
+- Independent navigation with no unsettled action remains capturable exactly as before.
+- Native click -> submit normalization remains intact: the initiating click is suppressed and the submit remains the single authoritative browser action.
+- The action's structural post-state fingerprint remains the verification authority; no compiler or verifier rule is weakened.
 
 ## Security / tenant isolation
 
-- The change runs only inside the already-authorized AgentCore Browser capture session and adds no new browser capability, API route, credential, storage authority, or cross-tenant lookup.
-- Tenant/user/automation/capture-session identity remains supplied by the trusted capture worker and durable session/control stores.
-- Raw typed values remain excluded from capture events; INPUT events still emit runtime-variable placeholders and never take post-input screenshots.
-- The coalescing key is the already-bounded HTTP(S) page URL observed inside one capture process. It is not durable authorization state and never crosses tenants or sessions.
-- The submit target still passes through the existing bounded semantic-target normalization; no arbitrary script or selector execution is introduced.
+- The normalization is process-local inside one already-authorized capture Browser session. It adds no API route, durable authority, credential, profile selection, cross-tenant lookup, or browser capability.
+- Tenant/user/automation/capture-session identity remains supplied by the trusted capture worker and durable stores.
+- Raw typed values remain excluded from capture events and INPUT screenshots remain suppressed.
+- No page content is persisted by the pending-page marker; it stores only in-memory Playwright Page object identity plus a bounded counter.
 
 ## Idempotency / concurrency / retry / timeout
 
-- One native browser interaction now maps to one executable submit event instead of two, reducing duplicate-side-effect risk at the source.
-- The existing effect-settle interval is reused; no new retry loop or unbounded timer is introduced.
-- Multiple pending clicks are process-local capture observations only. A SUBMIT suppresses the latest unsettled click on the same page, matching normal browser event ordering where submit follows its initiating click.
-- Finish still waits for tracked post-action observation tasks before returning the trace, so the normalization cannot drop an in-flight verified submit merely because the user pressed Finish quickly.
-- Existing durable capture-session/control idempotency and completion semantics are unchanged.
+- One demonstrated side effect now maps to one executable action rather than action + derived navigation, reducing duplicate-side-effect and invalid-replay risk.
+- The existing effect-settle timeout is reused; no retry loop or new unbounded timer is introduced.
+- The marker is reference-counted because CLICK and SUBMIT can overlap briefly during native form submission; it is cleared when each tracked action settles or fails.
+- Finish still waits for tracked post-action tasks, so the verified action cannot be lost by immediately finishing capture.
 
 ## Side-effect verification / user recovery
 
-- Structural post-action verification remains mandatory and independent of the coalescing decision. If the collector cannot establish trustworthy post-submit state, the compiler still rejects that event.
-- Capture screenshots remain supplementary evidence only and cannot authorize compilation or execution.
-- This slice does not change scheduled execution, semantic recovery, human takeover, lease/heartbeat behavior, or crash reconciliation.
-- A remaining live risk is keyboard/implicit submission where `SubmitEvent.submitter` can be absent; the collector falls back to the form target. The first controlled demo explicitly uses the visible submit button, and broader form-submission recovery should be driven by real-site evidence rather than speculative recovery expansion.
+- CLICK/SUBMIT still require the existing redacted structural post-action fingerprint before compilation.
+- A derived navigation is suppressed only while an action is already responsible for the page transition; independent navigation remains a first-class captured event.
+- Capture screenshots remain supplementary evidence and cannot authorize success.
+- Scheduled execution, semantic fallback, bounded retries, target-auth takeover/resume, and crash-reconciliation behavior are unchanged.
 
 ## Cost / observability
 
 - No AWS resource, IAM permission, dependency, S3/DynamoDB table, AgentCore Runtime invocation, OpenAI request, Scheduler delivery, or retained GitHub Actions artifact is added.
-- Native submit capture now avoids one redundant executable node and its downstream browser action/verification cost.
-- Existing capture action screenshot behavior is unchanged: CLICK/SUBMIT may retain one bounded post-action PNG; INPUT never does.
+- Removing redundant navigation avoids one unnecessary runtime navigation + verification on workflows whose action already transitions the page.
 
 ## Regression coverage
 
-- New AWS capture regression emits a CLICK immediately followed by SUBMIT for the same page and requires exactly one returned event: verified `SUBMIT`, sequence `1`, with the actionable button semantic target retained.
-- Existing capture tests continue to cover plain CLICK structural verification, bounded screenshot persistence, fail-soft screenshot storage, INPUT value redaction/no screenshot, phase gating, and finish-before-connect behavior.
-- Existing compiler tests continue to require expected effects for side-effecting captured actions and contiguous trace ordering.
+- The focused native-submit regression now emits CLICK + SUBMIT, then delivers a main-frame navigation while the action effect is unsettled.
+- The returned trace must contain exactly one verified SUBMIT event and no CLICK or NAVIGATION duplicate.
+- Existing collector/compiler tests continue to cover independent navigation, structural verification, screenshot behavior, INPUT redaction, phase gating, and contiguous trace ordering.
 
 ## Validation
 
-- Normal product head `4f14b30ef3c6f1d867fc9101502d93ee3dc684af` triggered CI #337.
-- CI #337 stopped exclusively at the deterministic pnpm lock-snapshot gate before installation, type-checking, packaging, or tests. No package manifest changed. pnpm 10.15.0 regenerated the full transitive graph from reviewed SHA `30304f64b0d6d8e064117861339266bdbb30cddb7eceb36d3d007c2c9867052f` to authoritative CI-produced SHA `2f63d7d3ebae1f017606b4d22dc2e5508003c0cd0988374ce0f856fd14a27234`.
-- The single corrective commit updates only that reviewed fingerprint plus this validation record. Existing AWS SDK/DynamoDB peer-alignment assertions remain unchanged.
-- The corrective head is green only after GitHub Actions succeeds on that exact SHA.
-
-Required gates remain:
+This slice is complete only after GitHub Actions succeeds on the exact published head. Required gates remain:
 
 1. deterministic pnpm lock verification with pnpm 10.15.0 and the reviewed fingerprint;
 2. frozen installation;
 3. `pnpm check`, including strict TypeScript and Next.js production build/type validation;
 4. AgentCore Runtime, control-plane Lambda, and Next.js Lambda packaging;
 5. AWS hosting/federation/release/deployment/web-demo/live-smoke/OIDC contract checks;
-6. full tests, including the new native-submit normalization regression.
+6. full tests, including the action-driven-navigation normalization regression.
 
 Never weaken these checks to obtain green status.
 
@@ -86,7 +78,7 @@ Never weaken these checks to obtain green status.
 - Capture/run screenshots can contain owner-visible page content; retention/deletion policy remains a live-production concern.
 - DynamoDB <-> EventBridge Scheduler mutations remain fail-closed but are not cross-service transactional.
 - OpenAI remains the concrete production BYOK reasoning provider.
-- Keyboard/implicit form submissions can lack a submitter target and should be validated on real sites before broadening the form-action runtime contract.
+- Popups/new-tab actions and intentionally rapid manual navigation immediately after an action should be validated on real sites before broadening capture normalization.
 - Additional crash-recovery micro-hardening remains parked unless live execution or CI reveals a real defect.
 
 ## Next product milestone
@@ -96,7 +88,7 @@ Run the protected real AWS vertical with the controlled target:
 1. deploy an exact-head green immutable release with `DemoTargetEnabled=true`, a bounded demo session TTL, and real VPC Browser network inputs;
 2. require protected live smoke plus all five System capabilities `CONFIGURED`;
 3. sign in through Cognito/Google and configure one OpenAI BYOK credential;
-4. create an automation targeting `${webOrigin}/demo-target`, capture after manual demo sign-in, demonstrate one note + native submit-button action, finish trusted completion, and confirm the trace compiles to one submit action rather than CLICK + SUBMIT duplication;
+4. create an automation targeting `${webOrigin}/demo-target`, capture after manual demo sign-in, demonstrate one note + native submit-button action, finish trusted completion, and confirm the trace contains one verified submit with no derived navigation duplicate;
 5. review capture screenshots, compile/inspect, and run a >30-second Fresh Test; inspect timeline/reasoning/evidence;
 6. publish with near-future recurrence/timezone and a non-secret recurring demo note; verify Scheduler -> SQS -> Step Functions -> AgentCore Runtime while the user device is off;
 7. let the demo auth cookie expire, confirm `WAITING_FOR_HUMAN / TARGET_AUTH_REQUIRED`, repair in Live View, save the Browser Profile, resume once, and verify terminal SES/CloudWatch reporting;
