@@ -23,7 +23,7 @@ const automation: AutomationRecord = {
   updatedAt: "2026-08-26T00:00:00.000Z",
 };
 
-function request(): CaptureCollectionSourceRequest {
+function request(onFirstPoll?: () => Promise<void> | void): CaptureCollectionSourceRequest {
   let reads = 0;
   return {
     scope,
@@ -40,10 +40,13 @@ function request(): CaptureCollectionSourceRequest {
       status: "STARTED",
     },
     control: {
-      getState: async () => ({
-        phase: "WORKFLOW" as const,
-        finishRequested: reads++ > 0,
-      }),
+      getState: async () => {
+        if (reads === 1) await onFirstPoll?.();
+        return {
+          phase: "WORKFLOW" as const,
+          finishRequested: reads++ > 0,
+        };
+      },
     },
   };
 }
@@ -60,8 +63,12 @@ function signer(): AgentCoreBrowserConnectionSigner {
 describe("capture submit normalization", () => {
   beforeEach(() => playwright.connectOverCDP.mockReset());
 
-  it("coalesces the initiating click and native submit into one verified SUBMIT event", async () => {
+  it("coalesces the initiating click, native submit, and action-driven navigation into one verified SUBMIT event", async () => {
     let binding: ((source: { page: unknown }, payload: unknown) => Promise<void>) | undefined;
+    let navigationHandler: ((frame: { url: () => string }) => Promise<void>) | undefined;
+    let releaseEffect: (() => void) | undefined;
+    const effectSettled = new Promise<void>((resolve) => { releaseEffect = resolve; });
+    const mainFrame = { url: () => "https://example.com/form/complete" };
     const page = {
       evaluate: vi.fn(async (script: unknown) => {
         if (typeof script === "string") {
@@ -79,15 +86,17 @@ describe("capture submit normalization", () => {
           return undefined;
         }
         return [
-          { tag: "button", testId: "save", ariaDisabled: "true" },
-          { tag: "form", id: "editor" },
+          { tag: "div", testId: "complete" },
+          { tag: "main", id: "result" },
         ];
       }),
-      on: vi.fn(),
-      mainFrame: vi.fn(),
-      title: vi.fn(async () => "Form"),
-      url: vi.fn(() => "https://example.com/form"),
-      waitForTimeout: vi.fn(async () => undefined),
+      on: vi.fn((event: string, callback: typeof navigationHandler) => {
+        if (event === "framenavigated") navigationHandler = callback;
+      }),
+      mainFrame: vi.fn(() => mainFrame),
+      title: vi.fn(async () => "Complete"),
+      url: vi.fn(() => "https://example.com/form/complete"),
+      waitForTimeout: vi.fn(async () => effectSettled),
       screenshot: vi.fn(),
     };
     const context = {
@@ -98,18 +107,26 @@ describe("capture submit normalization", () => {
     };
     playwright.connectOverCDP.mockResolvedValue({ contexts: () => [context] });
 
+    let navigationDelivered = false;
     const source = new AgentCorePlaywrightCaptureEventSource(signer(), "aws.browser.v1", {
       now: () => new Date("2026-08-26T00:01:00.000Z"),
       controlPollMs: 1,
       effectSettleMs: 1,
     });
-    const events = await source.collect(request());
+    const eventsPromise = source.collect(request(async () => {
+      navigationDelivered = true;
+      await navigationHandler?.(mainFrame);
+      releaseEffect?.();
+    }));
+    const events = await eventsPromise;
 
+    expect(navigationDelivered).toBe(true);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       sequence: 1,
       kind: "SUBMIT",
       purpose: "WORKFLOW",
+      page: { url: "https://example.com/form" },
       target: { testId: "save", role: "button", accessibleName: "Save" },
       expectedEffect: {
         mode: "CUSTOM",
@@ -117,5 +134,6 @@ describe("capture submit normalization", () => {
     });
     expect(events[0]?.expectedEffect?.expected).toMatch(/^capture:state:[0-9a-f]+$/);
     expect(events.some((event) => event.kind === "CLICK")).toBe(false);
+    expect(events.some((event) => event.kind === "NAVIGATION")).toBe(false);
   });
 });

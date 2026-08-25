@@ -211,6 +211,7 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
     const events: CaptureEvent[] = [];
     const pendingEffects = new Set<Promise<void>>();
     const pendingClicksByUrl = new Map<string, PendingClick[]>();
+    const pendingActionPages = new Map<Page, number>();
     let sequence = 0;
     let lastTimestamp = new Date(request.session.startedAt).getTime();
 
@@ -260,6 +261,18 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
       const existing = pendingClicksByUrl.get(url);
       const pending = existing?.at(-1);
       if (pending) pending.canceled = true;
+    };
+    const beginAction = (page: Page): void => {
+      pendingActionPages.set(page, (pendingActionPages.get(page) ?? 0) + 1);
+    };
+    const endAction = (page: Page): void => {
+      const remaining = (pendingActionPages.get(page) ?? 1) - 1;
+      if (remaining > 0) pendingActionPages.set(page, remaining);
+      else pendingActionPages.delete(page);
+    };
+    const trackAction = (page: Page, start: () => Promise<void>): void => {
+      beginAction(page);
+      track(start().finally(() => endAction(page)));
     };
     const captureAction = async (
       source: { page: Page },
@@ -340,7 +353,7 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
       if (payload.kind === "CLICK") {
         const pending: PendingClick = { identity, canceled: false };
         addPendingClick(url, pending);
-        const task = captureAction(
+        trackAction(source.page, () => captureAction(
           source,
           payload,
           identity,
@@ -348,12 +361,11 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
           title,
           target,
           () => !pending.canceled,
-        ).finally(() => removePendingClick(url, pending));
-        track(task);
+        ).finally(() => removePendingClick(url, pending)));
         return;
       }
 
-      track(captureAction(source, payload, identity, url, title, target));
+      trackAction(source.page, () => captureAction(source, payload, identity, url, title, target));
     });
     await context.addInitScript({ content: CAPTURE_INSTALLER });
 
@@ -366,6 +378,10 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
       }
       page.on("framenavigated", async (frame) => {
         if (frame !== page.mainFrame()) return;
+        // A click/submit already owns the resulting page transition while its bounded
+        // post-action verification is settling. Recording that same transition as a
+        // second executable NAVIGATION would replay one demonstrated action twice.
+        if (pendingActionPages.has(page)) return;
         const url = safeHttpUrl(frame.url());
         if (!url) return;
         let title: string | undefined;
