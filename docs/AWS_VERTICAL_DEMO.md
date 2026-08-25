@@ -12,23 +12,44 @@ Before using arbitrary target hosts, validate the deployed Browser VPC's route t
 
 For local debugging only, `scripts/prepare-web-demo-env.sh` may still generate a non-secret `.env.local` from deployment outputs and a chosen Cognito-compatible origin.
 
+## Built-in controlled target (recommended for the first vertical)
+
+The deployed Next.js app contains an intentionally harmless demo target at `${webOrigin}/demo-target`, but it is **disabled by default**. Enable it only in a staging/demo environment by setting these non-secret web stack parameters:
+
+```json
+{
+  "parameters": {
+    "web": {
+      "DemoTargetEnabled": "true",
+      "DemoTargetSessionTtlSeconds": 900
+    }
+  }
+}
+```
+
+The target has no AWS data-plane permissions or durable server-side state. Its sign-in button sets only a short-lived, scoped `HttpOnly; Secure; SameSite=Lax` demo cookie. The workflow form accepts one non-secret note, never reflects that value into the response, and returns a stable structural completion page. A fresh navigation always begins from the same form, so captured structural effect verification remains meaningful on every Fresh Test and scheduled run.
+
+The cookie expiry is intentional. Once the browser no longer sends it, `GET /demo-target` returns HTTP 401. The existing Playwright runtime classifies that navigation as `TARGET_AUTH_REQUIRED`, so waiting for the configured TTL provides a controlled way to exercise the real secure takeover/profile-save/resume path without depending on a third-party site's authentication behavior. This is simulated target authentication only; it protects no user data and must not be presented as a real authentication system.
+
+Recommended objective: `Enter the provided non-secret demo note and complete the demo task.` During Live View, click **Sign in to demo target** before pressing **Start recording workflow**, then record typing a non-secret note and submitting **Complete demo task**.
+
 ## Controlled success path
 
 1. Open `outputs.webOrigin` and sign in through Cognito.
 2. If using Google sign-in, after the first successful federation run `scripts/verify-google-demo-user.sh --deployment <deployment-result.json> --email <signed-in-email>`. Continue with SES notification evidence only if it confirms one Google-linked Cognito user with `email_verified=true`.
 3. Add one OpenAI BYOK credential; confirm only masked metadata returns.
-4. Create an authorized automation with HTTPS site URL, objective, consent, and notification preference.
+4. Create an authorized automation with HTTPS site URL, objective, consent, and notification preference. For the first controlled run, prefer `${webOrigin}/demo-target` with the built-in target enabled.
 5. Start cloud capture; sign in to the target site yourself in Live View.
 6. Start workflow recording, demonstrate the reusable flow, and finish capture.
-7. Confirm capture becomes Compile-ready without copying internal identifiers.
+7. Confirm capture becomes Compile-ready without copying internal identifiers and review the retained capture screenshots.
 8. Compile and inspect the semantic plan, then run a fresh AgentCore test; approve only after verification succeeds. Include one test that lasts longer than 30 seconds and confirm the web request returns promptly while the page follows the durable result.
 9. Publish with a near-future recurrence/timezone and any explicitly non-secret recurring inputs, then close the user browser/device.
 10. Confirm Scheduler -> SQS -> Step Functions -> AgentCore Runtime reaches a verified terminal run.
-11. Confirm sanitized run history, optional SES success email, and low-cardinality CloudWatch/EMF telemetry.
+11. Confirm sanitized run history/timeline/reasoning/evidence, optional SES success email, and low-cardinality CloudWatch/EMF telemetry.
 
 ## Controlled human-recovery path
 
-Deliberately invalidate only target-site authentication, allow the next run to reach `WAITING_FOR_HUMAN / TARGET_AUTH_REQUIRED`, open the secure repair Live View, complete login/MFA manually, save the repaired session, and resume. Confirm Browser Profile persistence precedes resume and the post-resume terminal email/metric appears once.
+For the built-in target, allow its short-lived demo auth cookie to expire; for another permitted test target, deliberately invalidate only target-site authentication. Allow the next run to reach `WAITING_FOR_HUMAN / TARGET_AUTH_REQUIRED`, open the secure repair Live View, complete login/MFA manually, save the repaired session, and resume. Confirm Browser Profile persistence precedes resume and the post-resume terminal email/metric appears once.
 
 ## Stop conditions and evidence
 

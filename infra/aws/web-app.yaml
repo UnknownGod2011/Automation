@@ -20,6 +20,15 @@ Parameters:
   WebOrigin:
     Type: String
     Default: ''
+  DemoTargetEnabled:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+  DemoTargetSessionTtlSeconds:
+    Type: Number
+    Default: 900
+    MinValue: 60
+    MaxValue: 3600
   ReservedConcurrency:
     Type: Number
     Default: 5
@@ -92,6 +101,8 @@ Resources:
           AUTOMATION_COGNITO_DOMAIN: !If [HasRuntimeConfig, !Ref CognitoDomain, '']
           AWS_COGNITO_APP_CLIENT_ID: !If [HasRuntimeConfig, !Ref CognitoAppClientId, '']
           AUTOMATION_WEB_ORIGIN: !If [HasRuntimeConfig, !Ref WebOrigin, '']
+          AUTOMATION_DEMO_TARGET_ENABLED: !Ref DemoTargetEnabled
+          AUTOMATION_DEMO_TARGET_SESSION_TTL_SECONDS: !Ref DemoTargetSessionTtlSeconds
 
   WebFunctionUrl:
     Type: AWS::Lambda::Url
@@ -123,3 +134,5 @@ Outputs:
     Value: !GetAtt WebFunction.Arn
   RuntimeConfigured:
     Value: !If [HasRuntimeConfig, 'true', 'false']
+  DemoTargetEnabled:
+    Value: !Ref DemoTargetEnabled
