@@ -62,7 +62,12 @@ The production Playwright capture bridge observed both DOM `click` and DOM `subm
 
 ## Validation
 
-This slice is green only after GitHub Actions succeeds on the exact published head. Required gates remain:
+- Normal product head `4f14b30ef3c6f1d867fc9101502d93ee3dc684af` triggered CI #337.
+- CI #337 stopped exclusively at the deterministic pnpm lock-snapshot gate before installation, type-checking, packaging, or tests. No package manifest changed. pnpm 10.15.0 regenerated the full transitive graph from reviewed SHA `30304f64b0d6d8e064117861339266bdbb30cddb7eceb36d3d007c2c9867052f` to authoritative CI-produced SHA `2f63d7d3ebae1f017606b4d22dc2e5508003c0cd0988374ce0f856fd14a27234`.
+- The single corrective commit updates only that reviewed fingerprint plus this validation record. Existing AWS SDK/DynamoDB peer-alignment assertions remain unchanged.
+- The corrective head is green only after GitHub Actions succeeds on that exact SHA.
+
+Required gates remain:
 
 1. deterministic pnpm lock verification with pnpm 10.15.0 and the reviewed fingerprint;
 2. frozen installation;
