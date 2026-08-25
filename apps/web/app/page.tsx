@@ -90,7 +90,7 @@ export default async function DashboardPage() {
                 <Link className="list-item" href={`/automations/${encodeURIComponent(automation.automationId)}`} key={automation.automationId}>
                   <div><div className="row"><h3>{automation.name}</h3>{automation.needsAttention ? <span className="badge warning">Needs attention</span> : null}</div><div className="muted">{automation.websiteUrl}</div><p>{automation.objective}</p></div>
                   <div><div className="badge">{automationPhase(automation)}</div><p className="muted">{formatSchedule(automation)}</p><p className="muted">{nextRunLabel(automation, renderedAt)}</p></div>
-                  <div>{lastRun && automation.lastRun ? <><strong>{lastRun.kind}</strong><br /><span className={`badge ${lastRun.tone}`}>{automation.lastRun.status}</span><p className="muted">{lastRun.detail}</p><p className="muted">{automation.lastRun.scheduledAt}</p></> : <span className="muted">No runs yet</span>}</div>
+                  <div>{automation.lastRunUnavailable ? <span className="muted">Latest run temporarily unavailable</span> : lastRun && automation.lastRun ? <><strong>{lastRun.kind}</strong><br /><span className={`badge ${lastRun.tone}`}>{automation.lastRun.status}</span><p className="muted">{lastRun.detail}</p><p className="muted">{automation.lastRun.scheduledAt}</p></> : <span className="muted">No runs yet</span>}</div>
                 </Link>
               );
             })}
