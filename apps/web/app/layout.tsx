@@ -25,6 +25,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
             <Link href="/">Dashboard</Link>
             {auth.kind === "AUTHENTICATED" ? (
               <>
+                <Link href="/settings/status">System</Link>
                 {authenticatedNavigation?.kind === "READY" ? (
                   <>
                     <Link href="/settings/credentials">Credentials</Link>
