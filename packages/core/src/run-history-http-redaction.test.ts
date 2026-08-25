@@ -103,7 +103,7 @@ async function handlerWithPausedRun() {
 }
 
 describe("authenticated run-history transport redaction", () => {
-  it("keeps workflow node identity out of dashboard, automation detail, and run-history responses", async () => {
+  it("keeps workflow node identity out while keeping run failure detail on run-aware surfaces only", async () => {
     const handler = await handlerWithPausedRun();
 
     const dashboard = await handler.handle({ method: "GET", path: "/v1/automations" }, { scope });
@@ -117,8 +117,15 @@ describe("authenticated run-history transport redaction", () => {
       const serialized = JSON.stringify(response.body);
       expect(serialized).not.toContain(INTERNAL_NODE_ID);
       expect(serialized).not.toContain("currentNodeId");
-      expect(serialized).toContain("TARGET_AUTH_REQUIRED");
     }
+
+    expect(JSON.stringify(dashboard.body)).toContain("TARGET_AUTH_REQUIRED");
+    expect(JSON.stringify(history.body)).toContain("TARGET_AUTH_REQUIRED");
+    expect(JSON.stringify(automationDetail.body)).not.toContain("TARGET_AUTH_REQUIRED");
+    expect(automationDetail.body).toEqual(expect.objectContaining({
+      status: 200,
+      body: expect.objectContaining({ status: "PAUSED", needsAttention: true }),
+    }));
   });
 
   it("also redacts nested last-run node identity from summary-returning mutations", async () => {
@@ -136,5 +143,6 @@ describe("authenticated run-history transport redaction", () => {
     expect(response.status).toBe(200);
     expect(JSON.stringify(response.body)).not.toContain(INTERNAL_NODE_ID);
     expect(JSON.stringify(response.body)).not.toContain("currentNodeId");
+    expect(JSON.stringify(response.body)).not.toContain("TARGET_AUTH_REQUIRED");
   });
 });

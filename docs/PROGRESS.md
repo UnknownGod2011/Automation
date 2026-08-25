@@ -28,6 +28,7 @@ The previous web slice treated the dedicated run-history request as fail-soft so
 - The dashboard no longer reads latest capture-completion state because that data is not rendered there. Capture readiness remains on the automation detail path where it is product-relevant.
 - Healthy automations on the same dashboard still retain their real latest run and provenance.
 - The dedicated `/runs` history boundary remains authoritative for Fresh Test provenance, publishing, and detailed run history; its sanitized `409 CONFLICT` behavior is unchanged.
+- Automation metadata intentionally reports durable lifecycle/attention state without importing run-specific failure codes. Classified run failures remain available on run-aware dashboard/history/diagnostic surfaces.
 
 ### Security / tenant isolation
 
@@ -56,11 +57,16 @@ The previous web slice treated the dedicated run-history request as fail-soft so
 - one dashboard automation can report `lastRunUnavailable=true` while another still shows its real successful latest run;
 - dashboard rendering no longer needs capture-completion reads;
 - metadata-only notification-preference replay remains usable while run history is unavailable;
+- metadata/detail responses keep `PAUSED` / `needsAttention` without depending on a run-specific `TARGET_AUTH_REQUIRED` code, while dashboard/history responses still preserve the classified failure;
 - the existing dedicated history tests still enforce sanitized `409 CONFLICT` and cross-tenant `NOT_FOUND` behavior.
 
 ## Validation status
 
-The provider-neutral control-plane correction, dashboard presentation change, regression coverage, and this progress record are batched into one normal multi-file Git-data commit. GitHub Actions on the exact PR head is authoritative. Do not claim green until that workflow completes successfully.
+- Normal implementation head `535513fce034448354f29516c870578cf3bf4cdb` ran as GitHub Actions CI #308.
+- CI #308 passed deterministic lock verification, frozen installation, strict `pnpm check`, AgentCore Runtime packaging, control-plane Lambda packaging, Next.js Lambda packaging, and every AWS hosting/federation/release/deployment/demo/live-smoke/OIDC contract.
+- All new history-isolation tests passed. The full core suite reached 317 passing tests with one stale existing assertion in `run-history-http-redaction.test.ts` that still required `TARGET_AUTH_REQUIRED` to appear in the automation metadata response.
+- That assertion encoded the old decorative-history behavior. The corrective commit aligns it with the new boundary: automation metadata retains `PAUSED` / `needsAttention`, while classified failure codes remain on run-aware dashboard/history surfaces. No production behavior or check is weakened.
+- GitHub Actions on the exact corrective PR head is authoritative. Do not claim green until that workflow completes successfully.
 
 ## Known production risks intentionally left visible
 
