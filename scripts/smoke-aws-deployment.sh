@@ -158,7 +158,7 @@ if [[ -n "${DEMO_TARGET_ENABLED:-}" ]]; then
     demo_headers="$tmp_dir/demo-login.headers"
     demo_login_code="$(curl "${curl_common[@]}" --request POST --dump-header "$demo_headers" --output /dev/null --write-out '%{http_code}' "$WEB_ORIGIN/demo-target/login")"
     [[ "$demo_login_code" == "303" ]] || { echo "demo-target smoke failed: sign-in expected 303, received $demo_login_code" >&2; exit 14; }
-    python3 - "$demo_headers" "$WEB_ORIGIN" <<'PY'
+    demo_cookie="$(python3 - "$demo_headers" "$WEB_ORIGIN" <<'PY'
 import sys
 from pathlib import Path
 
@@ -176,10 +176,27 @@ if not cookie or 'automation_demo_auth=authenticated' not in cookie:
 for required in ('Path=/demo-target', 'HttpOnly', 'Secure', 'SameSite=Lax'):
     if required not in cookie:
         raise SystemExit(f'demo-target smoke failed: cookie is missing {required}')
+print(cookie.split(';', 1)[0])
 PY
+)"
+
+    demo_workflow_body="$tmp_dir/demo-workflow.html"
+    demo_workflow_code="$(curl "${curl_common[@]}" --header "Cookie: $demo_cookie" --output "$demo_workflow_body" --write-out '%{http_code}' "$WEB_ORIGIN/demo-target")"
+    [[ "$demo_workflow_code" == "200" ]] || { echo "demo-target smoke failed: issued session cookie was not accepted; expected 200, received $demo_workflow_code" >&2; exit 14; }
+    grep -Fq 'data-testid="demo-note"' "$demo_workflow_body" || { echo 'demo-target smoke failed: authenticated workflow note field is missing' >&2; exit 14; }
+    grep -Fq 'data-testid="demo-submit"' "$demo_workflow_body" || { echo 'demo-target smoke failed: authenticated workflow submit action is missing' >&2; exit 14; }
+
+    demo_action_body="$tmp_dir/demo-action.html"
+    demo_action_code="$(curl "${curl_common[@]}" --request POST --header "Cookie: $demo_cookie" --header 'content-type: application/x-www-form-urlencoded' --data-urlencode 'note=deployment-smoke-note' --output "$demo_action_body" --write-out '%{http_code}' "$WEB_ORIGIN/demo-target/action")"
+    [[ "$demo_action_code" == "200" ]] || { echo "demo-target smoke failed: controlled workflow action expected 200, received $demo_action_code" >&2; exit 14; }
+    grep -Fq 'data-testid="demo-complete"' "$demo_action_body" || { echo 'demo-target smoke failed: controlled workflow completion marker is missing' >&2; exit 14; }
+    if grep -Fq 'deployment-smoke-note' "$demo_action_body"; then
+      echo 'demo-target smoke failed: submitted note was reflected into the response' >&2
+      exit 14
+    fi
   else
     [[ "$demo_code" == "404" ]] || { echo "demo-target smoke failed: disabled target expected 404, received $demo_code" >&2; exit 14; }
   fi
 fi
 
-echo "AWS deployment smoke passed: web configured, Cognito PKCE redirect valid, protected APIs reject anonymous access${DEMO_TARGET_ENABLED:+, demo-target state verified}."
+echo "AWS deployment smoke passed: web configured, Cognito PKCE redirect valid, protected APIs reject anonymous access${DEMO_TARGET_ENABLED:+, demo-target state and action verified}."

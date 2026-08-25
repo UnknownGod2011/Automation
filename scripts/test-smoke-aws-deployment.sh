@@ -24,14 +24,19 @@ JSON
 cat >"$tmp/bin/curl" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-out=""; headers=""; write=""; url=""; method="GET"
+out=""; headers=""; write=""; url=""; method="GET"; cookie=""; encoded_data=""
 while (($#)); do
   case "$1" in
     --output|-o) out="$2"; shift 2 ;;
     --dump-header|-D) headers="$2"; shift 2 ;;
     --write-out|-w) write="$2"; shift 2 ;;
     --request|-X) method="$2"; shift 2 ;;
-    --connect-timeout|--max-time|--proto|--proto-redir|--header|--data) shift 2 ;;
+    --header)
+      if [[ "$2" == Cookie:* ]]; then cookie="$2"; fi
+      shift 2
+      ;;
+    --data-urlencode) encoded_data="$2"; shift 2 ;;
+    --connect-timeout|--max-time|--proto|--proto-redir|--data) shift 2 ;;
     --silent|--show-error) shift ;;
     http*) url="$1"; shift ;;
     *) shift ;;
@@ -59,6 +64,9 @@ elif [[ "$url" == "https://capture.example.com/capture/complete" && "$method" ==
 elif [[ "$url" == "https://web.example.com/demo-target" ]]; then
   if [[ "${FAKE_DEMO_MODE:-good}" == "disabled" ]]; then
     code=404
+  elif [[ "$cookie" == "Cookie: automation_demo_auth=authenticated" && "${FAKE_DEMO_MODE:-good}" != "session-broken" ]]; then
+    code=200
+    [[ "$out" == /dev/null ]] || printf '<html><textarea data-testid="demo-note"></textarea><button data-testid="demo-submit">Complete</button></html>' >"$out"
   else
     code=401
     [[ "$out" == /dev/null ]] || printf '<html><button data-testid="demo-login">Sign in</button></html>' >"$out"
@@ -68,13 +76,29 @@ elif [[ "$url" == "https://web.example.com/demo-target/login" && "$method" == "P
   if [[ -n "$headers" ]]; then
     printf 'HTTP/1.1 303 See Other\r\nLocation: https://web.example.com/demo-target\r\nSet-Cookie: automation_demo_auth=authenticated; Path=/demo-target; Max-Age=900; HttpOnly; Secure; SameSite=Lax\r\n\r\n' >"$headers"
   fi
+elif [[ "$url" == "https://web.example.com/demo-target/action" && "$method" == "POST" ]]; then
+  if [[ "$cookie" != "Cookie: automation_demo_auth=authenticated" ]]; then
+    code=401
+  elif [[ "${FAKE_DEMO_MODE:-good}" == "action-broken" ]]; then
+    code=500
+  else
+    code=200
+    if [[ "$out" != /dev/null ]]; then
+      if [[ "${FAKE_DEMO_MODE:-good}" == "reflect-note" ]]; then
+        printf '<html><div data-testid="demo-complete">deployment-smoke-note</div></html>' >"$out"
+      else
+        printf '<html><div data-testid="demo-complete">Demo task completed.</div></html>' >"$out"
+      fi
+    fi
+    [[ "$encoded_data" == "note=deployment-smoke-note" ]] || code=400
+  fi
 fi
 if [[ "$write" == *'%{http_code}'* ]]; then printf '%s' "$code"; fi
 SH
 chmod +x "$tmp/bin/curl"
 
 PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/good.out"
-grep -Fq 'demo-target state verified' "$tmp/good.out"
+grep -Fq 'demo-target state and action verified' "$tmp/good.out"
 
 if FAKE_AUTH_MODE=bad PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/bad.out" 2>"$tmp/bad.err"; then
   echo 'smoke contract should reject non-S256 Cognito redirects' >&2
@@ -99,12 +123,30 @@ if FAKE_DEMO_MODE=disabled PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-a
 fi
 grep -Fq 'enabled target expected 401' "$tmp/demo-mismatch.err"
 
+if FAKE_DEMO_MODE=session-broken PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/demo-session.out" 2>"$tmp/demo-session.err"; then
+  echo 'smoke contract should reject a demo cookie that the deployed target does not accept' >&2
+  exit 1
+fi
+grep -Fq 'issued session cookie was not accepted' "$tmp/demo-session.err"
+
+if FAKE_DEMO_MODE=action-broken PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/demo-action.out" 2>"$tmp/demo-action.err"; then
+  echo 'smoke contract should reject a broken controlled demo action' >&2
+  exit 1
+fi
+grep -Fq 'controlled workflow action expected 200' "$tmp/demo-action.err"
+
+if FAKE_DEMO_MODE=reflect-note PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/demo-reflect.out" 2>"$tmp/demo-reflect.err"; then
+  echo 'smoke contract should reject demo responses that reflect the submitted note' >&2
+  exit 1
+fi
+grep -Fq 'submitted note was reflected' "$tmp/demo-reflect.err"
+
 python3 - "$tmp/environment.json" >"$tmp/demo-disabled.json" <<'PY'
 import json,sys
 from pathlib import Path
 doc=json.loads(Path(sys.argv[1]).read_text()); doc['parameters']['web']['DemoTargetEnabled']='false'; print(json.dumps(doc))
 PY
 FAKE_DEMO_MODE=disabled PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/demo-disabled.json" >"$tmp/demo-disabled.out"
-grep -Fq 'demo-target state verified' "$tmp/demo-disabled.out"
+grep -Fq 'demo-target state and action verified' "$tmp/demo-disabled.out"
 
 echo 'AWS deployment smoke contract passed'
