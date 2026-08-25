@@ -75,6 +75,7 @@ export * from "./human-takeover.js";
 export * from "./memory.js";
 export * from "./product-lifecycle.js";
 export * from "./run-detail.js";
+export * from "./run-evidence.js";
 export * from "./run-finalization.js";
 export * from "./run-reporting.js";
 export * from "./run-state.js";

@@ -19,6 +19,8 @@ import {
   ProviderCredentialManagementService,
   RunDetailControlPlaneHttpHandler,
   RunDetailService,
+  RunEvidenceControlPlaneHttpHandler,
+  RunEvidenceService,
   TrustedCaptureCompletionHandler,
   WorkflowInspectionControlPlaneHttpHandler,
   WorkflowInspectionService,
@@ -82,7 +84,11 @@ import {
   type AgentCoreApiKeyDataApi,
 } from "./identity-vault.js";
 import { loadAwsAdapterConfig } from "./config.js";
-import { loadAwsArtifactStoreConfig } from "./artifact-store.js";
+import {
+  AwsS3ArtifactStore,
+  AwsSdkS3ArtifactApi,
+  loadAwsArtifactStoreConfig,
+} from "./artifact-store.js";
 import {
   createAwsSchedulingComposition,
   type AwsSchedulingComposition,
@@ -203,6 +209,10 @@ export function createAwsControlPlaneBootstrap(
   const captureDynamo = options.overrides?.captureDynamo ?? documentClient;
   const workflowDocuments = options.overrides?.workflowDocuments ??
     new AwsSdkS3WorkflowDocumentApi(artifacts.config, { region });
+  const runArtifacts = new AwsS3ArtifactStore(
+    new AwsSdkS3ArtifactApi(artifacts.config, { region }),
+    artifacts.config.prefix,
+  );
 
   const automations = new AwsDynamoAutomationRepository(documentClient, dynamo.config);
   const runs = new AwsDynamoRunRepository(documentClient, dynamo.config);
@@ -300,9 +310,13 @@ export function createAwsControlPlaneBootstrap(
     baseHttp,
     new RunDetailService(runs, checkpoints, workflows),
   );
+  const runEvidenceHttp = new RunEvidenceControlPlaneHttpHandler(
+    runDetailHttp,
+    new RunEvidenceService(runs, checkpoints, runArtifacts),
+  );
   const humanResumeService = new HumanResumeControlPlaneService(runs, checkpoints, humanResume);
   const humanResumeHttp = new HumanResumeControlPlaneHttpHandler(
-    runDetailHttp,
+    runEvidenceHttp,
     humanResumeService,
   );
   const takeoverHttp = new HumanTakeoverControlPlaneHttpHandler(

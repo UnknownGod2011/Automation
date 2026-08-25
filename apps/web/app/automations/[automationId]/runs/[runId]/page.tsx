@@ -8,12 +8,36 @@ import { RunStatusPoller } from "./run-status-poller";
 
 export const dynamic = "force-dynamic";
 
+const MAX_EVIDENCE_LINKS = 20;
+
 function stepHeading(step: RunSemanticStepView | undefined): string {
   return step ? `Step ${step.step} · ${step.kind}` : "Step unavailable";
 }
 
 function evidenceSummary(count: number): string {
   return count === 0 ? "No evidence recorded." : `${count} protected evidence item${count === 1 ? "" : "s"} recorded.`;
+}
+
+function evidenceLinks(automationId: string, runId: string, count: number) {
+  if (count <= 0) return null;
+  const visibleCount = Math.min(count, MAX_EVIDENCE_LINKS);
+  return (
+    <>
+      <ul>
+        {Array.from({ length: visibleCount }, (_, index) => {
+          const ordinal = index + 1;
+          return (
+            <li key={ordinal}>
+              <Link href={`/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}/evidence/${ordinal}`}>
+                View evidence item {ordinal}
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+      {count > visibleCount ? <p className="muted">Showing the first {visibleCount} of {count} evidence items.</p> : null}
+    </>
+  );
 }
 
 export default async function RunDetailPage({
@@ -109,7 +133,7 @@ export default async function RunDetailPage({
               <div className="row"><span>Retryable</span><span>{run.failure.retryable ? "Yes" : "No"}</span></div>
               <div className="row"><span>Step</span><span>{stepHeading(failureStep)}</span></div>
               {failureStep ? <p>{failureStep.objective}</p> : null}
-              <div><h3>Evidence</h3><p className="muted">{evidenceSummary(run.failure.evidenceCount)} Artifact identifiers and contents remain server-side.</p></div>
+              <div><h3>Evidence</h3><p className="muted">{evidenceSummary(run.failure.evidenceCount)} Use the checkpoint evidence viewer when the same artifacts were persisted on the durable checkpoint.</p></div>
             </>
           ) : <p className="muted">No terminal or attention failure is recorded on the run.</p>}
         </div>
@@ -131,14 +155,18 @@ export default async function RunDetailPage({
                 )}
               </div>
               {run.checkpoint.lastFailure ? <div><h3>Last checkpoint failure</h3><p><strong>{run.checkpoint.lastFailure.code}</strong>{failureStep ? ` at Step ${failureStep.step}` : ""}</p></div> : null}
-              <div><h3>Checkpoint evidence</h3><p className="muted">{evidenceSummary(run.checkpoint.evidenceCount)} Artifact identifiers and contents remain server-side.</p></div>
+              <div>
+                <h3>Checkpoint evidence</h3>
+                <p className="muted">{evidenceSummary(run.checkpoint.evidenceCount)} Artifact storage identities remain server-side; evidence is resolved by authenticated ordinal when opened.</p>
+                {evidenceLinks(automationId, runId, run.checkpoint.evidenceCount)}
+              </div>
             </>
           ) : <p className="muted">No checkpoint has been persisted for this run.</p>}
         </div>
       </section>
 
       <section className="card" style={{ marginTop: 18 }}>
-        <p className="muted">This view intentionally excludes internal workflow/node identifiers, runtime variables, raw provider/browser errors, selectors, page fingerprints, artifact references and contents, cookies, Browser Profile data, BYOK secrets, workload tokens, and model chain-of-thought.</p>
+        <p className="muted">This view intentionally excludes internal workflow/node identifiers, runtime variables, raw provider/browser errors, selectors, page fingerprints, artifact references, cookies, Browser Profile data, BYOK secrets, workload tokens, and model chain-of-thought. Evidence previews are owner-authenticated, ordinal-resolved, and limited to known-safe browser metadata or bounded screenshots.</p>
       </section>
     </>
   );
