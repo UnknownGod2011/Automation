@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { WorkflowInspectionView } from "@automation/core";
 
 export function WorkflowInspectionCard({ workflow }: { workflow: WorkflowInspectionView }) {
@@ -15,6 +16,14 @@ export function WorkflowInspectionCard({ workflow }: { workflow: WorkflowInspect
         Review the semantic plan before spending a fresh test. Selectors, captured values,
         arbitrary variable names, verification expected values, and provider/browser credentials are hidden.
       </p>
+      <p className="muted">
+        Retained capture screenshots are supplementary teaching evidence, not execution or verification authority.
+      </p>
+      {workflow.automationId ? (
+        <Link href={`/automations/${encodeURIComponent(workflow.automationId)}/capture-evidence`}>
+          Review capture screenshots
+        </Link>
+      ) : null}
       {workflow.runtimeInputs.length > 0 ? (
         <div className="notice stack">
           <strong>Fresh test needs runtime input</strong>

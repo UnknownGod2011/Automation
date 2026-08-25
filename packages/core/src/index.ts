@@ -49,6 +49,7 @@ export * from "./capture-collector.js";
 export * from "./capture-control.js";
 export * from "./capture-completion.js";
 export * from "./capture-completion-http.js";
+export * from "./capture-evidence.js";
 export * from "./capture-recording.js";
 export * from "./capture-worker.js";
 export * from "./control-plane.js";

@@ -50,6 +50,8 @@ export interface WorkflowRuntimeInputInspectionView {
 }
 
 export interface WorkflowInspectionView {
+  /** Present on production inspection responses; optional keeps local/mock fixture compatibility. */
+  automationId?: string;
   version: number;
   objective: string;
   createdAt: string;
@@ -172,6 +174,7 @@ function inspectionView(graph: WorkflowGraph): WorkflowInspectionView {
   });
 
   return {
+    automationId: graph.automationId,
     version: graph.version,
     objective: safeText(graph.objective),
     createdAt: graph.createdAt,
@@ -190,7 +193,8 @@ function inspectionView(graph: WorkflowGraph): WorkflowInspectionView {
  * expected values/descriptions, and retry failure-code lists. The only binding
  * names exposed are unresolved capture-generated `capture_input_N` placeholders;
  * these synthetic keys contain no captured value and are required to make a
- * privacy-preserving fresh test actionable.
+ * privacy-preserving fresh test actionable. The automation ID is already part of
+ * the authenticated route and is included only to construct owner-facing review links.
  */
 export class WorkflowInspectionService {
   constructor(

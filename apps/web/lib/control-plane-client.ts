@@ -1,6 +1,8 @@
 import type {
   AutomationSummaryView,
   CaptureCancellationResult,
+  CaptureEvidenceIndexView,
+  CaptureEvidenceView,
   CaptureRecordingView,
   DashboardView,
   HumanResumeSubmissionResult,
@@ -119,6 +121,23 @@ export class WebControlPlaneClient {
     return result.workflow;
   }
 
+  async captureEvidence(automationId: string): Promise<CaptureEvidenceIndexView> {
+    return this.request(
+      `/v1/automations/${encodeURIComponent(automationId)}/capture-evidence`,
+      { method: "GET" },
+    );
+  }
+
+  async captureEvidenceItem(automationId: string, evidenceOrdinal: number): Promise<CaptureEvidenceView> {
+    if (!Number.isInteger(evidenceOrdinal) || evidenceOrdinal < 1 || evidenceOrdinal > 200) {
+      throw new WebControlPlaneError("REQUEST_FAILED");
+    }
+    return this.request(
+      `/v1/automations/${encodeURIComponent(automationId)}/capture-evidence/${evidenceOrdinal}`,
+      { method: "GET" },
+    );
+  }
+
   async runs(automationId: string): Promise<readonly RunSummaryView[]> {
     const result = await this.request<{ runs: readonly RunSummaryView[] }>(
       `/v1/automations/${encodeURIComponent(automationId)}/runs`,
@@ -134,12 +153,12 @@ export class WebControlPlaneClient {
     );
   }
 
-  async runEvidence(automationId: string, runId: string, ordinal: number): Promise<RunEvidenceView> {
-    if (!Number.isInteger(ordinal) || ordinal < 1 || ordinal > 100) {
+  async runEvidence(automationId: string, runId: string, evidenceOrdinal: number): Promise<RunEvidenceView> {
+    if (!Number.isInteger(evidenceOrdinal) || evidenceOrdinal < 1 || evidenceOrdinal > 100) {
       throw new WebControlPlaneError("REQUEST_FAILED");
     }
     return this.request(
-      `/v1/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}/evidence/${ordinal}`,
+      `/v1/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}/evidence/${evidenceOrdinal}`,
       { method: "GET" },
     );
   }
