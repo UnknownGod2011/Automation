@@ -17,6 +17,9 @@ cat >"$tmp/deployment.json" <<'JSON'
   }
 }
 JSON
+cat >"$tmp/environment.json" <<'JSON'
+{"schemaVersion":1,"parameters":{"web":{"DemoTargetEnabled":"true"}}}
+JSON
 
 cat >"$tmp/bin/curl" <<'SH'
 #!/usr/bin/env bash
@@ -53,15 +56,27 @@ elif [[ "$url" == "https://api.example.com/v1/automations" ]]; then
   code=401
 elif [[ "$url" == "https://capture.example.com/capture/complete" && "$method" == "POST" ]]; then
   code=403
+elif [[ "$url" == "https://web.example.com/demo-target" ]]; then
+  if [[ "${FAKE_DEMO_MODE:-good}" == "disabled" ]]; then
+    code=404
+  else
+    code=401
+    [[ "$out" == /dev/null ]] || printf '<html><button data-testid="demo-login">Sign in</button></html>' >"$out"
+  fi
+elif [[ "$url" == "https://web.example.com/demo-target/login" && "$method" == "POST" ]]; then
+  code=303
+  if [[ -n "$headers" ]]; then
+    printf 'HTTP/1.1 303 See Other\r\nLocation: https://web.example.com/demo-target\r\nSet-Cookie: automation_demo_auth=authenticated; Path=/demo-target; Max-Age=900; HttpOnly; Secure; SameSite=Lax\r\n\r\n' >"$headers"
+  fi
 fi
 if [[ "$write" == *'%{http_code}'* ]]; then printf '%s' "$code"; fi
 SH
 chmod +x "$tmp/bin/curl"
 
-PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" >"$tmp/good.out"
-grep -Fq 'AWS deployment smoke passed' "$tmp/good.out"
+PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/good.out"
+grep -Fq 'demo-target state verified' "$tmp/good.out"
 
-if FAKE_AUTH_MODE=bad PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" >"$tmp/bad.out" 2>"$tmp/bad.err"; then
+if FAKE_AUTH_MODE=bad PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/bad.out" 2>"$tmp/bad.err"; then
   echo 'smoke contract should reject non-S256 Cognito redirects' >&2
   exit 1
 fi
@@ -72,10 +87,24 @@ import json,sys
 from pathlib import Path
 p=Path(sys.argv[1]); doc=json.loads(p.read_text()); doc['outputs']['webOrigin']='http://web.example.com'; print(json.dumps(doc))
 PY
-if PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/unsafe.json" >"$tmp/unsafe.out" 2>"$tmp/unsafe.err"; then
+if PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/unsafe.json" --environment "$tmp/environment.json" >"$tmp/unsafe.out" 2>"$tmp/unsafe.err"; then
   echo 'smoke contract should reject insecure deployment origins' >&2
   exit 1
 fi
 grep -Fq 'unsafe deployment URL for WEB_ORIGIN' "$tmp/unsafe.err"
+
+if FAKE_DEMO_MODE=disabled PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/demo-mismatch.out" 2>"$tmp/demo-mismatch.err"; then
+  echo 'smoke contract should reject an enabled demo target that is not live' >&2
+  exit 1
+fi
+grep -Fq 'enabled target expected 401' "$tmp/demo-mismatch.err"
+
+python3 - "$tmp/environment.json" >"$tmp/demo-disabled.json" <<'PY'
+import json,sys
+from pathlib import Path
+doc=json.loads(Path(sys.argv[1]).read_text()); doc['parameters']['web']['DemoTargetEnabled']='false'; print(json.dumps(doc))
+PY
+FAKE_DEMO_MODE=disabled PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/demo-disabled.json" >"$tmp/demo-disabled.out"
+grep -Fq 'demo-target state verified' "$tmp/demo-disabled.out"
 
 echo 'AWS deployment smoke contract passed'

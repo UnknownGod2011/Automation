@@ -2,11 +2,13 @@
 set -euo pipefail
 
 deployment=""
+environment=""
 while (($#)); do
   case "$1" in
     --deployment) deployment="${2:-}"; shift 2 ;;
+    --environment) environment="${2:-}"; shift 2 ;;
     -h|--help)
-      echo 'Usage: smoke-aws-deployment.sh --deployment PATH'
+      echo 'Usage: smoke-aws-deployment.sh --deployment PATH [--environment PATH]'
       exit 0
       ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
@@ -14,6 +16,10 @@ while (($#)); do
 done
 
 [[ -f "$deployment" ]] || { echo 'valid --deployment is required' >&2; exit 2; }
+if [[ -n "$environment" && ! -f "$environment" ]]; then
+  echo 'valid --environment is required when supplied' >&2
+  exit 2
+fi
 command -v python3 >/dev/null || { echo 'python3 is required' >&2; exit 2; }
 command -v curl >/dev/null || { echo 'curl is required' >&2; exit 2; }
 
@@ -21,7 +27,7 @@ meta="$(mktemp)"
 tmp_dir="$(mktemp -d)"
 trap 'rm -f "$meta"; rm -rf "$tmp_dir"' EXIT
 
-python3 - "$deployment" >"$meta" <<'PY'
+python3 - "$deployment" "${environment:-}" >"$meta" <<'PY'
 import json
 import shlex
 import sys
@@ -50,8 +56,29 @@ for name, value in required.items():
     if name == "WEB_ORIGIN" and (parsed.path not in ("", "/") or parsed.query):
         raise SystemExit("webOrigin must be an HTTPS origin without path/query")
 
+demo_enabled = None
+if sys.argv[2]:
+    env_doc = json.loads(Path(sys.argv[2]).read_text())
+    if env_doc.get("schemaVersion") != 1:
+        raise SystemExit("environment must use schemaVersion 1")
+    parameters = env_doc.get("parameters")
+    if not isinstance(parameters, dict):
+        raise SystemExit("environment parameters are required")
+    web = parameters.get("web")
+    if not isinstance(web, dict):
+        raise SystemExit("environment parameters.web is required")
+    raw = web.get("DemoTargetEnabled", False)
+    if raw in (True, "true"):
+        demo_enabled = True
+    elif raw in (False, "false"):
+        demo_enabled = False
+    else:
+        raise SystemExit("parameters.web.DemoTargetEnabled must be true or false")
+
 for name, value in required.items():
     print(f"{name}={shlex.quote(value.rstrip('/'))}")
+if demo_enabled is not None:
+    print(f"DEMO_TARGET_ENABLED={'true' if demo_enabled else 'false'}")
 PY
 # shellcheck disable=SC1090
 source "$meta"
@@ -121,4 +148,38 @@ case "$capture_code" in
   *) echo "capture-completion auth smoke failed: anonymous request returned $capture_code" >&2; exit 13 ;;
 esac
 
-echo 'AWS deployment smoke passed: web configured, Cognito PKCE redirect valid, protected APIs reject anonymous access.'
+if [[ -n "${DEMO_TARGET_ENABLED:-}" ]]; then
+  demo_body="$tmp_dir/demo.html"
+  demo_code="$(curl "${curl_common[@]}" --output "$demo_body" --write-out '%{http_code}' "$WEB_ORIGIN/demo-target")"
+  if [[ "$DEMO_TARGET_ENABLED" == true ]]; then
+    [[ "$demo_code" == "401" ]] || { echo "demo-target smoke failed: enabled target expected 401 before sign-in, received $demo_code" >&2; exit 14; }
+    grep -Fq 'data-testid="demo-login"' "$demo_body" || { echo 'demo-target smoke failed: enabled target login action is missing' >&2; exit 14; }
+
+    demo_headers="$tmp_dir/demo-login.headers"
+    demo_login_code="$(curl "${curl_common[@]}" --request POST --dump-header "$demo_headers" --output /dev/null --write-out '%{http_code}' "$WEB_ORIGIN/demo-target/login")"
+    [[ "$demo_login_code" == "303" ]] || { echo "demo-target smoke failed: sign-in expected 303, received $demo_login_code" >&2; exit 14; }
+    python3 - "$demo_headers" "$WEB_ORIGIN" <<'PY'
+import sys
+from pathlib import Path
+
+headers = Path(sys.argv[1]).read_text().splitlines()
+def value(name):
+    prefix = name.lower() + ':'
+    return next((line.split(':', 1)[1].strip() for line in headers if line.lower().startswith(prefix)), None)
+
+location = value('location')
+if location != sys.argv[2].rstrip('/') + '/demo-target':
+    raise SystemExit('demo-target smoke failed: sign-in redirect is not same-origin /demo-target')
+cookie = value('set-cookie')
+if not cookie or 'automation_demo_auth=authenticated' not in cookie:
+    raise SystemExit('demo-target smoke failed: demo auth cookie is missing')
+for required in ('Path=/demo-target', 'HttpOnly', 'Secure', 'SameSite=Lax'):
+    if required not in cookie:
+        raise SystemExit(f'demo-target smoke failed: cookie is missing {required}')
+PY
+  else
+    [[ "$demo_code" == "404" ]] || { echo "demo-target smoke failed: disabled target expected 404, received $demo_code" >&2; exit 14; }
+  fi
+fi
+
+echo "AWS deployment smoke passed: web configured, Cognito PKCE redirect valid, protected APIs reject anonymous access${DEMO_TARGET_ENABLED:+, demo-target state verified}."

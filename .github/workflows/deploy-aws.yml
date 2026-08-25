@@ -124,7 +124,10 @@ jobs:
 
       - name: Smoke deployed public/auth boundaries
         shell: bash
-        run: bash scripts/smoke-aws-deployment.sh --deployment "$RUNNER_TEMP/aws-deployment.json"
+        run: |
+          bash scripts/smoke-aws-deployment.sh \
+            --deployment "$RUNNER_TEMP/aws-deployment.json" \
+            --environment "$RUNNER_TEMP/automation-environment.json"
 
       - name: Record deployment summary
         if: success()
@@ -136,6 +139,6 @@ jobs:
             echo "- Environment: \`${{ inputs.target_environment }}\`"
             echo "- Source commit: \`$GITHUB_SHA\`"
             echo '- Authentication: GitHub OIDC -> short-lived AWS role session'
-            echo '- Live smoke: web finalized, Cognito PKCE redirect valid, protected APIs reject anonymous access'
+            echo '- Live smoke: web finalized, Cognito PKCE redirect valid, protected APIs reject anonymous access, demo-target exposure matches environment configuration'
             echo '- Release/deployment manifests: runner-local only; no Actions artifacts retained'
           } >> "$GITHUB_STEP_SUMMARY"
