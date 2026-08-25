@@ -42,8 +42,11 @@ required = [
     "aws sts get-caller-identity",
     "scripts/release-aws-artifacts.sh",
     "scripts/deploy-aws-release.sh",
+    "scripts/smoke-aws-deployment.sh",
+    '--environment "$RUNNER_TEMP/automation-environment.json"',
     "$RUNNER_TEMP/aws-release.json",
     "$RUNNER_TEMP/aws-deployment.json",
+    "demo-target exposure matches environment configuration",
     "no Actions artifacts retained",
 ]
 for needle in required:
