@@ -2,75 +2,78 @@
 
 ## Current production state
 
-The AWS-first cloud browser automation vertical is on `main`. The repository already implements the intended lifecycle from `docs/END_GOAL.md`: Cognito/optional Google sign-in, dashboard and automation authoring, AgentCore Browser/Profile capture, trusted durable capture completion, semantic workflow compilation/inspection, asynchronous Fresh Test with OpenAI BYOK, tested-version publication, EventBridge Scheduler/SQS/Step Functions dispatch, deterministic browser execution with constrained semantic fallback and effect verification, durable run history, SES/CloudWatch reporting, safe revision flows, and bounded human takeover/resume.
+The AWS-first cloud browser automation vertical is on `main`. The repository implements the intended lifecycle from `docs/END_GOAL.md`: Cognito/optional Google sign-in, dashboard/authoring, replay-safe automation creation, AgentCore Browser/Profile capture, trusted durable capture completion, semantic WorkflowGraph compilation/inspection, asynchronous Fresh Test with OpenAI BYOK, tested-version publication, EventBridge Scheduler/SQS/Step Functions dispatch, deterministic browser execution with constrained semantic fallback and effect verification, durable history/diagnostics, SES/CloudWatch reporting, safe workflow/objective revision, reusable non-secret scheduled inputs, and bounded human takeover/resume.
 
 Recovery/crash machinery remains intentionally parked unless the real vertical exposes a correctness blocker. Product priority remains the protected AWS deployment and controlled end-to-end demonstration.
 
 ## Incoming validation
 
-- `main` points to `24714cc7125f65a4f3eb1b2d871a3eadcf4523b2` (`Keep run history node identity server-side`).
-- PR #7 was merged after exact-head CI #301 passed on its reviewed head.
+- `main` points to `82a514f6e09009e72a7544c8ac0ac52dda097da0` (`Distinguish run-history outages from missing automations`).
+- Push-triggered GitHub Actions CI #305 completed successfully on that exact SHA on August 25, 2026.
 - No open production PR existed at the start of this slice.
 - Exact-head GitHub Actions remains authoritative for every new change.
 
-## This slice — distinguish run-history absence from storage unavailability
+## This slice — keep automation authoring usable during run-history outages
 
 ### Defect
 
-`AutomationControlPlaneService.history()` previously wrapped every lifecycle/history failure as `NOT_FOUND`. A transient or uncertain run-store failure could therefore tell an authenticated owner that the automation did not exist. That is the wrong product/recovery signal for the run-history stage and can hide an operational outage as an ownership problem.
+The control plane now correctly distinguishes a transient run-history storage failure from a missing automation, returning sanitized `409 CONFLICT` for the owned automation. The Next.js automation detail page still loaded automation metadata, run history, capture state, and workflow inspection in one `Promise.all`. Therefore the run-history `409` still collapsed the entire page into generic `Automation unavailable`, hiding otherwise healthy capture/authoring controls and defeating the product value of the new server-side distinction.
 
 ### Behavior
 
-- Run-history admission now resolves the automation under the authenticated tenant/user scope first.
-- A missing or cross-tenant automation still returns `NOT_FOUND` before any run-history read.
-- Once ownership is established, run history is read from the run repository directly.
-- Run-store/provider uncertainty is converted to a fixed sanitized `CONFLICT` message: `run history is temporarily unavailable`.
-- Raw DynamoDB/provider/transport error text is never returned to the browser.
-- Normal run summaries and Fresh-Test/Scheduled provenance classification are unchanged.
+- Automation metadata is loaded first under the authenticated control-plane boundary.
+- Run history, capture recording state, and workflow inspection remain parallel secondary reads.
+- Only a `CONFLICT` from the dedicated run-history read is treated as a bounded `runHistoryUnavailable` state.
+- Capture-state or workflow-inspection conflicts still fail the page rather than being silently normalized.
+- When history is unavailable, the page keeps the automation, objective, capture, compile, schedule-management, and semantic workflow inspection surfaces available.
+- The page shows an explicit temporary-history warning rather than claiming there are no runs.
+- Fresh Test submission/provenance feedback and Publish are suppressed while history is unavailable because those product decisions depend on authoritative durable run provenance.
+- Existing runs are never represented as deleted or absent merely because storage is temporarily unreadable.
 
 ### Security / tenant isolation
 
-- Tenant/user ownership remains server-derived and is checked before the run repository is queried.
-- Cross-tenant callers cannot use outage behavior to distinguish another tenant's automation from absence.
-- No Browser Profile, workflow-node, evidence-artifact, BYOK, workload-token, or provider-error material is exposed.
+- Tenant/user authority remains entirely in the authenticated control plane; the web helper introduces no client-selected ownership or durable IDs.
+- Raw DynamoDB/provider exception text remains hidden behind `WebControlPlaneError`.
+- Browser Profile/session IDs, capture trace IDs, workflow node IDs, evidence artifact IDs, BYOK secrets, workload tokens, runtime variables, and provider errors remain server-side.
+- This is a read-path UX correction and grants no new execution, scheduling, browser, model, or recovery authority.
 
 ### Idempotency / concurrency / retry / timeout / verification
 
-- This is a read-only control-plane correction. It changes no run creation, occurrence idempotency, locks, retries, browser/model timeouts, side-effect verification, scheduling, or human-resume behavior.
-- The request performs the same logical ownership + history reads as the lifecycle history path; it does not add a retry loop.
+- No run creation, occurrence idempotency, automation lock, Scheduler mutation, browser/model retry, timeout, effect verification, or human-resume semantics changed.
+- The web tier adds no retry loop; a user/server render may retry through the normal page request only.
+- Publish remains fail-closed because successful Fresh Test provenance cannot be reconstructed from missing history.
+- Fresh Test submission is also paused during a history outage to avoid creating another intentional cloud test when the product cannot determine current Fresh Test provenance.
 
 ### Cost / observability / user recovery
 
-- No new AWS resource or execution-plane compute is introduced.
-- The product can now distinguish “automation not found” from “history storage temporarily unavailable,” which is actionable operationally and avoids misleading deletion/ownership UX.
-- Provider details remain available only through server-side operational telemetry, not user-visible responses.
+- The logical read count is unchanged: automation, run history, capture state, and workflow inspection are still read once per page render.
+- No AWS resource, AgentCore Browser/Runtime allocation, model call, queue message, Scheduler call, SES send, or CloudWatch metric is added.
+- The user can continue safe authoring/capture inspection during a history-store incident while seeing a truthful bounded warning.
+- Operational provider details remain in server-side telemetry rather than user-visible responses.
 
 ## Regression coverage
 
-- cross-tenant history returns `NOT_FOUND` and does not call the run-history repository;
-- an owned automation with run-store failure returns sanitized `CONFLICT`, not false `NOT_FOUND`;
-- HTTP history returns 409 with fixed text and does not leak provider exception text;
-- normal history still returns sanitized run summaries with provenance.
+- a run-history `CONFLICT` returns automation/capture/workflow data with `runHistoryUnavailable=true` and an empty non-authoritative run list;
+- normal history reads preserve the existing result shape;
+- non-history request failures are not swallowed;
+- capture-state conflicts remain fatal to the detail load rather than being misclassified as history unavailability.
 
 ## Validation status
 
-- Normal head `fac870e3276a020ebcfa0a893e1dc42369f7843d` triggered CI #303.
-- CI #303 passed deterministic lock verification and frozen installation, then failed at strict `pnpm check` on one new regression-test import: `AutomationControlPlaneHttpHandler` was imported from `./control-plane.js` instead of its real `./control-plane-http.js` module.
-- Production code was not implicated; packaging and tests were correctly skipped after the type-check failure.
-- The single corrective commit changes only that test integration import plus this validation record. Exact-head GitHub Actions on the corrective head remains authoritative; no green claim is made until it completes successfully.
+The implementation, web regression tests, and this progress record are batched into one normal multi-file Git-data commit. GitHub Actions on the exact PR head is authoritative. Do not claim green until that workflow completes successfully.
 
 ## Known production risks intentionally left visible
 
 - The protected AWS deployment and full live vertical demonstration still need to run in a real environment with approved GitHub Environment/OIDC role/VPC inputs.
 - VPC-mode AgentCore Browser is required, but real subnet/route/DNS/security-group/firewall policy still needs live proof against private/link-local/control-plane destinations after DNS resolution and redirects.
-- Live Cognito/Google/SES/AgentCore behavior remains structurally tested with fakes and deployment contracts but needs real-environment validation.
+- Live Cognito/Google/SES/AgentCore behavior remains structurally tested with fakes/deployment contracts but needs real-environment validation.
 - Only OpenAI has a concrete production BYOK reasoning adapter today.
 - DynamoDB and EventBridge Scheduler cannot be mutated atomically; lifecycle ordering is fail-closed but operational reconciliation may still be required after a real partial infrastructure failure.
 - Automation metadata settings still use the existing repository read/modify/write boundary; competing independent metadata mutations can race.
 
 ## Next product milestone
 
-After exact-head CI is green, promote this narrow product-correctness fix and prioritize the protected AWS vertical demo:
+After exact-head CI is green, promote this narrow UX/correctness fix and prioritize the protected AWS vertical demo:
 
 1. deploy immutable release through GitHub OIDC;
 2. validate VPC Browser readiness and public/auth smoke;
@@ -81,6 +84,7 @@ After exact-head CI is green, promote this narrow product-correctness fix and pr
 7. run a Fresh Test lasting more than 30 seconds and observe asynchronous completion;
 8. approve/publish recurrence + timezone + any non-secret scheduled inputs;
 9. observe EventBridge -> SQS -> Step Functions -> AgentCore execution, verification, history, CloudWatch, and SES;
-10. deliberately expire target authentication and complete secure Live View repair/resume.
+10. deliberately expire target authentication and complete secure Live View repair/resume;
+11. exercise revision by disabling, changing the objective, recapturing, Fresh-Testing, and republishing.
 
 Concrete live-service defects should drive subsequent engineering before additional recovery micro-hardening.
