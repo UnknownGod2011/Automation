@@ -25,7 +25,8 @@ const CAPTURE_INSTALLER = `(() => {
   window[key] = true;
   const clip = (value, max = 512) => typeof value === "string" ? value.trim().slice(0, max) : undefined;
   const target = (node) => {
-    const element = node instanceof Element ? node : node?.parentElement;
+    const raw = node instanceof Element ? node : node?.parentElement;
+    const element = raw?.closest?.("button,input,textarea,select,a,[role],[data-testid],[data-test-id]") || raw;
     if (!element) return { css: "unknown" };
     const role = clip(element.getAttribute("role"));
     const accessibleName = clip(element.getAttribute("aria-label"));
@@ -52,7 +53,7 @@ const CAPTURE_INSTALLER = `(() => {
     emit({ kind: "INPUT", target: target(element), inputType: element instanceof HTMLInputElement ? element.type : element.tagName.toLowerCase() });
   }, true);
   document.addEventListener("submit", (event) => {
-    emit({ kind: "SUBMIT", target: target(event.target) });
+    emit({ kind: "SUBMIT", target: target(event.submitter || event.target) });
   }, true);
 })()`;
 
@@ -67,6 +68,11 @@ interface ReservedEventIdentity {
   eventId: string;
   sequence: number;
   occurredAt: string;
+}
+
+interface PendingClick {
+  identity: ReservedEventIdentity;
+  canceled: boolean;
 }
 
 export interface AgentCorePlaywrightCaptureEventSourceOptions {
@@ -204,6 +210,7 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
 
     const events: CaptureEvent[] = [];
     const pendingEffects = new Set<Promise<void>>();
+    const pendingClicksByUrl = new Map<string, PendingClick[]>();
     let sequence = 0;
     let lastTimestamp = new Date(request.session.startedAt).getTime();
 
@@ -230,6 +237,70 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
         purpose: "WORKFLOW",
       });
     };
+    const track = (task: Promise<void>): void => {
+      pendingEffects.add(task);
+      void task.then(
+        () => pendingEffects.delete(task),
+        () => pendingEffects.delete(task),
+      );
+    };
+    const addPendingClick = (url: string, pending: PendingClick): void => {
+      const existing = pendingClicksByUrl.get(url);
+      if (existing) existing.push(pending);
+      else pendingClicksByUrl.set(url, [pending]);
+    };
+    const removePendingClick = (url: string, pending: PendingClick): void => {
+      const existing = pendingClicksByUrl.get(url);
+      if (!existing) return;
+      const next = existing.filter((candidate) => candidate !== pending);
+      if (next.length > 0) pendingClicksByUrl.set(url, next);
+      else pendingClicksByUrl.delete(url);
+    };
+    const cancelLatestPendingClick = (url: string): void => {
+      const existing = pendingClicksByUrl.get(url);
+      const pending = existing?.at(-1);
+      if (pending) pending.canceled = true;
+    };
+    const captureAction = async (
+      source: { page: Page },
+      payload: BrowserCapturePayload,
+      identity: ReservedEventIdentity,
+      url: string,
+      title: string | undefined,
+      target: CaptureSemanticTarget,
+      shouldAppend: () => boolean = () => true,
+    ): Promise<void> => {
+      let expectedEffect: VerificationSpec | undefined;
+      try {
+        await source.page.waitForTimeout(this.effectSettleMs);
+        if (!shouldAppend()) return;
+        expectedEffect = {
+          description: "Browser structure matches the demonstrated post-action state",
+          mode: "CUSTOM",
+          expected: await captureSafePageStateFingerprint(source.page),
+          timeoutMs: 10_000,
+        };
+      } catch {
+        // Never invent verification evidence. The compiler will reject this event
+        // if a trustworthy post-effect state could not be captured.
+        expectedEffect = undefined;
+      }
+      if (!shouldAppend()) return;
+      const artifactRefs = await postActionScreenshot(
+        source.page,
+        this.artifacts,
+        request,
+        identity,
+      );
+      if (!shouldAppend()) return;
+      append(identity, {
+        kind: payload.kind,
+        page: { url, ...(title ? { title } : {}) },
+        target,
+        ...(expectedEffect ? { expectedEffect } : {}),
+        artifactRefs,
+      });
+    };
 
     await context.exposeBinding("__automationCaptureEvent", async (source, payload: unknown) => {
       if (!isBrowserPayload(payload)) return;
@@ -240,9 +311,9 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
       if (!url) return;
       const title = safeString(pageRecord.title);
       const target = normalizeTarget((payload as unknown as { target?: unknown }).target);
-      const identity = reserve();
 
       if (payload.kind === "INPUT") {
+        const identity = reserve();
         append(identity, {
           kind: payload.kind,
           page: { url, ...(title ? { title } : {}) },
@@ -258,41 +329,31 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
         return;
       }
 
-      const task = (async () => {
-        let expectedEffect: VerificationSpec | undefined;
-        try {
-          await source.page.waitForTimeout(this.effectSettleMs);
-          expectedEffect = {
-            description: "Browser structure matches the demonstrated post-action state",
-            mode: "CUSTOM",
-            expected: await captureSafePageStateFingerprint(source.page),
-            timeoutMs: 10_000,
-          };
-        } catch {
-          // Never invent verification evidence. The compiler will reject this event
-          // if a trustworthy post-effect state could not be captured.
-          expectedEffect = undefined;
-        }
-        const artifactRefs = await postActionScreenshot(
-          source.page,
-          this.artifacts,
-          request,
-          identity,
-        );
-        append(identity, {
-          kind: payload.kind,
-          page: { url, ...(title ? { title } : {}) },
-          target,
-          ...(expectedEffect ? { expectedEffect } : {}),
-          artifactRefs,
-        });
-      })();
-      pendingEffects.add(task);
-      try {
-        await task;
-      } finally {
-        pendingEffects.delete(task);
+      if (payload.kind === "SUBMIT") {
+        // Native form submission fires after the initiating click. Suppress the latest
+        // unsettled click on the same page so one demonstrated submit cannot compile
+        // into two consequential browser actions.
+        cancelLatestPendingClick(url);
       }
+
+      const identity = reserve();
+      if (payload.kind === "CLICK") {
+        const pending: PendingClick = { identity, canceled: false };
+        addPendingClick(url, pending);
+        const task = captureAction(
+          source,
+          payload,
+          identity,
+          url,
+          title,
+          target,
+          () => !pending.canceled,
+        ).finally(() => removePendingClick(url, pending));
+        track(task);
+        return;
+      }
+
+      track(captureAction(source, payload, identity, url, title, target));
     });
     await context.addInitScript({ content: CAPTURE_INSTALLER });
 
@@ -338,6 +399,8 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
     }
 
     await Promise.all([...pendingEffects]);
-    return events.sort((left, right) => left.sequence - right.sequence);
+    return events
+      .sort((left, right) => left.sequence - right.sequence)
+      .map((event, index) => ({ ...event, sequence: index + 1 }));
   }
 }
