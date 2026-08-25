@@ -148,6 +148,19 @@ export interface RunFailure {
   evidenceRefs: readonly string[];
 }
 
+/**
+ * Bounded, structured record of an accepted semantic decision. This intentionally
+ * excludes provider free-form rationale, browser/page context, inputs, selectors,
+ * and chain-of-thought. nodeId remains durable server-side identity and must be
+ * translated to a semantic step ordinal before entering a user-facing response.
+ */
+export interface RunReasoningSummary {
+  nodeId: string;
+  trigger: "WORKFLOW_REASONING" | "SEMANTIC_RECOVERY";
+  action: string;
+  confidence: number;
+}
+
 export interface RunCheckpoint {
   runId: string;
   automationId: string;
@@ -159,6 +172,7 @@ export interface RunCheckpoint {
   fingerprintRepeatCount: number;
   variables: Readonly<Record<string, unknown>>;
   evidenceRefs: readonly string[];
+  reasoningSummaries?: readonly RunReasoningSummary[];
   lastFailure?: RunFailure;
   updatedAt: string;
 }
