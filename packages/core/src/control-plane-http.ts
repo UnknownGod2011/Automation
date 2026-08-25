@@ -132,7 +132,18 @@ export class AutomationControlPlaneHttpHandler {
         };
         return { status: 200, body: publicAutomationSummary(await this.service.updateScheduledInputValues(context.scope, automationId, command)) };
       }
-      if (request.method === "POST" && parts[3] === "capture" && parts.length === 4) { const result = await this.service.beginCapture(context.scope, automationId); return result.kind === "READY" ? { status: 201, body: result } : { status: 503, body: result }; }
+      if (request.method === "POST" && parts[3] === "capture" && parts.length === 4) {
+        const result = await this.service.beginCapture(context.scope, automationId);
+        if (result.kind !== "READY") return { status: 503, body: result };
+        return {
+          status: 201,
+          body: {
+            kind: "READY",
+            liveViewUrl: result.liveViewUrl,
+            expiresAt: result.expiresAt,
+          },
+        };
+      }
       if (request.method === "POST" && parts[3] === "compile" && parts.length === 4) {
         const graph = await this.service.compileAutomation(context.scope, automationId);
         const body: CompileAutomationHttpView = { kind: "COMPILED", workflowVersion: graph.version };

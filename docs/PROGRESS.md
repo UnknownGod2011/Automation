@@ -4,58 +4,51 @@ Updated: 2026-08-25
 
 ## Current baseline
 
-- `main` before this slice: `66586c171bf37f36848909f40d37f55acbeca645` (`Add user-facing run execution timeline`).
-- GitHub Actions CI #315 completed successfully on that exact `main` SHA.
-- The AWS-first production vertical is structurally present: Cognito/Google auth, Next.js control plane, cloud capture + Browser Profile persistence, trace compiler, semantic workflow inspection, asynchronous AgentCore Fresh Test, publish/scheduling, AgentCore Browser/OpenAI BYOK execution, verification, sanitized history/diagnostics/evidence/timeline, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
+- `main` before this slice: `9ea3b0f68550c26379dd7fd26c402893f41eebef` (`Add bounded run reasoning summaries`).
+- GitHub Actions CI #318 completed successfully on that exact `main` SHA.
+- The AWS-first production vertical is structurally present: Cognito/Google auth, Next.js control plane, cloud capture + Browser Profile persistence, trace compiler, semantic workflow inspection, asynchronous AgentCore Fresh Test, publish/scheduling, AgentCore Browser/OpenAI BYOK execution, verification, sanitized history/diagnostics/evidence/timeline/reasoning summaries, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
 - Recovery/crash-reconciliation machinery is intentionally deep enough for the current product milestone. Do not add more recovery micro-hardening unless the vertical slice requires it or CI/live AWS exposes a real correctness defect.
 
-## This slice — bounded semantic reasoning summaries
+## This slice — keep capture-start identity server-side
 
-### Product gap
+### Product/security gap
 
-`END_GOAL.md` calls for reasoning summaries in the detailed run record. The OpenAI BYOK reasoning adapter already returns a short structured decision, but the execution engine discarded all reasoning metadata after the semantic browser action was chosen. Users could see that a workflow progressed or failed, but not whether a constrained semantic fallback was used or which allowed action it selected.
-
-The provider response also contains a free-form `summary`. Persisting or exposing that string would be the wrong product boundary: it can repeat untrusted page context or user inputs and must not become a surrogate chain-of-thought surface.
+Capture recording commands already resolve the durable capture session on the server, but authenticated `POST /v1/automations/:automationId/capture` still forwarded the internal `captureSessionId` returned by `CaptureSessionStarter`. The normal Next.js flow does not need that identifier: it uses only the short-lived signed Live View URL and expiry. Returning the durable session identity widened the public control-plane surface without product value and was inconsistent with the existing server-owned Start/Finish/Cancel recording boundary.
 
 ### Change
 
-- Added a provider-neutral `RunReasoningSummary` durable checkpoint record containing only:
-  - internal node identity for server-side correlation;
-  - trigger (`WORKFLOW_REASONING` or `SEMANTIC_RECOVERY`);
-  - accepted allowed action;
-  - bounded confidence value.
-- `WorkflowExecutionEngine` records a summary only after the structured reasoning decision passes the existing allowed-action/confidence validation. The provider's free-form `ReasoningDecision.summary`, arguments, page context and inputs are deliberately not copied into this durable summary.
-- Semantic decisions are preserved across ordinary checkpoints and the existing already-applied human-resume reconstruction boundary.
-- `RunDetailService` maps durable node identity to the existing synthetic semantic step ordinal and exposes only `{ step, trigger, action, confidence }` after validating count/action/confidence/trigger bounds.
-- The authenticated run page now shows a **Semantic decisions** card distinguishing workflow reasoning from semantic recovery and displaying the accepted action/confidence.
-- Added regressions proving a deliberately secret-bearing provider summary/arguments are absent from both durable reasoning summaries and the authenticated run view, plus fail-closed handling of malformed durable reasoning metadata.
+- The authenticated Capture-start HTTP response now returns only:
+  - `kind: "READY"`;
+  - the bounded signed `liveViewUrl` capability needed for the existing no-store handoff;
+  - `expiresAt`.
+- The internal provider-neutral `CaptureSessionStarter` contract is unchanged. It may still return `captureSessionId` to the server so durable capture registration, collector control, completion, cancellation, and idempotency continue to use the existing authority.
+- Added a direct HTTP regression proving the starter can return a durable capture-session ID while the authenticated response contains neither that value nor a `captureSessionId` property.
+- Existing `NOT_CONFIGURED` behavior and zero-AgentCore-allocation gating are unchanged.
 
 ## Security / tenancy review
 
-- Reasoning summaries stay within the existing tenant/user-scoped checkpoint and authenticated run-detail boundary.
-- Internal node IDs are never returned to the browser; they are translated to semantic step ordinals using the immutable workflow version.
-- Provider free-form rationale, browser/page context, input values, selectors, model arguments, raw errors, evidence references, Browser Profile/session data, BYOK material, workload tokens and chain-of-thought remain excluded.
-- This slice does not ask the model for additional explanation and therefore introduces no new prompt-injection surface or model disclosure channel.
-- Cross-tenant isolation remains enforced before run/checkpoint/workflow access.
+- Tenant/user ownership is still resolved before capture startup through the authenticated control-plane scope and the existing automation lookup.
+- The durable capture-session ID, Browser session ID, Browser Profile reference, trace identity and recording-control state remain server-side.
+- The Live View URL remains intentionally user-visible capability material because the owner must interact with the isolated capture browser. Existing Next.js handoff protections (`no-store`, no-referrer, bounded HTTPS URL, no embedded credentials, separate-tab flow) remain unchanged.
+- This slice does not broaden CAPTCHA/MFA handling or bypass third-party security controls.
 
 ## Idempotency / concurrency / retry / timeout
 
-- No new model call, browser action, retry layer, queue message, lock or lease is introduced.
-- A reasoning summary is appended only for an accepted semantic decision that the engine is about to execute. Retries can therefore produce multiple ordered summaries for repeated reasoning attempts, matching the durable execution history rather than inventing deduplication.
-- Existing checkpoint persistence remains the durability authority. Concurrent/stale run views are refreshed through the existing bounded active-run polling.
-- Existing reasoning/provider and browser operation timeouts are unchanged.
+- No capture claim, DynamoDB conditional write, collector launch, Browser session retry, timeout, or duplicate-capture behavior changed.
+- The existing current-capture pointer remains the durable concurrency authority. Sequential duplicate capture starts are rejected before Browser allocation; simultaneous races can allocate a temporary losing session which is cleaned up after durable contention classification.
+- Hiding the session identity from HTTP cannot create a new execution path because subsequent recording commands already server-resolve the active capture.
 
 ## Side-effect verification / recovery
 
-- Allowed-action validation and side-effect verification remain authoritative; the summary is observational and cannot authorize execution, retry, branching or human resume.
-- Failed semantic browser execution can still retain the accepted decision summary so the owner can see what was attempted, while the run/checkpoint failure remains the execution authority.
-- Existing human-resume reconstruction preserves prior reasoning summaries but receives no additional execution permission from them.
+- Capture completion ordering remains Browser Profile save -> immutable trace persistence -> durable capture completion -> ephemeral browser stop.
+- Workflow compilation, expected-effect capture verification, Fresh Test, scheduled execution, side-effect verification, human takeover/resume, leases, heartbeat, and reconciliation are unchanged.
+- No recovery authority is derived from the Capture-start response.
 
 ## Cost / observability
 
-- No additional OpenAI, AgentCore Browser, AgentCore Runtime, DynamoDB read, S3, Scheduler, SQS, Step Functions, SES or CloudWatch call is introduced.
-- Checkpoint items gain a small bounded structured record only when semantic reasoning is actually used. The execution engine already caps workflow node executions at 1,000; the run-detail boundary rejects more than 1,000 reasoning records.
-- No dependency, IAM permission, AWS resource, GitHub Actions artifact or table/index change was added.
+- No additional DynamoDB, S3, AgentCore Browser, AgentCore Runtime, OpenAI, Scheduler, SQS, Step Functions, SES or CloudWatch call is introduced.
+- The public payload is smaller and contains less implementation identity.
+- No dependency, IAM permission, AWS resource, GitHub Actions artifact, table/index, or persistence schema changed.
 
 ## Validation
 
@@ -65,8 +58,8 @@ Required authoritative validation for the new commit:
 2. frozen install;
 3. `pnpm check` including the Next.js production build/type boundary;
 4. AgentCore Runtime, control-plane Lambda and Next.js Lambda packaging;
-5. AWS release/deployment/demo/live-smoke/OIDC contract checks;
-6. full `pnpm test` suite including the new reasoning-summary regressions.
+5. AWS hosting/federation/release/deployment/demo/live-smoke/OIDC contract checks;
+6. full `pnpm test` suite including the new capture-start HTTP redaction regression.
 
 Do not claim this slice green until GitHub Actions completes successfully on the exact published head.
 
@@ -80,6 +73,7 @@ Do not claim this slice green until GitHub Actions completes successfully on the
 - Automation settings still use ordinary repository read/modify/write semantics; broad CAS machinery remains parked unless live concurrency shows material loss.
 - Evidence screenshots are intentionally owner-visible and may contain ordinary page data. Evidence retention/deletion policy should be revisited after live usage establishes operational needs.
 - Reasoning summaries intentionally describe only accepted constrained decisions. They are not chain-of-thought and should not be expanded into raw model rationale later.
+- The internal `CaptureStartResult` service type still includes the durable session identity because AWS capture composition needs it. Transport adapters must continue treating that field as server-only and must not re-expose it.
 
 ## Next product milestone
 
@@ -89,7 +83,7 @@ Run the protected real AWS vertical demonstration rather than deepening recovery
 2. require live public/auth smoke to pass;
 3. Cognito/Google sign-in;
 4. configure OpenAI BYOK;
-5. AgentCore Live View capture and trusted completion;
+5. AgentCore Live View capture and trusted completion, verifying the browser never receives a durable capture-session identifier;
 6. compile and inspect the semantic plan;
 7. run a Fresh Test lasting more than 30 seconds and observe its asynchronous durable result;
 8. inspect the ordered execution timeline, bounded semantic decisions, and authenticated evidence;
