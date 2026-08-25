@@ -4,51 +4,49 @@ Updated: 2026-08-25
 
 ## Current baseline
 
-- `main` before this slice: `9ea3b0f68550c26379dd7fd26c402893f41eebef` (`Add bounded run reasoning summaries`).
-- GitHub Actions CI #318 completed successfully on that exact `main` SHA.
+- `main` before this slice: `732e7729642cdac44d91e0fc37f42150c5792ed2` (`Keep capture start identity server-side`).
+- GitHub Actions CI #320 completed successfully on that exact SHA.
 - The AWS-first production vertical is structurally present: Cognito/Google auth, Next.js control plane, cloud capture + Browser Profile persistence, trace compiler, semantic workflow inspection, asynchronous AgentCore Fresh Test, publish/scheduling, AgentCore Browser/OpenAI BYOK execution, verification, sanitized history/diagnostics/evidence/timeline/reasoning summaries, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
 - Recovery/crash-reconciliation machinery is intentionally deep enough for the current product milestone. Do not add more recovery micro-hardening unless the vertical slice requires it or CI/live AWS exposes a real correctness defect.
 
-## This slice — keep capture-start identity server-side
+## This slice — make the browser Capture-start type match the public API
 
 ### Product/security gap
 
-Capture recording commands already resolve the durable capture session on the server, but authenticated `POST /v1/automations/:automationId/capture` still forwarded the internal `captureSessionId` returned by `CaptureSessionStarter`. The normal Next.js flow does not need that identifier: it uses only the short-lived signed Live View URL and expiry. Returning the durable session identity widened the public control-plane surface without product value and was inconsistent with the existing server-owned Start/Finish/Cancel recording boundary.
+The authenticated Capture-start HTTP response already strips the durable `captureSessionId`, but `WebControlPlaneClient.capture()` was still typed as the internal provider-neutral `CaptureStartResult`, whose READY variant requires that server-owned identifier. Runtime behavior was safe, but the browser-facing TypeScript contract lied about what crosses the boundary and could encourage future UI code to depend on a field that is intentionally absent.
 
 ### Change
 
-- The authenticated Capture-start HTTP response now returns only:
-  - `kind: "READY"`;
-  - the bounded signed `liveViewUrl` capability needed for the existing no-store handoff;
-  - `expiresAt`.
-- The internal provider-neutral `CaptureSessionStarter` contract is unchanged. It may still return `captureSessionId` to the server so durable capture registration, collector control, completion, cancellation, and idempotency continue to use the existing authority.
-- Added a direct HTTP regression proving the starter can return a durable capture-session ID while the authenticated response contains neither that value nor a `captureSessionId` property.
-- Existing `NOT_CONFIGURED` behavior and zero-AgentCore-allocation gating are unchanged.
+- Added a dedicated browser-facing `WebCaptureStartResult` type in the Next.js control-plane client.
+- READY contains only `kind`, the short-lived `liveViewUrl` capability, and `expiresAt`.
+- NOT_CONFIGURED retains only the existing sanitized reason.
+- `WebControlPlaneClient.capture()` now returns that public type instead of the internal capture-service result type.
+- Added a regression whose type-level key check fails compilation if `captureSessionId` is ever reintroduced into the READY browser contract, plus runtime verification of the exact response shape and encoded automation path.
 
 ## Security / tenancy review
 
-- Tenant/user ownership is still resolved before capture startup through the authenticated control-plane scope and the existing automation lookup.
-- The durable capture-session ID, Browser session ID, Browser Profile reference, trace identity and recording-control state remain server-side.
-- The Live View URL remains intentionally user-visible capability material because the owner must interact with the isolated capture browser. Existing Next.js handoff protections (`no-store`, no-referrer, bounded HTTPS URL, no embedded credentials, separate-tab flow) remain unchanged.
-- This slice does not broaden CAPTCHA/MFA handling or bypass third-party security controls.
+- Tenant/user ownership is still enforced by the authenticated control-plane request and existing automation lookup before capture startup.
+- Durable capture-session identity, Browser session identity, Browser Profile references, trace identity, collector state, and completion authority remain server-side.
+- The Live View URL remains intentionally user-visible capability material because the owner must interact with the isolated browser. Existing HTTPS, bounded lifetime, no-store/no-referrer handoff protections remain unchanged.
+- No CAPTCHA, MFA, anti-bot, or other third-party security control is bypassed.
 
 ## Idempotency / concurrency / retry / timeout
 
-- No capture claim, DynamoDB conditional write, collector launch, Browser session retry, timeout, or duplicate-capture behavior changed.
-- The existing current-capture pointer remains the durable concurrency authority. Sequential duplicate capture starts are rejected before Browser allocation; simultaneous races can allocate a temporary losing session which is cleaned up after durable contention classification.
-- Hiding the session identity from HTTP cannot create a new execution path because subsequent recording commands already server-resolve the active capture.
+- No capture claim, DynamoDB conditional write, duplicate-capture suppression, collector launch, Browser allocation, retry, or timeout behavior changed.
+- The existing current-capture pointer remains the durable concurrency authority.
+- This is a transport/type-boundary correction only; it cannot create or replay a capture operation.
 
 ## Side-effect verification / recovery
 
 - Capture completion ordering remains Browser Profile save -> immutable trace persistence -> durable capture completion -> ephemeral browser stop.
-- Workflow compilation, expected-effect capture verification, Fresh Test, scheduled execution, side-effect verification, human takeover/resume, leases, heartbeat, and reconciliation are unchanged.
-- No recovery authority is derived from the Capture-start response.
+- Workflow compilation, Fresh Test, scheduled execution, side-effect verification, human takeover/resume, leases, heartbeat, and reconciliation are unchanged.
+- No recovery authority is derived from the browser-facing Capture-start response.
 
 ## Cost / observability
 
-- No additional DynamoDB, S3, AgentCore Browser, AgentCore Runtime, OpenAI, Scheduler, SQS, Step Functions, SES or CloudWatch call is introduced.
-- The public payload is smaller and contains less implementation identity.
-- No dependency, IAM permission, AWS resource, GitHub Actions artifact, table/index, or persistence schema changed.
+- No additional DynamoDB, S3, AgentCore Browser, AgentCore Runtime, OpenAI, Scheduler, SQS, Step Functions, SES, or CloudWatch call is introduced.
+- No dependency, IAM permission, AWS resource, table/index, persistence schema, GitHub Actions artifact, or retained storage is added.
+- The compile-time boundary reduces the chance of future accidental client coupling to durable capture identity without changing runtime cost.
 
 ## Validation
 
@@ -59,7 +57,7 @@ Required authoritative validation for the new commit:
 3. `pnpm check` including the Next.js production build/type boundary;
 4. AgentCore Runtime, control-plane Lambda and Next.js Lambda packaging;
 5. AWS hosting/federation/release/deployment/demo/live-smoke/OIDC contract checks;
-6. full `pnpm test` suite including the new capture-start HTTP redaction regression.
+6. full `pnpm test` suite including the new browser-facing Capture-start contract regression.
 
 Do not claim this slice green until GitHub Actions completes successfully on the exact published head.
 
@@ -73,7 +71,7 @@ Do not claim this slice green until GitHub Actions completes successfully on the
 - Automation settings still use ordinary repository read/modify/write semantics; broad CAS machinery remains parked unless live concurrency shows material loss.
 - Evidence screenshots are intentionally owner-visible and may contain ordinary page data. Evidence retention/deletion policy should be revisited after live usage establishes operational needs.
 - Reasoning summaries intentionally describe only accepted constrained decisions. They are not chain-of-thought and should not be expanded into raw model rationale later.
-- The internal `CaptureStartResult` service type still includes the durable session identity because AWS capture composition needs it. Transport adapters must continue treating that field as server-only and must not re-expose it.
+- The internal provider-neutral `CaptureStartResult` still includes the durable session identity because AWS capture composition needs it. Transport adapters must keep using a distinct public type and must not re-expose that identity.
 
 ## Next product milestone
 
@@ -83,7 +81,7 @@ Run the protected real AWS vertical demonstration rather than deepening recovery
 2. require live public/auth smoke to pass;
 3. Cognito/Google sign-in;
 4. configure OpenAI BYOK;
-5. AgentCore Live View capture and trusted completion, verifying the browser never receives a durable capture-session identifier;
+5. AgentCore Live View capture and trusted completion, verifying the browser receives only the short-lived Live View capability/expiry and no durable capture-session identity;
 6. compile and inspect the semantic plan;
 7. run a Fresh Test lasting more than 30 seconds and observe its asynchronous durable result;
 8. inspect the ordered execution timeline, bounded semantic decisions, and authenticated evidence;
