@@ -8,59 +8,59 @@ Recovery/crash machinery remains intentionally parked unless the real vertical e
 
 ## Incoming validation
 
-- `main` points to `82a514f6e09009e72a7544c8ac0ac52dda097da0` (`Distinguish run-history outages from missing automations`).
-- Push-triggered GitHub Actions CI #305 completed successfully on that exact SHA on August 25, 2026.
+- `main` points to `31365b928b273ce7a97a7295955fedf132ad4c7c` (`Keep automation detail usable during history outages`).
+- Push-triggered GitHub Actions CI #307 completed successfully on that exact SHA on August 25, 2026.
 - No open production PR existed at the start of this slice.
 - Exact-head GitHub Actions remains authoritative for every new change.
 
-## This slice — keep automation authoring usable during run-history outages
+## This slice — isolate automation metadata from run-history availability
 
 ### Defect
 
-The control plane now correctly distinguishes a transient run-history storage failure from a missing automation, returning sanitized `409 CONFLICT` for the owned automation. The Next.js automation detail page still loaded automation metadata, run history, capture state, and workflow inspection in one `Promise.all`. Therefore the run-history `409` still collapsed the entire page into generic `Automation unavailable`, hiding otherwise healthy capture/authoring controls and defeating the product value of the new server-side distinction.
+The previous web slice treated the dedicated run-history request as fail-soft so capture and workflow inspection could remain usable during a transient run-store outage. The provider-neutral control plane still undermined that behavior: `getAutomation()` and metadata-summary mutations called `runs.listForAutomation()` merely to decorate an automation summary with its latest run. A run-store outage could therefore fail the automation metadata request before the web tier reached its dedicated fail-soft history read. The dashboard had the same coupling and could collapse entirely when one automation history read failed.
 
 ### Behavior
 
-- Automation metadata is loaded first under the authenticated control-plane boundary.
-- Run history, capture recording state, and workflow inspection remain parallel secondary reads.
-- Only a `CONFLICT` from the dedicated run-history read is treated as a bounded `runHistoryUnavailable` state.
-- Capture-state or workflow-inspection conflicts still fail the page rather than being silently normalized.
-- When history is unavailable, the page keeps the automation, objective, capture, compile, schedule-management, and semantic workflow inspection surfaces available.
-- The page shows an explicit temporary-history warning rather than claiming there are no runs.
-- Fresh Test submission/provenance feedback and Publish are suppressed while history is unavailable because those product decisions depend on authoritative durable run provenance.
-- Existing runs are never represented as deleted or absent merely because storage is temporarily unreadable.
+- `getAutomation()` now resolves owned automation metadata plus latest completed capture without reading run history.
+- Metadata-returning mutation summaries no longer depend on run-history availability.
+- The dashboard remains history-aware, but each automation history read is isolated. A failed history read marks only that automation with `lastRunUnavailable=true` rather than failing the whole dashboard.
+- Dashboard rendering distinguishes **Latest run temporarily unavailable** from **No runs yet**; it does not fabricate an empty history.
+- The dashboard no longer reads latest capture-completion state because that data is not rendered there. Capture readiness remains on the automation detail path where it is product-relevant.
+- Healthy automations on the same dashboard still retain their real latest run and provenance.
+- The dedicated `/runs` history boundary remains authoritative for Fresh Test provenance, publishing, and detailed run history; its sanitized `409 CONFLICT` behavior is unchanged.
 
 ### Security / tenant isolation
 
-- Tenant/user authority remains entirely in the authenticated control plane; the web helper introduces no client-selected ownership or durable IDs.
-- Raw DynamoDB/provider exception text remains hidden behind `WebControlPlaneError`.
-- Browser Profile/session IDs, capture trace IDs, workflow node IDs, evidence artifact IDs, BYOK secrets, workload tokens, runtime variables, and provider errors remain server-side.
-- This is a read-path UX correction and grants no new execution, scheduling, browser, model, or recovery authority.
+- Tenant/user scope remains authenticated and server-owned for automation, run-history, and capture reads.
+- A transient history failure is represented only by a boolean availability signal; provider/DynamoDB exception text remains server-side.
+- Browser Profile/session IDs, trace IDs, workflow/node identities, evidence artifacts, BYOK secrets, workload tokens, runtime variables, and raw provider/browser errors remain excluded.
+- Cross-tenant automation lookup behavior is unchanged and remains `NOT_FOUND`.
 
 ### Idempotency / concurrency / retry / timeout / verification
 
-- No run creation, occurrence idempotency, automation lock, Scheduler mutation, browser/model retry, timeout, effect verification, or human-resume semantics changed.
-- The web tier adds no retry loop; a user/server render may retry through the normal page request only.
-- Publish remains fail-closed because successful Fresh Test provenance cannot be reconstructed from missing history.
-- Fresh Test submission is also paused during a history outage to avoid creating another intentional cloud test when the product cannot determine current Fresh Test provenance.
+- No execution admission, run idempotency, automation lease, Scheduler mutation, retry/timeout policy, deterministic/semantic browser behavior, effect verification, or human-resume authority changed.
+- No retry loop was added. Dashboard degradation is a single-read classification, not hidden repeated load.
+- Metadata mutations no longer fail after a successful write merely because a subsequent decorative history read is unavailable.
+- Fresh Test and Publish remain fail-closed when their dedicated run-provenance read is unavailable.
 
 ### Cost / observability / user recovery
 
-- The logical read count is unchanged: automation, run history, capture state, and workflow inspection are still read once per page render.
-- No AWS resource, AgentCore Browser/Runtime allocation, model call, queue message, Scheduler call, SES send, or CloudWatch metric is added.
-- The user can continue safe authoring/capture inspection during a history-store incident while seeing a truthful bounded warning.
-- Operational provider details remain in server-side telemetry rather than user-visible responses.
+- Dashboard cost is reduced by one capture-completion read per automation; only run history is read for latest-run decoration.
+- Automation detail keeps the capture-completion read it needs, while removing its duplicate/decorative history dependency from the metadata request.
+- No new AWS resource, AgentCore Browser/Runtime allocation, model call, queue/Scheduler operation, SES send, CloudWatch metric, dependency, or Actions artifact is added.
+- Users can continue navigating healthy automation metadata and authoring surfaces during a run-store incident while seeing a truthful availability warning.
 
 ## Regression coverage
 
-- a run-history `CONFLICT` returns automation/capture/workflow data with `runHistoryUnavailable=true` and an empty non-authoritative run list;
-- normal history reads preserve the existing result shape;
-- non-history request failures are not swallowed;
-- capture-state conflicts remain fatal to the detail load rather than being misclassified as history unavailability.
+- owned automation metadata loads successfully while the run repository throws, and the run repository is not called;
+- one dashboard automation can report `lastRunUnavailable=true` while another still shows its real successful latest run;
+- dashboard rendering no longer needs capture-completion reads;
+- metadata-only notification-preference replay remains usable while run history is unavailable;
+- the existing dedicated history tests still enforce sanitized `409 CONFLICT` and cross-tenant `NOT_FOUND` behavior.
 
 ## Validation status
 
-The implementation, web regression tests, and this progress record are batched into one normal multi-file Git-data commit. GitHub Actions on the exact PR head is authoritative. Do not claim green until that workflow completes successfully.
+The provider-neutral control-plane correction, dashboard presentation change, regression coverage, and this progress record are batched into one normal multi-file Git-data commit. GitHub Actions on the exact PR head is authoritative. Do not claim green until that workflow completes successfully.
 
 ## Known production risks intentionally left visible
 
@@ -70,10 +70,11 @@ The implementation, web regression tests, and this progress record are batched i
 - Only OpenAI has a concrete production BYOK reasoning adapter today.
 - DynamoDB and EventBridge Scheduler cannot be mutated atomically; lifecycle ordering is fail-closed but operational reconciliation may still be required after a real partial infrastructure failure.
 - Automation metadata settings still use the existing repository read/modify/write boundary; competing independent metadata mutations can race.
+- Capture-completion storage remains authoritative for compile readiness; an outage there still correctly blocks capture/compile-specific surfaces rather than being misreported as a history outage.
 
 ## Next product milestone
 
-After exact-head CI is green, promote this narrow UX/correctness fix and prioritize the protected AWS vertical demo:
+After exact-head CI is green, promote this bounded correctness fix and prioritize the protected AWS vertical demo:
 
 1. deploy immutable release through GitHub OIDC;
 2. validate VPC Browser readiness and public/auth smoke;

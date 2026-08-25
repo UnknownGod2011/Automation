@@ -27,7 +27,7 @@ export interface LatestCompletedCaptureView { completedAt: string; }
 export interface AutomationSummaryView {
   automationId: string; name: string; websiteUrl: string; objective: string; status: AutomationStatus;
   publishedWorkflowVersion?: number; schedule?: AutomationSchedule; notifyOnSuccess: boolean; notifyOnFailure: boolean;
-  createdAt: string; updatedAt: string; latestCompletedCapture?: LatestCompletedCaptureView; lastRun?: RunSummaryView; needsAttention: boolean;
+  createdAt: string; updatedAt: string; latestCompletedCapture?: LatestCompletedCaptureView; lastRun?: RunSummaryView; lastRunUnavailable?: boolean; needsAttention: boolean;
 }
 export interface RunSummaryView {
   runId: string; automationId: string; workflowVersion: number; status: RunRecord["status"]; scheduledAt: string;
@@ -113,14 +113,20 @@ function toLatestCompletedCapture(record: CaptureSessionRecord | null): LatestCo
   const completed = completedCapture(record);
   return completed ? { completedAt: completed.completedAt! } : undefined;
 }
-function toAutomationSummary(record: AutomationRecord, runs: readonly RunRecord[], latestCapture: CaptureSessionRecord | null = null): AutomationSummaryView {
+function toAutomationSummary(
+  record: AutomationRecord,
+  runs: readonly RunRecord[],
+  latestCapture: CaptureSessionRecord | null = null,
+  lastRunUnavailable = false,
+): AutomationSummaryView {
   const lastRun = [...runs].sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt))[0];
   const latestCompletedCapture = toLatestCompletedCapture(latestCapture);
   return { automationId: record.automationId, name: record.name, websiteUrl: record.websiteUrl, objective: record.prompt, status: record.status,
     ...(record.publishedWorkflowVersion !== undefined ? { publishedWorkflowVersion: record.publishedWorkflowVersion } : {}),
     ...(record.schedule ? { schedule: structuredClone(record.schedule) } : {}), notifyOnSuccess: record.notifyOnSuccess, notifyOnFailure: record.notifyOnFailure,
     createdAt: record.createdAt, updatedAt: record.updatedAt, ...(latestCompletedCapture ? { latestCompletedCapture } : {}),
-    ...(lastRun ? { lastRun: toRunSummary(lastRun) } : {}), needsAttention: attentionStatuses.has(record.status) || lastRun?.status === "WAITING_FOR_HUMAN" };
+    ...(lastRun ? { lastRun: toRunSummary(lastRun) } : {}), ...(lastRunUnavailable ? { lastRunUnavailable: true } : {}),
+    needsAttention: attentionStatuses.has(record.status) || lastRun?.status === "WAITING_FOR_HUMAN" };
 }
 function sameStringMap(left: Readonly<Record<string, string>>, right: Readonly<Record<string, string>>): boolean {
   const leftEntries = Object.entries(left).sort(([a], [b]) => a.localeCompare(b));
@@ -165,8 +171,8 @@ export class AutomationControlPlaneService {
   private async requireOwnedAutomation(scope: OwnershipScope, automationId: string): Promise<AutomationRecord> { const automation = await this.dependencies.automations.get(scope, automationId); if (!automation) throw new ControlPlaneError("NOT_FOUND", "automation not found"); return automation; }
   private async summaryFor(record: AutomationRecord): Promise<AutomationSummaryView> {
     const scope = { tenantId: record.tenantId, userId: record.userId };
-    const [runs, latestCapture] = await Promise.all([this.dependencies.runs.listForAutomation(scope, record.automationId), this.dependencies.captureState.latestCompletedForAutomation(scope, record.automationId)]);
-    return toAutomationSummary(record, runs, latestCapture);
+    const latestCapture = await this.dependencies.captureState.latestCompletedForAutomation(scope, record.automationId);
+    return toAutomationSummary(record, [], latestCapture);
   }
   async listCredentials(scope: OwnershipScope): Promise<readonly ProviderCredentialSummary[]> { return this.credentialManagement().list(scope); }
   async createCredential(scope: OwnershipScope, command: CreateCredentialCommand): Promise<ProviderCredentialSummary> {
@@ -184,16 +190,20 @@ export class AutomationControlPlaneService {
   async dashboard(scope: OwnershipScope): Promise<DashboardView> {
     const automations = await this.dependencies.automations.list(scope);
     const summaries = await Promise.all(automations.map(async (automation) => {
-      const [runs, latestCapture] = await Promise.all([this.dependencies.runs.listForAutomation(scope, automation.automationId), this.dependencies.captureState.latestCompletedForAutomation(scope, automation.automationId)]);
-      return toAutomationSummary(automation, runs, latestCapture);
+      try {
+        const runs = await this.dependencies.runs.listForAutomation(scope, automation.automationId);
+        return toAutomationSummary(automation, runs);
+      } catch {
+        return toAutomationSummary(automation, [], null, true);
+      }
     }));
     return { capabilities: structuredClone(this.dependencies.capabilities), automations: summaries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) };
   }
   async getAutomation(scope: OwnershipScope, automationId: string): Promise<AutomationSummaryView> {
     const id = requireToken(automationId, "automationId"); const automation = await this.dependencies.automations.get(scope, id);
     if (!automation) throw new ControlPlaneError("NOT_FOUND", "automation not found");
-    const [runs, latestCapture] = await Promise.all([this.dependencies.runs.listForAutomation(scope, id), this.dependencies.captureState.latestCompletedForAutomation(scope, id)]);
-    return toAutomationSummary(automation, runs, latestCapture);
+    const latestCapture = await this.dependencies.captureState.latestCompletedForAutomation(scope, id);
+    return toAutomationSummary(automation, [], latestCapture);
   }
   async createAutomation(scope: OwnershipScope, command: CreateAutomationCommand): Promise<AutomationSummaryView> {
     const automationId = requireToken(command.automationId, "automationId");
