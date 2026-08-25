@@ -338,7 +338,7 @@ function errorResponse(error: unknown): ControlPlaneHttpResponse {
     const status = error.code === "BAD_REQUEST" ? 400 : error.code === "NOT_FOUND" ? 404 : 409;
     return { status, body: { error: { code: error.code, message: error.message } } };
   }
-  return { status: 500, body: { error: { code: "INTERNAL", message: "control-plane request failed" } };
+  return { status: 500, body: { error: { code: "INTERNAL", message: "control-plane request failed" } } };
 }
 
 /** Adds GET /v1/automations/:automationId/runs/:runId without widening the base API service. */
