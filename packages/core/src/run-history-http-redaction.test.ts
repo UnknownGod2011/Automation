@@ -122,10 +122,7 @@ describe("authenticated run-history transport redaction", () => {
     expect(JSON.stringify(dashboard.body)).toContain("TARGET_AUTH_REQUIRED");
     expect(JSON.stringify(history.body)).toContain("TARGET_AUTH_REQUIRED");
     expect(JSON.stringify(automationDetail.body)).not.toContain("TARGET_AUTH_REQUIRED");
-    expect(automationDetail.body).toEqual(expect.objectContaining({
-      status: 200,
-      body: expect.objectContaining({ status: "PAUSED", needsAttention: true }),
-    }));
+    expect(automationDetail.body).toEqual(expect.objectContaining({ status: "PAUSED", needsAttention: true }));
   });
 
   it("also redacts nested last-run node identity from summary-returning mutations", async () => {

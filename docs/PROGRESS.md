@@ -10,8 +10,7 @@ Recovery/crash machinery remains intentionally parked unless the real vertical e
 
 - `main` points to `31365b928b273ce7a97a7295955fedf132ad4c7c` (`Keep automation detail usable during history outages`).
 - Push-triggered GitHub Actions CI #307 completed successfully on that exact SHA on August 25, 2026.
-- No open production PR existed at the start of this slice.
-- Exact-head GitHub Actions remains authoritative for every new change.
+- PR #10 is the current bounded correctness slice and exact-head GitHub Actions remains authoritative.
 
 ## This slice — isolate automation metadata from run-history availability
 
@@ -64,9 +63,10 @@ The previous web slice treated the dedicated run-history request as fail-soft so
 
 - Normal implementation head `535513fce034448354f29516c870578cf3bf4cdb` ran as GitHub Actions CI #308.
 - CI #308 passed deterministic lock verification, frozen installation, strict `pnpm check`, AgentCore Runtime packaging, control-plane Lambda packaging, Next.js Lambda packaging, and every AWS hosting/federation/release/deployment/demo/live-smoke/OIDC contract.
-- All new history-isolation tests passed. The full core suite reached 317 passing tests with one stale existing assertion in `run-history-http-redaction.test.ts` that still required `TARGET_AUTH_REQUIRED` to appear in the automation metadata response.
-- That assertion encoded the old decorative-history behavior. The corrective commit aligns it with the new boundary: automation metadata retains `PAUSED` / `needsAttention`, while classified failure codes remain on run-aware dashboard/history surfaces. No production behavior or check is weakened.
-- GitHub Actions on the exact corrective PR head is authoritative. Do not claim green until that workflow completes successfully.
+- All new history-isolation tests passed. The full core suite reached 317 passing tests with one stale existing assertion in `run-history-http-redaction.test.ts` that still required `TARGET_AUTH_REQUIRED` to appear in automation metadata.
+- Corrective head `fe20ec5bd6a694738b511da4ac6920f95febf303` ran as CI #309. It again passed the deterministic lock gate, frozen install, `pnpm check`, every production package build, every AWS deployment/security contract, and 317 core tests; one corrected assertion failed because it compared `automationDetail.body` as though it were the whole HTTP response.
+- This follow-up changes only that assertion to validate the actual sanitized body shape: `{ status: "PAUSED", needsAttention: true }`. It does not restore run-history decoration or `TARGET_AUTH_REQUIRED` to automation metadata.
+- GitHub Actions on the exact new PR head is authoritative. Do not claim green until that workflow completes successfully.
 
 ## Known production risks intentionally left visible
 
