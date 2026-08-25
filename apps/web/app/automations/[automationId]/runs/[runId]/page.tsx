@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { RunSemanticStepView } from "@automation/core";
 import { WebControlPlaneError } from "../../../../../lib/control-plane-client";
 import { shouldPollRunStatus } from "../../../../../lib/run-status-readiness";
+import { buildRunTimeline, runTimelineStateLabel } from "../../../../../lib/run-timeline";
 import { createAuthenticatedWebControlPlaneClient, WebAuthError } from "../../../../../lib/server-auth";
 import { runTone } from "../../../../../lib/view-model";
 import { RunStatusPoller } from "./run-status-poller";
@@ -67,6 +68,7 @@ export default async function RunDetailPage({
   const currentStep = run.semantic?.current;
   const failureStep = run.semantic?.failure;
   const completedSteps = run.semantic?.completed ?? [];
+  const timeline = buildRunTimeline(run.semantic);
   const pollRunStatus = shouldPollRunStatus({ status: run.status, ...(notice ? { notice } : {}) });
 
   return (
@@ -123,6 +125,27 @@ export default async function RunDetailPage({
           )}
         </section>
       ) : null}
+
+      <section className="card stack" style={{ marginBottom: 18 }}>
+        <div className="eyebrow">Execution timeline</div>
+        <h2>What this run has done</h2>
+        {timeline.length === 0 ? (
+          <p className="muted">Semantic workflow metadata is temporarily unavailable. Durable run status and checkpoint data remain authoritative.</p>
+        ) : (
+          <ol>
+            {timeline.map((entry, index) => (
+              <li key={`${entry.step}-${entry.state}-${index}`} style={{ marginBottom: 12 }}>
+                <div className="row">
+                  <strong>Step {entry.step} · {entry.kind}</strong>
+                  <span>{runTimelineStateLabel(entry.state)}</span>
+                </div>
+                <p>{entry.objective}</p>
+              </li>
+            ))}
+          </ol>
+        )}
+        <p className="muted">The timeline is reconstructed from durable completed/current/failure state. Internal workflow node IDs, selectors, bindings, runtime values, and model chain-of-thought are intentionally excluded.</p>
+      </section>
 
       <section className="grid two">
         <div className="card stack">
