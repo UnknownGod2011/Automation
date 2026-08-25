@@ -2,6 +2,7 @@ import {
   assertWorkflowGraph,
   type RunCheckpoint,
   type RunFailure,
+  type RunReasoningSummary,
   type RunRecord,
   type RetryPolicy,
   type WorkflowGraph,
@@ -33,6 +34,10 @@ const HUMAN_FAILURES = new Set<RunFailure["code"]>([
   "HUMAN_DECISION_REQUIRED",
   "NOT_CONFIGURED",
 ]);
+
+interface NodeActionResult extends BrowserActionResult {
+  reasoningSummary?: RunReasoningSummary;
+}
 
 export interface ExecutionEngineDependencies {
   browser: BrowserExecutor;
@@ -171,7 +176,7 @@ function makeFailure(
   return { code, message, retryable, nodeId, evidenceRefs };
 }
 
-function failureResult(failure: RunFailure): BrowserActionResult {
+function failureResult(failure: RunFailure): NodeActionResult {
   return {
     effectObserved: false,
     evidenceRefs: [...failure.evidenceRefs],
@@ -285,6 +290,7 @@ export class WorkflowExecutionEngine {
     let completedNodeIds = [...(checkpoint?.completedNodeIds ?? [])];
     let variables: Readonly<Record<string, unknown>> = checkpoint?.variables ?? {};
     let evidenceRefs = [...(checkpoint?.evidenceRefs ?? [])];
+    let reasoningSummaries = [...(checkpoint?.reasoningSummaries ?? [])];
     let attempt = request.resumeFromHuman ? 0 : (checkpoint?.attempt ?? 0);
     let previousFingerprint = request.resumeFromHuman
       ? undefined
@@ -306,6 +312,7 @@ export class WorkflowExecutionEngine {
         0,
         variables,
         evidenceRefs,
+        reasoningSummaries,
       );
       run = { ...run, currentNodeId };
       await this.dependencies.runs.update(run);
@@ -330,6 +337,7 @@ export class WorkflowExecutionEngine {
           0,
           variables,
           evidenceRefs,
+          reasoningSummaries,
         );
         run = transitionRun(run, "SUCCEEDED", {
           now: this.now().toISOString(),
@@ -355,6 +363,7 @@ export class WorkflowExecutionEngine {
           0,
           variables,
           evidenceRefs,
+          reasoningSummaries,
           undefined,
           0,
           humanFailure,
@@ -376,6 +385,9 @@ export class WorkflowExecutionEngine {
         node,
         inputs,
       );
+      if (actionResult.reasoningSummary) {
+        reasoningSummaries = [...reasoningSummaries, actionResult.reasoningSummary];
+      }
       let nodeFailure = actionResult.failure;
 
       if (!nodeFailure && node.verification) {
@@ -467,6 +479,7 @@ export class WorkflowExecutionEngine {
           attempt,
           variables,
           evidenceRefs,
+          reasoningSummaries,
           fingerprint,
           fingerprintRepeatCount,
           nodeFailure,
@@ -553,6 +566,7 @@ export class WorkflowExecutionEngine {
           attempt,
           variables,
           evidenceRefs,
+          reasoningSummaries,
           undefined,
           0,
           terminalFailure,
@@ -580,6 +594,7 @@ export class WorkflowExecutionEngine {
         0,
         variables,
         evidenceRefs,
+        reasoningSummaries,
       );
       run = { ...run, currentNodeId };
       await this.dependencies.runs.update(run);
@@ -600,6 +615,7 @@ export class WorkflowExecutionEngine {
       attempt,
       variables,
       evidenceRefs,
+      reasoningSummaries,
       previousFingerprint,
       fingerprintRepeatCount,
       terminalFailure,
@@ -618,9 +634,16 @@ export class WorkflowExecutionEngine {
     graph: WorkflowGraph,
     node: WorkflowNode,
     inputs: Readonly<Record<string, unknown>>,
-  ): Promise<BrowserActionResult> {
+  ): Promise<NodeActionResult> {
     if (node.kind === "REASON") {
-      return this.executeSemantic(scope, run, graph, node, inputs);
+      return this.executeSemantic(
+        scope,
+        run,
+        graph,
+        node,
+        inputs,
+        "WORKFLOW_REASONING",
+      );
     }
 
     let deterministic: BrowserActionResult;
@@ -649,7 +672,14 @@ export class WorkflowExecutionEngine {
       return deterministic;
     }
 
-    const semantic = await this.executeSemantic(scope, run, graph, node, inputs);
+    const semantic = await this.executeSemantic(
+      scope,
+      run,
+      graph,
+      node,
+      inputs,
+      "SEMANTIC_RECOVERY",
+    );
     return {
       ...semantic,
       evidenceRefs: [
@@ -665,7 +695,8 @@ export class WorkflowExecutionEngine {
     graph: WorkflowGraph,
     node: WorkflowNode,
     inputs: Readonly<Record<string, unknown>>,
-  ): Promise<BrowserActionResult> {
+    trigger: RunReasoningSummary["trigger"],
+  ): Promise<NodeActionResult> {
     const allowedActions = semanticAllowedActions(node);
     if (allowedActions.length === 0) {
       return {
@@ -709,18 +740,29 @@ export class WorkflowExecutionEngine {
       };
     }
 
+    const reasoningSummary: RunReasoningSummary = {
+      nodeId: node.id,
+      trigger,
+      action: decision.action,
+      confidence: decision.confidence,
+    };
+
     try {
-      return await this.dependencies.browser.executeSemantic(
+      const result = await this.dependencies.browser.executeSemantic(
         scope,
         run.runId,
         node,
         decision,
         inputs,
       );
+      return { ...result, reasoningSummary };
     } catch (error) {
-      return failureResult(
-        classifyExecutionError(error, node.id, "semantic browser execution"),
-      );
+      return {
+        ...failureResult(
+          classifyExecutionError(error, node.id, "semantic browser execution"),
+        ),
+        reasoningSummary,
+      };
     }
   }
 
@@ -732,6 +774,7 @@ export class WorkflowExecutionEngine {
     attempt: number,
     variables: Readonly<Record<string, unknown>>,
     evidenceRefs: readonly string[],
+    reasoningSummaries: readonly RunReasoningSummary[],
     stateFingerprint?: string,
     fingerprintRepeatCount = 0,
     lastFailure?: RunFailure,
@@ -746,6 +789,9 @@ export class WorkflowExecutionEngine {
       fingerprintRepeatCount,
       variables,
       evidenceRefs,
+      ...(reasoningSummaries.length > 0
+        ? { reasoningSummaries: [...reasoningSummaries] }
+        : {}),
       ...(stateFingerprint !== undefined ? { stateFingerprint } : {}),
       ...(lastFailure !== undefined ? { lastFailure } : {}),
       updatedAt: this.now().toISOString(),

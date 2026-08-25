@@ -1,4 +1,11 @@
-import type { RunCheckpoint, RunFailure, RunRecord, WorkflowGraph, WorkflowNode } from "@automation/contracts";
+import type {
+  RunCheckpoint,
+  RunFailure,
+  RunReasoningSummary,
+  RunRecord,
+  WorkflowGraph,
+  WorkflowNode,
+} from "@automation/contracts";
 import { ControlPlaneError } from "./control-plane.js";
 import type {
   AuthenticatedControlPlaneContext,
@@ -40,6 +47,13 @@ export interface RunSemanticProgressView {
   failure?: RunSemanticStepView;
 }
 
+export interface RunReasoningSummaryView {
+  step: number;
+  trigger: RunReasoningSummary["trigger"];
+  action: string;
+  confidence: number;
+}
+
 export interface RunDetailView {
   runId: string;
   automationId: string;
@@ -51,6 +65,7 @@ export interface RunDetailView {
   failure?: RunFailureView;
   checkpoint?: RunCheckpointView;
   semantic?: RunSemanticProgressView;
+  reasoning?: readonly RunReasoningSummaryView[];
   needsHumanAttention: boolean;
   /** Read-only UX hint. Runtime validation remains the execution authority. */
   humanResumeEligible: boolean;
@@ -62,6 +77,8 @@ const MAX_REFERENCE_COUNT = 100;
 const MAX_REFERENCE_LENGTH = 512;
 const MAX_NODE_COUNT = 2_000;
 const MAX_DISPLAY_TEXT_LENGTH = 4_096;
+const MAX_REASONING_SUMMARY_COUNT = 1_000;
+const MAX_REASONING_ACTION_LENGTH = 160;
 
 function token(value: string, name: string): string {
   const trimmed = value.trim();
@@ -123,15 +140,22 @@ function orderedNodeIds(graph: WorkflowGraph): readonly string[] {
   return ordered;
 }
 
+function semanticStepMap(
+  graph: WorkflowGraph,
+): ReadonlyMap<string, number> | undefined {
+  const orderedIds = orderedNodeIds(graph);
+  if (orderedIds.length === 0 || orderedIds.length > MAX_NODE_COUNT) return undefined;
+  return new Map(orderedIds.map((nodeId, index) => [nodeId, index + 1] as const));
+}
+
 function semanticProgress(
   graph: WorkflowGraph,
   run: RunRecord,
   checkpoint: RunCheckpoint | null,
 ): RunSemanticProgressView | undefined {
   if (graph.automationId !== run.automationId || graph.version !== run.workflowVersion) return undefined;
-  const orderedIds = orderedNodeIds(graph);
-  if (orderedIds.length === 0 || orderedIds.length > MAX_NODE_COUNT) return undefined;
-  const stepByNodeId = new Map(orderedIds.map((nodeId, index) => [nodeId, index + 1] as const));
+  const stepByNodeId = semanticStepMap(graph);
+  if (!stepByNodeId) return undefined;
 
   const stepView = (nodeId: string | undefined): RunSemanticStepView | undefined => {
     if (!nodeId) return undefined;
@@ -163,13 +187,54 @@ function semanticProgress(
   };
 }
 
+function reasoningSummaryView(
+  graph: WorkflowGraph,
+  run: RunRecord,
+  checkpoint: RunCheckpoint | null,
+): readonly RunReasoningSummaryView[] | undefined {
+  const durable = checkpoint?.reasoningSummaries;
+  if (!durable || durable.length === 0) return undefined;
+  if (durable.length > MAX_REASONING_SUMMARY_COUNT) {
+    throw new ControlPlaneError("CONFLICT", "run reasoning state is invalid");
+  }
+  if (graph.automationId !== run.automationId || graph.version !== run.workflowVersion) return undefined;
+  const stepByNodeId = semanticStepMap(graph);
+  if (!stepByNodeId) return undefined;
+
+  return durable.map((summary) => {
+    const step = stepByNodeId.get(summary.nodeId);
+    const action = summary.action.trim();
+    if (
+      !step ||
+      !graph.nodes[summary.nodeId] ||
+      !action ||
+      action.length > MAX_REASONING_ACTION_LENGTH ||
+      !Number.isFinite(summary.confidence) ||
+      summary.confidence < 0 ||
+      summary.confidence > 1 ||
+      (summary.trigger !== "WORKFLOW_REASONING" &&
+        summary.trigger !== "SEMANTIC_RECOVERY")
+    ) {
+      throw new ControlPlaneError("CONFLICT", "run reasoning state is invalid");
+    }
+    return {
+      step,
+      trigger: summary.trigger,
+      action,
+      confidence: summary.confidence,
+    };
+  });
+}
+
 /**
  * Read-only user-facing run diagnostics. The view intentionally excludes workflow
  * variables, raw failure messages, state fingerprints, browser/profile state,
  * provider payloads, internal workflow/node identifiers, and evidence artifact
  * identifiers/contents. When the immutable workflow is available, semantic progress
  * contains only step ordinal, kind, and objective; selectors, bindings, expected
- * values, and internal graph identifiers remain server-side.
+ * values, and internal graph identifiers remain server-side. Reasoning summaries are
+ * system-derived from accepted structured decisions and never expose provider
+ * free-form summaries, browser/page context, or chain-of-thought.
  */
 export class RunDetailService {
   constructor(
@@ -238,6 +303,7 @@ export class RunDetailService {
       checkpoint.lastFailure.nodeId === checkpoint.currentNodeId,
     );
     const semantic = graph ? semanticProgress(graph, run, checkpoint) : undefined;
+    const reasoning = graph ? reasoningSummaryView(graph, run, checkpoint) : undefined;
 
     return {
       runId: run.runId,
@@ -250,6 +316,7 @@ export class RunDetailService {
       ...(run.failure ? { failure: failureView(run.failure) } : {}),
       ...(checkpoint ? { checkpoint: checkpointView(checkpoint) } : {}),
       ...(semantic ? { semantic } : {}),
+      ...(reasoning ? { reasoning } : {}),
       needsHumanAttention: run.status === "WAITING_FOR_HUMAN",
       humanResumeEligible,
       targetAuthRepairEligible,
@@ -298,7 +365,10 @@ export class RunDetailControlPlaneHttpHandler implements ControlPlaneHttpHandler
     }
 
     if (request.method !== "GET") {
-      return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
+      return {
+        status: 405,
+        body: { error: { code: "METHOD_NOT_ALLOWED", message: "run detail is read-only" } },
+      };
     }
 
     try {

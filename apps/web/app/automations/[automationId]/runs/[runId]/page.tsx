@@ -19,6 +19,12 @@ function evidenceSummary(count: number): string {
   return count === 0 ? "No evidence recorded." : `${count} protected evidence item${count === 1 ? "" : "s"} recorded.`;
 }
 
+function reasoningTriggerLabel(trigger: "WORKFLOW_REASONING" | "SEMANTIC_RECOVERY"): string {
+  return trigger === "SEMANTIC_RECOVERY"
+    ? "Semantic recovery"
+    : "Workflow reasoning";
+}
+
 function evidenceLinks(automationId: string, runId: string, count: number) {
   if (count <= 0) return null;
   const visibleCount = Math.min(count, MAX_EVIDENCE_LINKS);
@@ -69,6 +75,7 @@ export default async function RunDetailPage({
   const failureStep = run.semantic?.failure;
   const completedSteps = run.semantic?.completed ?? [];
   const timeline = buildRunTimeline(run.semantic);
+  const reasoning = run.reasoning ?? [];
   const pollRunStatus = shouldPollRunStatus({ status: run.status, ...(notice ? { notice } : {}) });
 
   return (
@@ -147,6 +154,27 @@ export default async function RunDetailPage({
         <p className="muted">The timeline is reconstructed from durable completed/current/failure state. Internal workflow node IDs, selectors, bindings, runtime values, and model chain-of-thought are intentionally excluded.</p>
       </section>
 
+      <section className="card stack" style={{ marginBottom: 18 }}>
+        <div className="eyebrow">Semantic decisions</div>
+        <h2>How the reasoning layer assisted</h2>
+        {reasoning.length === 0 ? (
+          <p className="muted">No semantic reasoning decision was recorded for this run. Deterministic browser execution may have been sufficient.</p>
+        ) : (
+          <ol>
+            {reasoning.map((summary, index) => (
+              <li key={`${summary.step}-${summary.trigger}-${index}`} style={{ marginBottom: 12 }}>
+                <div className="row">
+                  <strong>Step {summary.step} · {summary.action}</strong>
+                  <span>{reasoningTriggerLabel(summary.trigger)}</span>
+                </div>
+                <p>The constrained reasoning layer selected this allowed action with {Math.round(summary.confidence * 100)}% confidence.</p>
+              </li>
+            ))}
+          </ol>
+        )}
+        <p className="muted">These are bounded system-generated decision summaries. Provider free-form rationale, page context, inputs, selectors, hidden reasoning, and model chain-of-thought are not persisted or exposed here.</p>
+      </section>
+
       <section className="grid two">
         <div className="card stack">
           <h2>Failure</h2>
@@ -189,7 +217,7 @@ export default async function RunDetailPage({
       </section>
 
       <section className="card" style={{ marginTop: 18 }}>
-        <p className="muted">This view intentionally excludes internal workflow/node identifiers, runtime variables, raw provider/browser errors, selectors, page fingerprints, artifact references, cookies, Browser Profile data, BYOK secrets, workload tokens, and model chain-of-thought. Evidence previews are owner-authenticated, ordinal-resolved, and limited to known-safe browser metadata or bounded screenshots.</p>
+        <p className="muted">This view intentionally excludes internal workflow/node identifiers, runtime variables, raw provider/browser errors, selectors, page fingerprints, artifact references, cookies, Browser Profile data, BYOK secrets, workload tokens, provider free-form reasoning text, and model chain-of-thought. Evidence previews are owner-authenticated, ordinal-resolved, and limited to known-safe browser metadata or bounded screenshots.</p>
       </section>
     </>
   );

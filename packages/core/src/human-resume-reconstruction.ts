@@ -157,6 +157,9 @@ export function planAlreadyAppliedHumanResumeRecovery(
       ...request.checkpoint.evidenceRefs,
       ...request.reconstruction.evidenceRefs,
     ],
+    ...(request.checkpoint.reasoningSummaries
+      ? { reasoningSummaries: [...request.checkpoint.reasoningSummaries] }
+      : {}),
     updatedAt: instant(request.now),
   };
 
