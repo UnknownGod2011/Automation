@@ -1,97 +1,95 @@
-# Production Progress
+# Production progress
 
-## Current production state
+Updated: 2026-08-25
 
-The AWS-first cloud browser automation vertical is on `main`. The repository implements the intended lifecycle from `docs/END_GOAL.md`: Cognito/optional Google sign-in, dashboard/authoring, replay-safe automation creation, AgentCore Browser/Profile capture, trusted durable capture completion, semantic WorkflowGraph compilation/inspection, asynchronous Fresh Test with OpenAI BYOK, tested-version publication, EventBridge Scheduler/SQS/Step Functions dispatch, deterministic browser execution with constrained semantic fallback and effect verification, durable history/diagnostics, SES/CloudWatch reporting, safe workflow/objective revision, reusable non-secret scheduled inputs, and bounded human takeover/resume.
+## Current baseline
 
-Recovery/crash machinery remains intentionally parked unless the real vertical exposes a correctness blocker. Product priority remains the protected AWS deployment and controlled end-to-end demonstration.
+- `main` before this slice: `a51ffcac7c2302250a7e3ef97c617778d6b7478b` (`Isolate automation metadata from run history outages`).
+- GitHub Actions CI #311 completed successfully on that exact `main` SHA.
+- The AWS-first production vertical is structurally present: Cognito/Google auth, Next.js control plane, cloud capture + Browser Profile persistence, trace compiler, semantic workflow inspection, asynchronous AgentCore Fresh Test, publish/scheduling, AgentCore Browser/OpenAI BYOK execution, verification, sanitized history/diagnostics, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
+- Recovery/crash-reconciliation machinery is intentionally considered deep enough for the current product milestone. Do not add more recovery micro-hardening unless the vertical slice requires it or CI/live AWS exposes a real correctness defect.
 
-## Incoming validation
+## This slice — authenticated run evidence viewing
 
-- `main` points to `31365b928b273ce7a97a7295955fedf132ad4c7c` (`Keep automation detail usable during history outages`).
-- Push-triggered GitHub Actions CI #307 completed successfully on that exact SHA on August 25, 2026.
-- PR #10 is the current bounded correctness slice and exact-head GitHub Actions remains authoritative.
+### Product gap
 
-## This slice — isolate automation metadata from run-history availability
+`END_GOAL.md` calls for a detailed run record with evidence. Browser execution already persisted redacted browser-state metadata and screenshots in the tenant-scoped artifact store, but the user-facing run diagnostics exposed only evidence counts. Raw S3 artifact references were intentionally hidden, leaving no supported way for the automation owner to inspect the actual safe evidence.
 
-### Defect
+### Change
 
-The previous web slice treated the dedicated run-history request as fail-soft so capture and workflow inspection could remain usable during a transient run-store outage. The provider-neutral control plane still undermined that behavior: `getAutomation()` and metadata-summary mutations called `runs.listForAutomation()` merely to decorate an automation summary with its latest run. A run-store outage could therefore fail the automation metadata request before the web tier reached its dedicated fail-soft history read. The dashboard had the same coupling and could collapse entirely when one automation history read failed.
+- Added a provider-neutral `RunEvidenceService` and authenticated read-only route:
+  - `GET /v1/automations/:automationId/runs/:runId/evidence/:ordinal`.
+  - The browser selects only a bounded 1-based ordinal; the durable artifact reference is resolved from the authorized checkpoint server-side.
+  - Run/checkpoint tenant, automation, run and workflow-version identity are revalidated before artifact storage is read.
+- Evidence has a closed public schema:
+  - bounded PNG screenshots can be returned as base64 to the authenticated owner;
+  - known Playwright metadata is reduced to event kind, workflow action kind, sequence and safe origin;
+  - state fingerprints, DOM/page text, selectors, workflow node IDs, artifact references and arbitrary JSON fields are discarded;
+  - unknown formats remain opaque rather than returning raw bytes;
+  - previews above 2 MiB are reported as protected/too-large rather than serialized through the control plane.
+- AWS control-plane composition now connects this service to the existing tenant-scoped S3 artifact store.
+- The Next.js run page links checkpoint evidence by ordinal and a dedicated authenticated evidence page renders the safe preview. Artifact references never enter the URL or browser contract.
+- Added provider-neutral tests for screenshot redaction, metadata allowlisting, unknown-format opacity, cross-tenant suppression before artifact reads, bounded ordinals and GET-only routing, plus a web-client regression for ordinal-only access.
 
-### Behavior
+## Security / tenancy review
 
-- `getAutomation()` now resolves owned automation metadata plus latest completed capture without reading run history.
-- Metadata-returning mutation summaries no longer depend on run-history availability.
-- The dashboard remains history-aware, but each automation history read is isolated. A failed history read marks only that automation with `lastRunUnavailable=true` rather than failing the whole dashboard.
-- Dashboard rendering distinguishes **Latest run temporarily unavailable** from **No runs yet**; it does not fabricate an empty history.
-- The dashboard no longer reads latest capture-completion state because that data is not rendered there. Capture readiness remains on the automation detail path where it is product-relevant.
-- Healthy automations on the same dashboard still retain their real latest run and provenance.
-- The dedicated `/runs` history boundary remains authoritative for Fresh Test provenance, publishing, and detailed run history; its sanitized `409 CONFLICT` behavior is unchanged.
-- Automation metadata intentionally reports durable lifecycle/attention state without importing run-specific failure codes. Classified run failures remain available on run-aware dashboard/history/diagnostic surfaces.
+- Evidence is accessible only after the existing Cognito-authenticated tenant/user scope resolves the durable run.
+- The browser cannot submit an S3 key or artifact reference. It can only request an ordinal that is mapped through the authorized checkpoint.
+- Cross-tenant/mismatched-run requests fail before `ArtifactStore.get`.
+- Browser-state JSON is allowlisted rather than passed through. Provider/browser raw payloads and state fingerprints remain server-side.
+- Screenshots can contain page content visible to the automation owner. They are therefore returned only through authenticated, no-store server rendering and are never embedded in URLs, logs, workflow metadata or notification payloads.
+- Existing TYPE verification screenshot suppression remains important: typed runtime values are not intentionally captured into post-input screenshots.
 
-### Security / tenant isolation
+## Idempotency / concurrency / retry / timeout
 
-- Tenant/user scope remains authenticated and server-owned for automation, run-history, and capture reads.
-- A transient history failure is represented only by a boolean availability signal; provider/DynamoDB exception text remains server-side.
-- Browser Profile/session IDs, trace IDs, workflow/node identities, evidence artifacts, BYOK secrets, workload tokens, runtime variables, and raw provider/browser errors remain excluded.
-- Cross-tenant automation lookup behavior is unchanged and remains `NOT_FOUND`.
+- The evidence path is read-only and has no execution authority, lease, retry or mutation side effect.
+- It resolves the latest persisted checkpoint at request time. A stale ordinal after checkpoint replacement can become `NOT_FOUND`; it cannot select an arbitrary artifact.
+- Artifact-store uncertainty returns a sanitized conflict while leaving durable run state unchanged.
+- No browser/model retry behavior or human-resume authority changed.
 
-### Idempotency / concurrency / retry / timeout / verification
+## Cost / observability
 
-- No execution admission, run idempotency, automation lease, Scheduler mutation, retry/timeout policy, deterministic/semantic browser behavior, effect verification, or human-resume authority changed.
-- No retry loop was added. Dashboard degradation is a single-read classification, not hidden repeated load.
-- Metadata mutations no longer fail after a successful write merely because a subsequent decorative history read is unavailable.
-- Fresh Test and Publish remain fail-closed when their dedicated run-provenance read is unavailable.
+- Run diagnostics themselves still perform no artifact reads. S3 evidence is read only when the user opens an evidence item.
+- A single evidence request reads one artifact. Screenshot serialization is capped at 2 MiB to bound API/Lambda response size and memory amplification.
+- No new AWS resource, queue, table, bucket, IAM permission or GitHub Actions artifact was added; the control plane reuses the existing encrypted artifact bucket and IAM scope.
 
-### Cost / observability / user recovery
+## Validation
 
-- Dashboard cost is reduced by one capture-completion read per automation; only run history is read for latest-run decoration.
-- Automation detail keeps the capture-completion read it needs, while removing its duplicate/decorative history dependency from the metadata request.
-- No new AWS resource, AgentCore Browser/Runtime allocation, model call, queue/Scheduler operation, SES send, CloudWatch metric, dependency, or Actions artifact is added.
-- Users can continue navigating healthy automation metadata and authoring surfaces during a run-store incident while seeing a truthful availability warning.
+Required authoritative validation for the new commit:
 
-## Regression coverage
+1. deterministic pnpm lock verification;
+2. frozen install;
+3. `pnpm check` including the Next.js production build/type boundary;
+4. AgentCore Runtime, control-plane Lambda and Next.js Lambda packaging;
+5. AWS release/deployment/demo/live-smoke/OIDC contract checks;
+6. full `pnpm test` suite including the new evidence regressions.
 
-- owned automation metadata loads successfully while the run repository throws, and the run repository is not called;
-- one dashboard automation can report `lastRunUnavailable=true` while another still shows its real successful latest run;
-- dashboard rendering no longer needs capture-completion reads;
-- metadata-only notification-preference replay remains usable while run history is unavailable;
-- metadata/detail responses keep `PAUSED` / `needsAttention` without depending on a run-specific `TARGET_AUTH_REQUIRED` code, while dashboard/history responses still preserve the classified failure;
-- the existing dedicated history tests still enforce sanitized `409 CONFLICT` and cross-tenant `NOT_FOUND` behavior.
+Do not claim this slice green until GitHub Actions completes successfully on the exact published head.
 
-## Validation status
+## Known production risks / deliberately parked work
 
-- Normal implementation head `535513fce034448354f29516c870578cf3bf4cdb` ran as GitHub Actions CI #308.
-- CI #308 passed deterministic lock verification, frozen installation, strict `pnpm check`, AgentCore Runtime packaging, control-plane Lambda packaging, Next.js Lambda packaging, and every AWS hosting/federation/release/deployment/demo/live-smoke/OIDC contract.
-- All new history-isolation tests passed. The full core suite reached 317 passing tests with one stale existing assertion in `run-history-http-redaction.test.ts` that still required `TARGET_AUTH_REQUIRED` to appear in automation metadata.
-- Corrective head `fe20ec5bd6a694738b511da4ac6920f95febf303` ran as CI #309. It again passed the deterministic lock gate, frozen install, `pnpm check`, every production package build, every AWS deployment/security contract, and 317 core tests; one corrected assertion failed because it compared `automationDetail.body` as though it were the whole HTTP response.
-- This follow-up changes only that assertion to validate the actual sanitized body shape: `{ status: "PAUSED", needsAttention: true }`. It does not restore run-history decoration or `TARGET_AUTH_REQUIRED` to automation metadata.
-- GitHub Actions on the exact new PR head is authoritative. Do not claim green until that workflow completes successfully.
-
-## Known production risks intentionally left visible
-
-- The protected AWS deployment and full live vertical demonstration still need to run in a real environment with approved GitHub Environment/OIDC role/VPC inputs.
-- VPC-mode AgentCore Browser is required, but real subnet/route/DNS/security-group/firewall policy still needs live proof against private/link-local/control-plane destinations after DNS resolution and redirects.
-- Live Cognito/Google/SES/AgentCore behavior remains structurally tested with fakes/deployment contracts but needs real-environment validation.
-- Only OpenAI has a concrete production BYOK reasoning adapter today.
-- DynamoDB and EventBridge Scheduler cannot be mutated atomically; lifecycle ordering is fail-closed but operational reconciliation may still be required after a real partial infrastructure failure.
-- Automation metadata settings still use the existing repository read/modify/write boundary; competing independent metadata mutations can race.
-- Capture-completion storage remains authoritative for compile readiness; an outage there still correctly blocks capture/compile-specific surfaces rather than being misreported as a history outage.
+- The protected real AWS deployment/full vertical demonstration still has not been completed with real Environment/OIDC/VPC inputs.
+- VPC AgentCore Browser route-table/DNS/security-group/firewall containment still requires live proof against private/link-local/control-plane destinations after DNS resolution and redirects.
+- Cognito/Google federation, SES delivery and AgentCore Runtime/Browser behavior are structurally tested but still need live-service validation.
+- OpenAI is the only concrete production BYOK reasoning adapter today; the core remains provider-neutral for later adapters.
+- DynamoDB and EventBridge Scheduler mutations remain separate fail-closed systems rather than one transaction; live operation must validate reconciliation expectations.
+- Automation settings still use ordinary repository read/modify/write semantics; broad CAS machinery remains parked unless live concurrency shows material loss.
+- Evidence screenshots are intentionally owner-visible and may contain ordinary page data. Evidence retention/deletion policy should be revisited after live usage establishes operational needs.
 
 ## Next product milestone
 
-After exact-head CI is green, promote this bounded correctness fix and prioritize the protected AWS vertical demo:
+Run the protected real AWS vertical demonstration rather than deepening recovery internals:
 
-1. deploy immutable release through GitHub OIDC;
-2. validate VPC Browser readiness and public/auth smoke;
-3. Cognito/Google sign-in and OpenAI BYOK setup;
-4. create an automation with objective/consent;
+1. deploy the immutable green release with GitHub OIDC and real VPC Browser inputs;
+2. require live public/auth smoke to pass;
+3. Cognito/Google sign-in;
+4. configure OpenAI BYOK;
 5. AgentCore Live View capture and trusted completion;
-6. compile and inspect the semantic workflow;
-7. run a Fresh Test lasting more than 30 seconds and observe asynchronous completion;
-8. approve/publish recurrence + timezone + any non-secret scheduled inputs;
-9. observe EventBridge -> SQS -> Step Functions -> AgentCore execution, verification, history, CloudWatch, and SES;
-10. deliberately expire target authentication and complete secure Live View repair/resume;
-11. exercise revision by disabling, changing the objective, recapturing, Fresh-Testing, and republishing.
+6. compile and inspect the semantic plan;
+7. run a Fresh Test lasting more than 30 seconds and observe its asynchronous durable result;
+8. inspect the run evidence through the new authenticated evidence viewer;
+9. publish recurrence/timezone and verify EventBridge/SQS/Step Functions/AgentCore execution;
+10. verify run history, SES notification and CloudWatch telemetry;
+11. deliberately expire target authentication, repair through secure Live View and resume to a terminal outcome.
 
-Concrete live-service defects should drive subsequent engineering before additional recovery micro-hardening.
+From this point, defects exposed by the live environment should take priority over speculative recovery hardening.

@@ -8,6 +8,7 @@ import type {
   HumanTakeoverStartResult,
   ProviderCredentialSummary,
   RunDetailView,
+  RunEvidenceView,
   RunSummaryView,
   WorkflowInspectionView,
 } from "@automation/core";
@@ -121,6 +122,16 @@ export class WebControlPlaneClient {
   async run(automationId: string, runId: string): Promise<RunDetailView> {
     return this.request(
       `/v1/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}`,
+      { method: "GET" },
+    );
+  }
+
+  async runEvidence(automationId: string, runId: string, ordinal: number): Promise<RunEvidenceView> {
+    if (!Number.isInteger(ordinal) || ordinal < 1 || ordinal > 100) {
+      throw new WebControlPlaneError("REQUEST_FAILED");
+    }
+    return this.request(
+      `/v1/automations/${encodeURIComponent(automationId)}/runs/${encodeURIComponent(runId)}/evidence/${ordinal}`,
       { method: "GET" },
     );
   }
