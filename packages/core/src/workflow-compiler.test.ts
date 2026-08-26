@@ -18,7 +18,7 @@ function fixture(): CaptureTrace {
       { eventId: "login-email", sequence: 1, kind: "INPUT", purpose: "AUTH_SETUP", occurredAt: "2026-08-19T10:00:05.000Z", page: { url: "https://app.example.com/login" }, target: { role: "textbox", accessibleName: "Email" }, input: { kind: "RUNTIME_VARIABLE", variableName: "auth.email", sensitive: true }, artifactRefs: [] },
       { eventId: "open-customers", sequence: 2, kind: "NAVIGATION", purpose: "WORKFLOW", occurredAt: "2026-08-19T10:00:20.000Z", page: { url: "https://app.example.com/customers" }, navigationUrl: "https://app.example.com/customers", artifactRefs: [{ ref: "artifact/nav-before", kind: "SCREENSHOT", contentType: "image/png" }] },
       { eventId: "select-customer", sequence: 3, kind: "CLICK", purpose: "WORKFLOW", occurredAt: "2026-08-19T10:00:30.000Z", page: { url: "https://app.example.com/customers" }, target: { role: "link", accessibleName: "Acme Ltd", testId: "customer-acme" }, expectedEffect: { description: "Customer detail opened", mode: "URL", expected: "https://app.example.com/customers/acme", timeoutMs: 10_000 }, artifactRefs: [] },
-      { eventId: "note", sequence: 4, kind: "INPUT", purpose: "WORKFLOW", occurredAt: "2026-08-19T10:00:40.000Z", page: { url: "https://app.example.com/customers/acme" }, target: { role: "textbox", accessibleName: "Note", testId: "note" }, input: { kind: "PUBLIC_LITERAL", value: "Follow up next Tuesday" }, expectedEffect: { description: "Note field is populated", mode: "DOM", expected: "[data-testid='note']", timeoutMs: 5_000 }, artifactRefs: [] },
+      { eventId: "note", sequence: 4, kind: "INPUT", purpose: "WORKFLOW", occurredAt: "2026-08-19T10:00:40.000Z", page: { url: "https://app.example.com/customers/acme" }, target: { role: "textbox", accessibleName: "Note", testId: "note" }, input: { kind: "PUBLIC_LITERAL", value: "Follow up next Tuesday" }, inputControl: "TEXT", expectedEffect: { description: "Note field is populated", mode: "DOM", expected: "[data-testid='note']", timeoutMs: 5_000 }, artifactRefs: [] },
       { eventId: "save", sequence: 5, kind: "SUBMIT", purpose: "WORKFLOW", occurredAt: "2026-08-19T10:00:50.000Z", page: { url: "https://app.example.com/customers/acme" }, target: { role: "button", accessibleName: "Save", testId: "save" }, expectedEffect: { description: "Save confirmation appears", mode: "TEXT", expected: "Saved", timeoutMs: 10_000 }, artifactRefs: [] },
       { eventId: "scroll-noise", sequence: 6, kind: "SCROLL", purpose: "WORKFLOW", occurredAt: "2026-08-19T10:00:55.000Z", page: { url: "https://app.example.com/customers/acme" }, artifactRefs: [] },
     ],
@@ -85,6 +85,24 @@ describe("compileCaptureTrace", () => {
     const graph = compileCaptureTrace({ trace: { ...trace, events }, workflowId: "workflow-2", version: 1, createdAt: "2026-08-19T11:00:00Z" });
     expect(graph.nodes["capture-4-note"]?.inputBindings).toEqual({ value: "runtime.note" });
     expect(graph.initialVariables).toEqual({});
+  });
+
+  it("fails closed instead of compiling unsupported captured form controls as TYPE", () => {
+    const trace = fixture();
+    const events = trace.events.map((event) => event.eventId === "note" ? { ...event, inputControl: "SELECT" as const } : event);
+    expect(() => compileCaptureTrace({ trace: { ...trace, events }, workflowId: "workflow-select", version: 1, createdAt: "2026-08-19T11:00:00Z" }))
+      .toThrow("uses unsupported select control");
+  });
+
+  it("keeps legacy text-input traces without explicit control metadata compilable", () => {
+    const trace = fixture();
+    const events = trace.events.map((event) => {
+      if (event.eventId !== "note") return event;
+      const { inputControl: _inputControl, ...legacy } = event;
+      return legacy;
+    });
+    expect(() => compileCaptureTrace({ trace: { ...trace, events }, workflowId: "workflow-legacy-input", version: 1, createdAt: "2026-08-19T11:00:00Z" }))
+      .not.toThrow();
   });
 
   it("fails closed when a side-effecting captured action has no expected effect", () => {

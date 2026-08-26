@@ -3,6 +3,9 @@ import type { VerificationSpec } from "./index.js";
 export const CAPTURE_EVENT_KINDS = ["NAVIGATION", "CLICK", "INPUT", "SUBMIT", "SCROLL"] as const;
 export type CaptureEventKind = (typeof CAPTURE_EVENT_KINDS)[number];
 
+export const CAPTURE_INPUT_CONTROLS = ["TEXT", "SELECT", "CHECKBOX", "RADIO", "FILE", "PASSWORD", "OTHER"] as const;
+export type CaptureInputControl = (typeof CAPTURE_INPUT_CONTROLS)[number];
+
 export interface CaptureArtifactRef { ref: string; kind: "SCREENSHOT" | "DOM_SNAPSHOT" | "ACCESSIBILITY_SNAPSHOT" | "RECORDING"; contentType: string; }
 export interface CaptureSemanticTarget { role?: string; accessibleName?: string; text?: string; testId?: string; css?: string; xpath?: string; }
 export type CaptureInputValue = { kind: "PUBLIC_LITERAL"; value: string } | { kind: "RUNTIME_VARIABLE"; variableName: string; sensitive: boolean };
@@ -17,6 +20,7 @@ export interface CaptureEvent {
   page: CapturePageState;
   target?: CaptureSemanticTarget;
   input?: CaptureInputValue;
+  inputControl?: CaptureInputControl;
   navigationUrl?: string;
   expectedEffect?: VerificationSpec;
   artifactRefs: readonly CaptureArtifactRef[];
@@ -106,6 +110,10 @@ export function assertCaptureTrace(trace: CaptureTrace): void {
     if ((event.kind === "CLICK" || event.kind === "INPUT" || event.kind === "SUBMIT") && !event.target) throw new Error(`${event.kind} capture event requires semantic target metadata`);
     if (event.kind === "INPUT" && !event.input) throw new Error("INPUT capture event requires an input descriptor");
     if (event.kind === "NAVIGATION" && !event.navigationUrl) throw new Error("NAVIGATION capture event requires navigationUrl");
+    if (event.inputControl !== undefined) {
+      if (event.kind !== "INPUT") throw new Error("inputControl is only valid for INPUT capture events");
+      if (!CAPTURE_INPUT_CONTROLS.includes(event.inputControl)) throw new Error("capture input control is unsupported");
+    }
 
     if (event.input?.kind === "PUBLIC_LITERAL") required(event.input.value, `events[${index}].input.value`);
     if (event.input?.kind === "RUNTIME_VARIABLE") required(event.input.variableName, `events[${index}].input.variableName`);
