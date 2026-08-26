@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   parseScheduledGuidedInputForm,
   parseScheduledInputForm,
+  parseScheduledPublishInputForm,
   scheduledStructuredInputFields,
 } from "./scheduled-input-form";
 
@@ -40,6 +41,48 @@ describe("scheduled input forms", () => {
     });
   });
 
+  it("accepts guided Publish values and maps them server-side", () => {
+    const form = new FormData();
+    form.set("kind", "DAILY");
+    form.set("expression", "09:00");
+    form.set("timezone", "Asia/Kolkata");
+    form.set("scheduledInput-1", "High");
+    form.set("scheduledInput-2", "Acme note");
+    form.set("scheduledInputsAreNonSecret", "yes");
+
+    expect(parseScheduledPublishInputForm(form, [
+      { key: "capture_input_2" },
+      { key: "capture_input_7" },
+    ])).toEqual({
+      values: { capture_input_2: "High", capture_input_7: "Acme note" },
+      acknowledged: true,
+    });
+  });
+
+  it("allows Publish with no unresolved captured inputs and no acknowledgement", () => {
+    const form = new FormData();
+    form.set("kind", "DAILY");
+    form.set("expression", "09:00");
+    form.set("timezone", "Asia/Kolkata");
+    expect(parseScheduledPublishInputForm(form, [])).toEqual({ acknowledged: false });
+  });
+
+  it("rejects legacy JSON or fabricated guided values at the Publish boundary", () => {
+    const legacy = new FormData();
+    legacy.set("scheduledNonSecretInputs", '{"capture_input_1":"legacy"}');
+    legacy.set("scheduledInputsAreNonSecret", "yes");
+    expect(parseScheduledPublishInputForm(legacy, [{ key: "capture_input_1" }])).toBeNull();
+
+    const forged = new FormData();
+    forged.set("scheduledInput-2", "forged");
+    forged.set("scheduledInputsAreNonSecret", "yes");
+    expect(parseScheduledPublishInputForm(forged, [{ key: "capture_input_1" }])).toBeNull();
+
+    const unexpectedForEmptyWorkflow = new FormData();
+    unexpectedForEmptyWorkflow.set("scheduledInput-1", "forged");
+    expect(parseScheduledPublishInputForm(unexpectedForEmptyWorkflow, [])).toBeNull();
+  });
+
   it("rejects forged, missing, duplicate, mixed, or unacknowledged guided fields", () => {
     const requirements = [{ key: "capture_input_1" }];
 
@@ -75,5 +118,6 @@ describe("scheduled input forms", () => {
     form.set("scheduledInputsAreNonSecret", "yes");
     expect(parseScheduledGuidedInputForm(form, [{ key: "customer.email" }])).toBeNull();
     expect(parseScheduledGuidedInputForm(form, [{ key: "capture_input_1" }, { key: "capture_input_1" }])).toBeNull();
+    expect(parseScheduledPublishInputForm(form, [{ key: "customer.email" }])).toBeNull();
   });
 });

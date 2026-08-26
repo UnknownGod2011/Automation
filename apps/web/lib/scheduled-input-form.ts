@@ -59,7 +59,7 @@ export function scheduledStructuredInputFields(
   }));
 }
 
-/** Legacy JSON parser retained for the existing publish form. */
+/** Legacy JSON parser retained only for compatibility with non-primary callers. */
 export function parseScheduledInputForm(raw: string, acknowledged: boolean): ScheduledInputFormPayload | null {
   const trimmed = raw.trim();
   if (!trimmed) return { acknowledged };
@@ -109,4 +109,31 @@ export function parseScheduledGuidedInputForm(
 
   const values = boundedValues(keys, (_key, index) => form.get(expectedNames[index]!));
   return values ? { values, acknowledged: true } : null;
+}
+
+/**
+ * Initial Publish uses the same ordinal mapping as the long-lived Scheduled Inputs
+ * settings surface. Workflows with no unresolved captured values require no input
+ * acknowledgement; any legacy JSON field or forged ordinal still fails closed.
+ */
+export function parseScheduledPublishInputForm(
+  form: FormData,
+  requirements: readonly ScheduledInputRequirement[],
+): ScheduledInputFormPayload | null {
+  const keys = trustedRequirementKeys(requirements);
+  if (!keys) return null;
+
+  if (keys.length === 0) {
+    const hasGuidedField = [...form.keys()].some((name) => name.startsWith(STRUCTURED_INPUT_PREFIX));
+    if (
+      hasGuidedField
+      || form.getAll("scheduledNonSecretInputs").length > 0
+      || form.getAll("scheduledInputsAreNonSecret").length > 0
+    ) {
+      return null;
+    }
+    return { acknowledged: false };
+  }
+
+  return parseScheduledGuidedInputForm(form, requirements);
 }
