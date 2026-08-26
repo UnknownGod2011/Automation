@@ -8,7 +8,7 @@ import { parseFreshTestRuntimeInputForm } from "../../../../../../lib/fresh-test
 import { isSameOriginMutation } from "../../../../../../lib/mutation-security";
 import { freshTestRunId, serverResolvedPublishWorkflowVersion } from "../../../../../../lib/product-flow-identities";
 import { scheduleFromFormData } from "../../../../../../lib/schedule-form";
-import { parseScheduledGuidedInputForm, parseScheduledInputForm } from "../../../../../../lib/scheduled-input-form";
+import { parseScheduledGuidedInputForm, parseScheduledPublishInputForm } from "../../../../../../lib/scheduled-input-form";
 import { createAuthenticatedWebControlPlaneClient, WebAuthError } from "../../../../../../lib/server-auth";
 
 function redirectBack(request: Request, automationId: string, notice: string): NextResponse { return NextResponse.redirect(new URL(`/automations/${encodeURIComponent(automationId)}?notice=${encodeURIComponent(notice)}`, request.url), 303); }
@@ -89,12 +89,14 @@ export async function POST(request: Request, context: { params: Promise<{ automa
     const schedule = scheduleFromFormData(form); if (!schedule) return redirectBack(request, automationId, "invalid-input");
     if (command === "schedule") { await client.command(automationId, "schedule", { schedule }); return redirectBack(request, automationId, "schedule-updated"); }
 
-    const scheduledInputs = parseScheduledInputForm(
-      String(form.get("scheduledNonSecretInputs") ?? ""),
-      form.get("scheduledInputsAreNonSecret") === "yes",
-    );
+    const [workflow, automation, runs] = await Promise.all([
+      client.workflow(automationId),
+      client.automation(automationId),
+      client.runs(automationId),
+    ]);
+    if (!workflow) return redirectBack(request, automationId, "invalid-input");
+    const scheduledInputs = parseScheduledPublishInputForm(form, workflow.runtimeInputs);
     if (!scheduledInputs) return redirectBack(request, automationId, "invalid-input");
-    const [automation, runs] = await Promise.all([client.automation(automationId), client.runs(automationId)]);
     const workflowVersion = serverResolvedPublishWorkflowVersion(automation, runs);
     if (workflowVersion === null) return redirectBack(request, automationId, "invalid-input");
     await client.command(automationId, "publish", {
