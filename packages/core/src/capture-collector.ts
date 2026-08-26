@@ -7,10 +7,21 @@ export type CaptureCollectionPhase = "AUTH_SETUP" | "WORKFLOW";
 export interface CaptureCollectionControlState {
   phase: CaptureCollectionPhase;
   finishRequested: boolean;
+  /**
+   * Production capture controls set this to false until the Runtime collector has
+   * attached its browser listeners, then true. Undefined preserves local/mock and
+   * legacy controls that do not participate in the readiness handshake.
+   */
+  collectorReady?: boolean;
 }
 
 export interface CaptureCollectionControl {
   getState(scope: OwnershipScope, captureSessionId: string): Promise<CaptureCollectionControlState>;
+  markReady?(
+    scope: OwnershipScope,
+    captureSessionId: string,
+    updatedAt: string,
+  ): Promise<"UPDATED" | "REPLAY">;
 }
 
 export interface CaptureCollectionSourceRequest {

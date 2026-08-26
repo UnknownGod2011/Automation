@@ -4,59 +4,60 @@ Updated: 2026-08-26
 
 ## Current baseline
 
-- Incoming `main` is `6e1c7ece958b8354db06d0c34ad2bfdb800bf032` (`Close capture navigation binding race`).
-- Push GitHub Actions CI #346 completed successfully on that exact SHA before this slice.
+- Incoming `main` is `0e0304b9fd377d19ccdbec53047009e4dab3f541` (`Align semantic recovery with captured submit authority`).
+- Push GitHub Actions CI #348 completed successfully on that exact SHA before this slice.
 - The AWS-first product vertical is structurally present: Cognito/Google auth, Next.js control plane, controlled first-party demo target, AgentCore Live View capture + Browser Profile persistence, immutable capture traces, semantic workflow compilation/inspection, asynchronous AgentCore Fresh Test, publish/scheduling, AgentCore Browser/OpenAI BYOK execution, side-effect verification, sanitized run timeline/reasoning/evidence/history, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
 - Build reproducibility remains fail-closed through the reviewed pnpm lock fingerprint and frozen install; the AWS SDK/DynamoDB peer-alignment assertions remain enabled.
 - Recovery/crash-reconciliation depth remains intentionally parked unless CI or the real vertical exposes a correctness blocker.
 
-## This slice — preserve captured SUBMIT authority during semantic recovery
+## This slice — make Capture recording readiness authoritative
 
 ### Product correctness defect
 
-A captured `SUBMIT` event compiles to a `CLICK`-kind workflow node whose immutable `allowedSideEffects` is exactly `["SUBMIT"]`. Deterministic execution intentionally clicks the demonstrated submit target once, which activates the native form submission. If that deterministic target drifts, however, semantic recovery previously derived its allowed action from `node.kind`, authorizing generic `CLICK` rather than the immutable `SUBMIT` authority. The AWS Playwright semantic executor also had no explicit `SUBMIT` primitive.
+`Start recording workflow` durably transitioned capture control from `AUTH_SETUP` to `WORKFLOW` and then invoked AgentCore Runtime. Runtime immediately acknowledged that the long-running background capture task had been accepted, but the Playwright collector still had to connect over CDP, expose its event binding, install the init script, instrument existing pages, and attach the future-page/navigation listeners.
 
-That mismatch could either make semantic recovery unusable or broaden the model to a generic click when the graph authorizes only form submission. This is Capture -> Compile -> Fresh Test/Scheduled execution correctness, not recovery micro-hardening.
+The control plane therefore could tell the user recording was active before those listeners existed. A fast first click/input/submit after switching back to Live View could be lost entirely and the resulting trace could compile a workflow missing its first demonstrated action. This is Capture -> Compile product correctness, not crash-recovery micro-hardening.
 
 ### Change
 
-- Core semantic recovery now recognizes the narrow compiler shape `kind=CLICK` + exactly `allowedSideEffects=["SUBMIT"]` and exposes only `SUBMIT` to the reasoning provider.
-- Generic CLICK nodes continue to expose CLICK; REASON nodes continue to expose their declared allowed side effects.
-- The AWS Playwright runtime now supports one explicit semantic `SUBMIT` action. It resolves a target through the existing bounded semantic locator policy, checks visibility, and performs exactly one Playwright click/activation.
-- The semantic executor defensively rejects a non-REASON decision whose action is outside the immutable node side-effect set, so a generic CLICK cannot execute against a submit-only node even if a caller bypassed the normal core decision validation.
-- Post-effect verification is unchanged and remains mandatory before the workflow advances.
+- Production capture-control records now carry an explicit durable `collectorReady` bit. AWS initializes it to `false` when the capture control is created and resets it to `false` on the `AUTH_SETUP -> WORKFLOW` transition.
+- `AgentCorePlaywrightCaptureEventSource` marks the control `collectorReady=true` only after the Playwright binding, init script, existing-page instrumentation, and future-page hook are installed.
+- `CaptureRecordingControlPlaneService.startWorkflow()` treats the Runtime start acknowledgement as task admission only. For production controls it waits for the durable readiness bit with a fixed 100 ms poll and a bounded 10 second startup window before returning the normal recording-active response.
+- If startup remains uncertain, the durable workflow phase is preserved so Start can be retried, while the product-facing state stays on the safe pre-recording presentation until readiness is durable.
+- Production Finish is conditionally rejected until `collectorReady=true`, so a direct/stale client cannot finalize a trace during the listener-attachment window.
+- Local/mock and legacy controls leave the readiness field undefined and preserve their existing deterministic in-process behavior.
 
 ## Security / tenant isolation
 
-- No tenant/user identifiers, form values, selectors, DOM/page contents, Browser Profile/session identities, workload tokens, BYOK secrets, provider errors, or model rationale are newly persisted or surfaced.
-- Reasoning still receives only the existing trusted scope plus bounded workflow/node context. The semantic reasoning objective remains the immutable workflow goal plus current step, not tenant/user identity.
-- The SUBMIT primitive does not accept arbitrary JavaScript or form payloads. It uses only the existing constrained semantic locator inputs and one browser activation.
-- Tenant isolation remains enforced by the existing run/worker/browser composition and durable repositories.
+- Readiness is only a boolean in the existing tenant/user-scoped capture-control record. It contains no URL, DOM content, typed value, Browser Profile/session identity, Live View capability, BYOK material, workload token, provider error, or user secret.
+- Tenant/user/automation/capture-session authority remains derived from the authenticated control plane and trusted Runtime invocation; the browser still cannot choose capture identity.
+- Raw typed values remain unresolved runtime-variable placeholders, authentication setup remains outside workflow capture, and INPUT screenshots remain suppressed.
 
 ## Idempotency / concurrency / retry / timeout
 
-- The new primitive dispatches the selected submit target exactly once. It never falls through to a second locator after the side effect.
-- Existing deterministic-first execution, retry budgets, repeated-state detection, automation leases, scheduled occurrence idempotency, and human-resume claims/leases are unchanged.
-- Semantic SUBMIT uses the existing node timeout and locator-visibility boundary; no new retry loop, timeout layer, queue, lease, or recovery state is added.
+- `markReady` is conditional/idempotent. Concurrent exact readiness updates replay after a strongly consistent read; DynamoDB transport/throttling uncertainty still propagates instead of manufacturing success.
+- Start remains replay-safe: the durable `WORKFLOW` transition can replay and Runtime already suppresses duplicate active collector tasks for the same scoped capture identity.
+- Finish requires the exact durable ready state. A user cannot race Finish ahead of listener installation.
+- The readiness wait is bounded to 10 seconds and remains below the existing API/Lambda timeout. It adds no unbounded polling, queue, lease, backoff system, or recovery state machine.
 
 ## Side-effect verification / user recovery
 
-- A semantic SUBMIT cannot authorize itself. The existing immutable `verification` contract is still evaluated after the browser action and must pass before the node completes.
-- A model decision returning CLICK for a submit-only captured node is `POLICY_BLOCKED` before browser semantic dispatch.
-- Existing bounded escalation/human attention remains the fallback if semantic recovery cannot produce a permitted verified action.
+- Collector readiness only proves observation instrumentation is attached; it does not create or weaken verification evidence.
+- CLICK/SUBMIT still require the existing redacted structural post-action verification before compilation. INPUT retains its existing privacy-safe verification contract.
+- If Runtime/CDP startup fails, the capture remains restartable through the existing replay-safe Start/cancel flow; no new recovery subsystem is introduced.
 
 ## Cost / observability
 
-- No AWS resource, IAM permission, dependency, DynamoDB/S3 schema, AgentCore allocation, OpenAI call count, Scheduler delivery, or retained GitHub Actions artifact is added.
-- The change only makes an already-existing semantic-recovery attempt executable under the correct action authority. It does not add another reasoning attempt.
-- Existing bounded reasoning summaries can record the selected `SUBMIT` action without storing model chain-of-thought or form data.
+- No AWS resource, IAM permission, dependency, DynamoDB table/index, S3 bucket, AgentCore allocation, OpenAI call, Scheduler delivery, or GitHub Actions artifact is added.
+- The only added production cost is a handful of strongly consistent reads during the bounded Start handshake plus one conditional readiness update per capture.
+- Preventing an incomplete trace avoids wasted compile/Fresh Test/browser/model work caused by a silently lost first demonstration action.
 
 ## Regression coverage
 
-- A core integration fixture compiles a real `CaptureTrace` SUBMIT event, forces deterministic `ELEMENT_NOT_FOUND`, and proves semantic recovery receives only `["SUBMIT"]`, dispatches SUBMIT, passes the existing verifier, and reaches `SUCCEEDED`.
-- The same fixture returns a forged generic CLICK decision and proves it is policy-blocked before semantic browser execution.
-- An AWS Playwright regression proves semantic SUBMIT resolves one constrained target and activates it exactly once.
-- A defense-in-depth AWS regression proves generic CLICK against the submit-only node is rejected with zero target clicks and zero evidence writes.
+- Core capture-control coverage proves production-style controls reject Finish while not ready, accept idempotent readiness, and permit Finish only afterward while local/mock behavior remains unchanged.
+- AWS DynamoDB coverage proves create/start store explicit not-ready state, readiness contention is classified after a strong read, Finish conditionally requires readiness, and non-conditional DynamoDB failures still propagate.
+- AWS Playwright collector coverage proves the readiness write occurs after binding/init-script/current-page/future-page instrumentation is attached while existing typed-value redaction and screenshot rules remain intact.
+- A dedicated control-plane regression proves Start does not settle before a production-style collector becomes ready and an unready collector stays on the safe pre-recording product presentation.
 
 ## Validation
 
@@ -67,7 +68,7 @@ This slice is complete only after GitHub Actions succeeds on the exact published
 3. `pnpm check`, including strict TypeScript and Next.js production build/type validation;
 4. AgentCore Runtime, control-plane Lambda, and Next.js Lambda packaging;
 5. AWS hosting/federation/release/deployment/web-demo/live-smoke/OIDC contract checks;
-6. the full test suite, including the new captured-SUBMIT semantic-recovery regressions.
+6. the full test suite, including the new capture-readiness regressions.
 
 Never weaken these checks to obtain green status.
 
@@ -79,17 +80,18 @@ Never weaken these checks to obtain green status.
 - OpenAI remains the concrete production BYOK reasoning provider; Google remains a later adapter.
 - Capture/run screenshots can contain owner-visible page content; production retention/deletion policy remains a live operational concern.
 - Popups/new-tab capture and intentionally rapid independent navigation near action transitions still need real-site validation.
+- Repository-level `main` protection remains an operational prerequisite before the first production AWS deployment (Issue #29); the application/deployment workflow must not weaken that boundary to compensate.
 - Additional crash-recovery micro-hardening remains parked unless live execution or CI reveals a real defect.
 
 ## Next product milestone
 
 After exact-head green CI, run the protected real AWS vertical with the controlled target:
 
-1. deploy an immutable release with `DemoTargetEnabled=true`, bounded demo session TTL, and real VPC Browser network inputs;
+1. protect the trusted `main` promotion boundary, then deploy an immutable release with `DemoTargetEnabled=true`, bounded demo session TTL, and real VPC Browser network inputs;
 2. require the strengthened live smoke and all five System capabilities to report `CONFIGURED`;
 3. sign in through Cognito/Google and configure one OpenAI BYOK credential;
-4. create an automation targeting `${webOrigin}/demo-target`, capture after manual demo sign-in, demonstrate one note + native submit-button action, finish trusted completion, and review capture evidence;
-5. compile/inspect and run a >30-second Fresh Test; if the deterministic submit locator is intentionally drifted in a controlled fixture, verify semantic recovery remains SUBMIT-only and effect verification still gates success;
+4. create an automation targeting `${webOrigin}/demo-target`, manually authenticate in Live View, press Start, confirm the product does not declare recording active until collector readiness is durable, then demonstrate one note + native submit-button action and finish trusted completion;
+5. review capture evidence, compile/inspect, and run a >30-second Fresh Test; verify timeline/reasoning/evidence and the SUBMIT-only semantic recovery boundary;
 6. publish with near-future recurrence/timezone and a non-secret recurring demo note; verify Scheduler -> SQS -> Step Functions -> AgentCore Runtime while the user device is off;
 7. let the demo auth cookie expire, confirm `WAITING_FOR_HUMAN / TARGET_AUTH_REQUIRED`, repair in Live View, save the Browser Profile, resume once, and verify terminal SES/CloudWatch reporting;
 8. prioritize defects exposed by that real environment over speculative recovery hardening.

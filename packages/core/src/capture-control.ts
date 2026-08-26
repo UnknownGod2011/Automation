@@ -13,6 +13,7 @@ export interface CaptureCollectionControlRecord extends CaptureCollectionControl
 export interface CaptureCollectionControlStore extends CaptureCollectionControl {
   putInitial(record: CaptureCollectionControlRecord): Promise<void>;
   startWorkflow(scope: OwnershipScope, captureSessionId: string, updatedAt: string): Promise<"UPDATED" | "REPLAY">;
+  markReady(scope: OwnershipScope, captureSessionId: string, updatedAt: string): Promise<"UPDATED" | "REPLAY">;
   requestFinish(scope: OwnershipScope, captureSessionId: string, updatedAt: string): Promise<"UPDATED" | "REPLAY">;
 }
 
@@ -92,7 +93,11 @@ export class InMemoryCaptureCollectionControlStore implements CaptureCollectionC
     const record = this.records.get(recordKey(scope, captureSessionId));
     if (!record) throw new Error("capture collection control not found");
     assertRecordOwned(scope, record);
-    return { phase: record.phase, finishRequested: record.finishRequested };
+    return {
+      phase: record.phase,
+      finishRequested: record.finishRequested,
+      ...(record.collectorReady !== undefined ? { collectorReady: record.collectorReady } : {}),
+    };
   }
 
   async startWorkflow(scope: OwnershipScope, captureSessionId: string, updatedAt: string): Promise<"UPDATED" | "REPLAY"> {
@@ -102,7 +107,24 @@ export class InMemoryCaptureCollectionControlStore implements CaptureCollectionC
     assertRecordOwned(scope, record);
     if (record.finishRequested) throw new Error("capture collection is already finishing");
     if (record.phase === "WORKFLOW") return "REPLAY";
-    this.records.set(key, { ...record, phase: "WORKFLOW", updatedAt });
+    this.records.set(key, {
+      ...record,
+      phase: "WORKFLOW",
+      ...(record.collectorReady !== undefined ? { collectorReady: false } : {}),
+      updatedAt,
+    });
+    return "UPDATED";
+  }
+
+  async markReady(scope: OwnershipScope, captureSessionId: string, updatedAt: string): Promise<"UPDATED" | "REPLAY"> {
+    const key = recordKey(scope, captureSessionId);
+    const record = this.records.get(key);
+    if (!record) throw new Error("capture collection control not found");
+    assertRecordOwned(scope, record);
+    if (record.phase !== "WORKFLOW") throw new Error("capture collector cannot become ready before workflow recording starts");
+    if (record.finishRequested) throw new Error("capture collection is already finishing");
+    if (record.collectorReady === true) return "REPLAY";
+    this.records.set(key, { ...record, collectorReady: true, updatedAt });
     return "UPDATED";
   }
 
@@ -113,6 +135,9 @@ export class InMemoryCaptureCollectionControlStore implements CaptureCollectionC
     assertRecordOwned(scope, record);
     if (record.phase !== "WORKFLOW") throw new Error("workflow recording must start before capture can finish");
     if (record.finishRequested) return "REPLAY";
+    // Legacy/local controls that predate the readiness bit remain usable. Production AWS
+    // controls always persist an explicit false/true value and therefore fail closed here.
+    if (record.collectorReady === false) throw new Error("capture collector is not ready");
     this.records.set(key, { ...record, finishRequested: true, updatedAt });
     return "UPDATED";
   }

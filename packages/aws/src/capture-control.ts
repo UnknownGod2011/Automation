@@ -41,8 +41,11 @@ function parseRecord(scope: OwnershipScope, item: Record<string, unknown> | unde
   if (!value.automationId || !value.captureSessionId || !isCaptureCollectionPhase(value.phase) || typeof value.finishRequested !== "boolean") {
     throw new Error("DynamoDB capture control is malformed");
   }
+  if (value.collectorReady !== undefined && typeof value.collectorReady !== "boolean") {
+    throw new Error("DynamoDB capture collector readiness is malformed");
+  }
   if (!Number.isFinite(new Date(value.updatedAt).getTime())) throw new Error("DynamoDB capture-control timestamp is invalid");
-  return value;
+  return { ...value, collectorReady: value.collectorReady === true };
 }
 
 export class AwsDynamoCaptureCollectionControlStore implements CaptureCollectionControlStore {
@@ -51,8 +54,8 @@ export class AwsDynamoCaptureCollectionControlStore implements CaptureCollection
   }
 
   async putInitial(record: CaptureCollectionControlRecord): Promise<void> {
-    if (record.phase !== "AUTH_SETUP" || record.finishRequested) {
-      throw new Error("initial capture control must begin in AUTH_SETUP without finish requested");
+    if (record.phase !== "AUTH_SETUP" || record.finishRequested || record.collectorReady === true) {
+      throw new Error("initial capture control must begin in AUTH_SETUP without finish requested or collector readiness");
     }
     const scope = { tenantId: record.tenantId, userId: record.userId };
     await this.client.send(new PutCommand({
@@ -61,7 +64,7 @@ export class AwsDynamoCaptureCollectionControlStore implements CaptureCollection
         pk: scopePk(scope),
         sk: controlSk(record.captureSessionId),
         entity: "CaptureCollectionControl",
-        record: structuredClone(record),
+        record: { ...structuredClone(record), collectorReady: false },
       },
       ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
     }));
@@ -79,7 +82,11 @@ export class AwsDynamoCaptureCollectionControlStore implements CaptureCollection
   async getState(scope: OwnershipScope, captureSessionId: string): Promise<CaptureCollectionControlState> {
     const record = await this.getRecord(scope, captureSessionId);
     if (!record) throw new Error("capture collection control not found");
-    return { phase: record.phase, finishRequested: record.finishRequested };
+    return {
+      phase: record.phase,
+      finishRequested: record.finishRequested,
+      collectorReady: record.collectorReady === true,
+    };
   }
 
   async startWorkflow(scope: OwnershipScope, captureSessionId: string, updatedAt: string): Promise<"UPDATED" | "REPLAY"> {
@@ -87,13 +94,14 @@ export class AwsDynamoCaptureCollectionControlStore implements CaptureCollection
       await this.client.send(new UpdateCommand({
         TableName: this.tableName,
         Key: { pk: scopePk(scope), sk: controlSk(captureSessionId) },
-        UpdateExpression: "SET #record.#phase = :workflow, #record.#updatedAt = :updatedAt",
+        UpdateExpression: "SET #record.#phase = :workflow, #record.#ready = :false, #record.#updatedAt = :updatedAt",
         ConditionExpression: "#entity = :entity AND #record.#phase = :auth AND #record.#finish = :false",
         ExpressionAttributeNames: {
           "#entity": "entity",
           "#record": "record",
           "#phase": "phase",
           "#finish": "finishRequested",
+          "#ready": "collectorReady",
           "#updatedAt": "updatedAt",
         },
         ExpressionAttributeValues: {
@@ -114,18 +122,52 @@ export class AwsDynamoCaptureCollectionControlStore implements CaptureCollection
     }
   }
 
-  async requestFinish(scope: OwnershipScope, captureSessionId: string, updatedAt: string): Promise<"UPDATED" | "REPLAY"> {
+  async markReady(scope: OwnershipScope, captureSessionId: string, updatedAt: string): Promise<"UPDATED" | "REPLAY"> {
     try {
       await this.client.send(new UpdateCommand({
         TableName: this.tableName,
         Key: { pk: scopePk(scope), sk: controlSk(captureSessionId) },
-        UpdateExpression: "SET #record.#finish = :true, #record.#updatedAt = :updatedAt",
+        UpdateExpression: "SET #record.#ready = :true, #record.#updatedAt = :updatedAt",
         ConditionExpression: "#entity = :entity AND #record.#phase = :workflow AND #record.#finish = :false",
         ExpressionAttributeNames: {
           "#entity": "entity",
           "#record": "record",
           "#phase": "phase",
           "#finish": "finishRequested",
+          "#ready": "collectorReady",
+          "#updatedAt": "updatedAt",
+        },
+        ExpressionAttributeValues: {
+          ":entity": "CaptureCollectionControl",
+          ":workflow": "WORKFLOW",
+          ":false": false,
+          ":true": true,
+          ":updatedAt": updatedAt,
+        },
+      }));
+      return "UPDATED";
+    } catch (error) {
+      if (!isConditionalFailure(error)) throw error;
+      const winner = await this.getRecord(scope, captureSessionId);
+      if (winner?.phase === "WORKFLOW" && !winner.finishRequested && winner.collectorReady === true) return "REPLAY";
+      if (winner?.finishRequested) throw new Error("capture collection is already finishing");
+      throw new Error("capture collector readiness transition conflict");
+    }
+  }
+
+  async requestFinish(scope: OwnershipScope, captureSessionId: string, updatedAt: string): Promise<"UPDATED" | "REPLAY"> {
+    try {
+      await this.client.send(new UpdateCommand({
+        TableName: this.tableName,
+        Key: { pk: scopePk(scope), sk: controlSk(captureSessionId) },
+        UpdateExpression: "SET #record.#finish = :true, #record.#updatedAt = :updatedAt",
+        ConditionExpression: "#entity = :entity AND #record.#phase = :workflow AND #record.#finish = :false AND #record.#ready = :true",
+        ExpressionAttributeNames: {
+          "#entity": "entity",
+          "#record": "record",
+          "#phase": "phase",
+          "#finish": "finishRequested",
+          "#ready": "collectorReady",
           "#updatedAt": "updatedAt",
         },
         ExpressionAttributeValues: {
@@ -142,6 +184,7 @@ export class AwsDynamoCaptureCollectionControlStore implements CaptureCollection
       const winner = await this.getRecord(scope, captureSessionId);
       if (winner?.phase === "WORKFLOW" && winner.finishRequested) return "REPLAY";
       if (winner?.phase === "AUTH_SETUP") throw new Error("workflow recording must start before capture can finish");
+      if (winner?.phase === "WORKFLOW" && winner.collectorReady !== true) throw new Error("capture collector is not ready");
       throw new Error("capture collection control transition conflict");
     }
   }
