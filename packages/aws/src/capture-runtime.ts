@@ -3,6 +3,7 @@ import {
   InvokeAgentRuntimeCommand,
 } from "@aws-sdk/client-bedrock-agentcore";
 import type {
+  CaptureCollectionControlState,
   CaptureCollectionTaskStarter,
   CaptureCollectionWorker,
   CaptureCollectionWorkerRequest,
@@ -15,6 +16,8 @@ import { agentCoreClientToken, scopedResourceIdentity } from "./idempotency.js";
 const MAX_ID_LENGTH = 160;
 const MAX_RUNTIME_USER_ID_LENGTH = 128;
 const MAX_RUNTIME_BODY_BYTES = 16_384;
+const DEFAULT_READY_POLL_MS = 100;
+const DEFAULT_READY_TIMEOUT_MS = 10_000;
 
 export interface AwsAgentCoreCaptureCollectionPayload {
   kind: "CAPTURE_COLLECTION";
@@ -33,16 +36,36 @@ export interface AgentCoreCaptureCollectionInvokeApi {
   invoke(request: AgentCoreCaptureCollectionInvokeRequest): Promise<string>;
 }
 
+export interface CaptureCollectionReadinessReader {
+  getState(scope: OwnershipScope, captureSessionId: string): Promise<CaptureCollectionControlState>;
+}
+
 export interface AwsAgentCoreCaptureCollectionConfiguration {
   region: string;
   tenantId: string;
   runtimeArn: string;
 }
 
+export interface AwsAgentCoreCaptureCollectionTaskStarterOptions {
+  readyPollMs?: number;
+  readyTimeoutMs?: number;
+}
+
 function token(value: string, name: string, maxLength = MAX_ID_LENGTH): string {
   const normalized = value.trim();
   if (!normalized || normalized.length > maxLength) throw new Error(`${name} is invalid`);
   return normalized;
+}
+
+function boundedMilliseconds(value: number, name: string): number {
+  if (!Number.isInteger(value) || value < 1 || value > 30_000) {
+    throw new Error(`${name} must be an integer between 1 and 30000 milliseconds`);
+  }
+  return value;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function decodePayload(value: unknown): unknown {
@@ -114,12 +137,34 @@ export class AwsSdkAgentCoreCaptureCollectionInvokeApi implements AgentCoreCaptu
 
 export class AwsAgentCoreCaptureCollectionTaskStarter implements CaptureCollectionTaskStarter {
   private readonly api: AgentCoreCaptureCollectionInvokeApi;
+  private readonly readyPollMs: number;
+  private readonly readyTimeoutMs: number;
 
   constructor(
     private readonly configuration: AwsAgentCoreCaptureCollectionConfiguration,
     api?: AgentCoreCaptureCollectionInvokeApi,
+    private readonly readiness?: CaptureCollectionReadinessReader,
+    options: AwsAgentCoreCaptureCollectionTaskStarterOptions = {},
   ) {
     this.api = api ?? new AwsSdkAgentCoreCaptureCollectionInvokeApi(configuration.region);
+    this.readyPollMs = boundedMilliseconds(options.readyPollMs ?? DEFAULT_READY_POLL_MS, "capture readiness poll interval");
+    this.readyTimeoutMs = boundedMilliseconds(options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS, "capture readiness timeout");
+  }
+
+  private async waitUntilReady(scope: OwnershipScope, captureSessionId: string): Promise<void> {
+    if (!this.readiness) return;
+    const deadline = Date.now() + this.readyTimeoutMs;
+    while (true) {
+      const state = await this.readiness.getState(scope, captureSessionId);
+      if (state.phase !== "WORKFLOW" || state.finishRequested) {
+        throw new Error("capture collector left the active workflow-recording state before readiness");
+      }
+      if (state.collectorReady === true) return;
+      if (Date.now() >= deadline) {
+        throw new Error("capture collector did not become ready before the bounded startup timeout");
+      }
+      await delay(this.readyPollMs);
+    }
   }
 
   async start(request: CaptureCollectionWorkerRequest): Promise<void> {
@@ -148,6 +193,10 @@ export class AwsAgentCoreCaptureCollectionTaskStarter implements CaptureCollecti
       payload: serialized,
     });
     parseStartAck(response, captureSessionId);
+    // Runtime acknowledgement means the background task was accepted, not that Playwright
+    // listeners are already attached. Wait only for the bounded durable readiness bit so the
+    // control plane never tells the user to demonstrate before the collector can observe them.
+    await this.waitUntilReady(request.scope, captureSessionId);
   }
 }
 
