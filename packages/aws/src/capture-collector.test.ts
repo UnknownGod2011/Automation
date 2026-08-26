@@ -24,9 +24,9 @@ const automation: AutomationRecord = {
 };
 
 function request(controlStates = [
-  { phase: "WORKFLOW" as const, finishRequested: false },
-  { phase: "WORKFLOW" as const, finishRequested: true },
-]): CaptureCollectionSourceRequest {
+  { phase: "WORKFLOW" as const, finishRequested: false, collectorReady: false },
+  { phase: "WORKFLOW" as const, finishRequested: true, collectorReady: true },
+], markReady = vi.fn(async () => "UPDATED" as const)): CaptureCollectionSourceRequest {
   let index = 0;
   return {
     scope,
@@ -44,6 +44,7 @@ function request(controlStates = [
     },
     control: {
       getState: async () => controlStates[Math.min(index++, controlStates.length - 1)]!,
+      markReady,
     },
   };
 }
@@ -68,10 +69,11 @@ function artifactStore(put = vi.fn<ArtifactStore["put"]>(async (_scope, _path, c
 describe("AgentCorePlaywrightCaptureEventSource", () => {
   beforeEach(() => playwright.connectOverCDP.mockReset());
 
-  it("starts in durable WORKFLOW phase and observes input without retaining or screenshotting the typed value", async () => {
+  it("starts in durable WORKFLOW phase, marks readiness after instrumentation, and observes input without retaining or screenshotting the typed value", async () => {
     let binding: ((source: { page: unknown }, payload: unknown) => Promise<void>) | undefined;
     const screenshot = vi.fn(async () => new Uint8Array([137, 80, 78, 71]));
     const artifacts = artifactStore();
+    const markReady = vi.fn(async () => "UPDATED" as const);
     const page = {
       evaluate: vi.fn(async (script: unknown) => {
         if (typeof script === "string") {
@@ -105,12 +107,17 @@ describe("AgentCorePlaywrightCaptureEventSource", () => {
       controlPollMs: 1,
       artifacts,
     });
-    const events = await source.collect(request());
+    const events = await source.collect(request(undefined, markReady));
 
     expect(playwright.connectOverCDP).toHaveBeenCalledWith("wss://example.invalid/cdp", {
       headers: { authorization: "signed" },
       timeout: 30_000,
     });
+    expect(context.exposeBinding).toHaveBeenCalledOnce();
+    expect(context.addInitScript).toHaveBeenCalledOnce();
+    expect(page.evaluate).toHaveBeenCalled();
+    expect(context.on).toHaveBeenCalledWith("page", expect.any(Function));
+    expect(markReady).toHaveBeenCalledWith(scope, "capture-a", "2026-08-21T00:01:00.000Z");
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       kind: "INPUT",
@@ -244,7 +251,8 @@ describe("AgentCorePlaywrightCaptureEventSource", () => {
     const source = new AgentCorePlaywrightCaptureEventSource(signer(), "aws.browser.v1", {
       controlPollMs: 1,
     });
-    await expect(source.collect(request([{ phase: "WORKFLOW", finishRequested: true }]))).resolves.toEqual([]);
+    await expect(source.collect(request([{ phase: "WORKFLOW", finishRequested: true, collectorReady: false }])))
+      .resolves.toEqual([]);
     expect(playwright.connectOverCDP).not.toHaveBeenCalled();
   });
 
@@ -252,7 +260,7 @@ describe("AgentCorePlaywrightCaptureEventSource", () => {
     const source = new AgentCorePlaywrightCaptureEventSource(signer(), "aws.browser.v1", {
       controlPollMs: 1,
     });
-    await expect(source.collect(request([{ phase: "AUTH_SETUP", finishRequested: false }])))
+    await expect(source.collect(request([{ phase: "AUTH_SETUP", finishRequested: false, collectorReady: false }])))
       .rejects.toThrow("requires WORKFLOW phase");
     expect(playwright.connectOverCDP).not.toHaveBeenCalled();
   });
