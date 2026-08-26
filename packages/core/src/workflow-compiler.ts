@@ -60,6 +60,16 @@ function verificationFor(event: CaptureEvent): VerificationSpec {
   throw new Error(`capture event '${event.eventId}' requires an expected effect before compilation`);
 }
 
+function selectVerification(event: CaptureEvent): VerificationSpec {
+  const captured = verificationFor(event);
+  return {
+    description: "Selected option matches the bound runtime value",
+    mode: "CUSTOM",
+    expected: "capture:select-bound-value",
+    timeoutMs: captured.timeoutMs,
+  };
+}
+
 function navigationNode(id: string, url: string, nextNodeId: string): WorkflowNode {
   return {
     id,
@@ -112,9 +122,10 @@ function compileEvent(
   }
 
   if (event.kind === "INPUT") {
-    if (event.inputControl !== undefined && event.inputControl !== "TEXT") {
+    const control = event.inputControl ?? "TEXT";
+    if (control !== "TEXT" && control !== "SELECT") {
       throw new Error(
-        `capture input event '${event.eventId}' uses unsupported ${event.inputControl.toLowerCase()} control`,
+        `capture input event '${event.eventId}' uses unsupported ${control.toLowerCase()} control`,
       );
     }
     const input = event.input!;
@@ -122,19 +133,24 @@ function compileEvent(
       ? `capture.${event.eventId}.value`
       : input.variableName;
     if (input.kind === "PUBLIC_LITERAL") initialVariables[variableName] = input.value;
+    const isSelect = control === "SELECT";
     return {
       id: nodeId,
-      kind: "TYPE",
-      objective: objectiveFor(event),
+      kind: isSelect ? "SELECT" : "TYPE",
+      objective: isSelect
+        ? `Select captured option for event ${event.eventId}`
+        : objectiveFor(event),
       deterministicStrategies,
       inputBindings: { value: variableName },
       outputBindings: {},
-      allowedSideEffects: ["TYPE"],
-      verification: verificationFor(event),
+      allowedSideEffects: [isSelect ? "SELECT" : "TYPE"],
+      verification: isSelect ? selectVerification(event) : verificationFor(event),
       retryPolicy: DEFAULT_RETRY,
       timeoutMs: 20_000,
       next: [nextNodeId],
-      escalation: "SEMANTIC_RECOVERY",
+      // SELECT currently remains deterministic-only: selector drift retries and then
+      // escalates to the owner rather than sending the bound option value to a model.
+      escalation: isSelect ? "HUMAN" : "SEMANTIC_RECOVERY",
     };
   }
 

@@ -87,11 +87,37 @@ describe("compileCaptureTrace", () => {
     expect(graph.initialVariables).toEqual({});
   });
 
-  it("fails closed instead of compiling unsupported captured form controls as TYPE", () => {
+  it("compiles captured single-select controls into an explicit verified SELECT node", () => {
     const trace = fixture();
-    const events = trace.events.map((event) => event.eventId === "note" ? { ...event, inputControl: "SELECT" as const } : event);
-    expect(() => compileCaptureTrace({ trace: { ...trace, events }, workflowId: "workflow-select", version: 1, createdAt: "2026-08-19T11:00:00Z" }))
-      .toThrow("uses unsupported select control");
+    const events = trace.events.map((event) => event.eventId === "note" ? {
+      ...event,
+      target: { role: "combobox", accessibleName: "Priority", testId: "priority" },
+      input: { kind: "RUNTIME_VARIABLE" as const, variableName: "capture_input_4", sensitive: true },
+      inputControl: "SELECT" as const,
+      expectedEffect: {
+        description: "Captured select changed",
+        mode: "CUSTOM" as const,
+        expected: "capture:input-filled",
+        timeoutMs: 5_000,
+      },
+    } : event);
+    const graph = compileCaptureTrace({ trace: { ...trace, events }, workflowId: "workflow-select", version: 1, createdAt: "2026-08-19T11:00:00Z" });
+    const select = graph.nodes["capture-4-note"];
+    expect(select).toMatchObject({
+      kind: "SELECT",
+      inputBindings: { value: "capture_input_4" },
+      allowedSideEffects: ["SELECT"],
+      escalation: "HUMAN",
+      verification: { mode: "CUSTOM", expected: "capture:select-bound-value", timeoutMs: 5_000 },
+    });
+    expect(graph.initialVariables).toEqual({});
+  });
+
+  it("still fails closed on captured controls without an explicit runtime primitive", () => {
+    const trace = fixture();
+    const events = trace.events.map((event) => event.eventId === "note" ? { ...event, inputControl: "CHECKBOX" as const } : event);
+    expect(() => compileCaptureTrace({ trace: { ...trace, events }, workflowId: "workflow-checkbox", version: 1, createdAt: "2026-08-19T11:00:00Z" }))
+      .toThrow("uses unsupported checkbox control");
   });
 
   it("keeps legacy text-input traces without explicit control metadata compilable", () => {
