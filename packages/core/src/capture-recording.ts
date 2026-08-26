@@ -8,6 +8,9 @@ import type {
 } from "./control-plane-http.js";
 import type { OwnershipScope } from "./index.js";
 
+const COLLECTOR_READY_POLL_MS = 100;
+const COLLECTOR_READY_TIMEOUT_MS = 10_000;
+
 export interface ActiveCaptureSessionReader {
   activeForAutomation(scope: OwnershipScope, automationId: string): Promise<CaptureSessionRecord | null>;
 }
@@ -61,6 +64,10 @@ function captureExpiryMillis(value: string): number {
   return expiry;
 }
 
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 export class CaptureRecordingControlPlaneService {
   constructor(
     private readonly sessions: ActiveCaptureSessionStore,
@@ -100,10 +107,38 @@ export class CaptureRecordingControlPlaneService {
     });
     return {
       kind: "ACTIVE",
-      phase: state.phase,
+      // Production AWS controls expose collectorReady=false while Runtime is still
+      // attaching Playwright listeners. Keep the product on the safe pre-recording
+      // presentation until readiness is durable; local/mock controls leave it undefined.
+      phase: state.phase === "WORKFLOW" && state.collectorReady === false
+        ? "AUTH_SETUP"
+        : state.phase,
       finishRequested: state.finishRequested,
       expiresAt: record.expiresAt,
     };
+  }
+
+  private async waitUntilCollectorReady(
+    scope: OwnershipScope,
+    record: CaptureSessionRecord,
+  ): Promise<void> {
+    const deadline = Date.now() + COLLECTOR_READY_TIMEOUT_MS;
+    while (true) {
+      const state = await this.controls.getState({
+        scope,
+        automationId: record.automationId,
+        captureSessionId: record.captureSessionId,
+      });
+      // Undefined is the compatibility contract for local/mock and legacy controls.
+      if (state.collectorReady === undefined || state.collectorReady === true) return;
+      if (state.phase !== "WORKFLOW" || state.finishRequested) {
+        throw new Error("capture collector left workflow recording before it became ready");
+      }
+      if (Date.now() >= deadline) {
+        throw new Error("capture collector did not become ready before the bounded startup timeout");
+      }
+      await delay(COLLECTOR_READY_POLL_MS);
+    }
   }
 
   async state(scope: OwnershipScope, automationId: string): Promise<CaptureRecordingView> {
@@ -140,6 +175,10 @@ export class CaptureRecordingControlPlaneService {
           automationId: record.automationId,
           captureSessionId: record.captureSessionId,
         });
+        // Runtime acknowledgement only proves task admission. Do not tell the user recording
+        // is active until the worker has durably confirmed that Playwright instrumentation is
+        // installed. The wait is fixed and bounded below the API/Lambda timeout.
+        await this.waitUntilCollectorReady(command.scope, record);
       }
       return await this.view(command.scope, record);
     } catch (error) {

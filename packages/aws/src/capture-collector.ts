@@ -415,6 +415,18 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
     for (const page of context.pages()) await attachPage(page);
     context.on("page", (page) => { void attachPage(page); });
 
+    if (!request.control.markReady) {
+      throw new Error("capture collector readiness control is not configured");
+    }
+    // This is the user-visible recording readiness boundary: the exposed binding,
+    // init script, existing documents, and future-page hook are all installed before
+    // the durable control record can tell the product that demonstration may begin.
+    await request.control.markReady(
+      request.scope,
+      request.session.captureSessionId,
+      this.now().toISOString(),
+    );
+
     while (true) {
       const state = await request.control.getState(request.scope, request.session.captureSessionId);
       if (state.phase !== "WORKFLOW") {
