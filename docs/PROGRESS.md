@@ -22,84 +22,76 @@ The control plane therefore could tell the user recording was active before thos
 
 - Production capture-control records now carry an explicit durable `collectorReady` bit. AWS initializes it to `false` when the capture control is created and resets it to `false` on the `AUTH_SETUP -> WORKFLOW` transition.
 - `AgentCorePlaywrightCaptureEventSource` marks the control `collectorReady=true` only after the Playwright binding, init script, existing-page instrumentation, and future-page hook are installed.
-- `CaptureRecordingControlPlaneService.startWorkflow()` treats the Runtime start acknowledgement as task admission only. For production controls it waits for the durable readiness bit with a fixed 100 ms poll and a bounded 10 second startup window before returning the normal recording-active response.
-- If startup remains uncertain, the durable workflow phase is preserved so Start can be retried, while the product-facing state stays on the safe pre-recording presentation until readiness is durable.
-- Production Finish is conditionally rejected until `collectorReady=true`, so a direct/stale client cannot finalize a trace during the listener-attachment window.
-- Local/mock and legacy controls leave the readiness field undefined and preserve their existing deterministic in-process behavior.
+- `CaptureRecordingControlPlaneService.startWorkflow()` treats Runtime acknowledgement as task admission only. For production controls it waits for durable readiness with a fixed 100 ms poll and bounded 10 second startup window before returning recording-active state.
+- If startup remains uncertain, the durable workflow phase is preserved for replay-safe Start, while the product-facing view stays on the safe pre-recording presentation until readiness is durable.
+- Production Finish is conditionally rejected until `collectorReady=true`.
+- Local/mock and legacy controls leave readiness undefined and preserve existing deterministic in-process behavior.
 
 ## Security / tenant isolation
 
-- Readiness is only a boolean in the existing tenant/user-scoped capture-control record. It contains no URL, DOM content, typed value, Browser Profile/session identity, Live View capability, BYOK material, workload token, provider error, or user secret.
-- Tenant/user/automation/capture-session authority remains derived from the authenticated control plane and trusted Runtime invocation; the browser still cannot choose capture identity.
-- Raw typed values remain unresolved runtime-variable placeholders, authentication setup remains outside workflow capture, and INPUT screenshots remain suppressed.
+- Readiness is one boolean in the existing tenant/user-scoped capture-control record. It contains no URL, DOM content, typed value, Browser Profile/session identity, Live View capability, BYOK material, workload token, provider error, or user secret.
+- Tenant/user/automation/capture identity remains derived from authenticated control-plane and trusted Runtime authority.
+- Raw typed values remain unresolved runtime-variable placeholders, auth setup remains outside workflow capture, and INPUT screenshots remain suppressed.
 
 ## Idempotency / concurrency / retry / timeout
 
-- `markReady` is conditional/idempotent. Concurrent exact readiness updates replay after a strongly consistent read; DynamoDB transport/throttling uncertainty still propagates instead of manufacturing success.
-- Start remains replay-safe: the durable `WORKFLOW` transition can replay and Runtime already suppresses duplicate active collector tasks for the same scoped capture identity.
-- Finish requires the exact durable ready state. A user cannot race Finish ahead of listener installation.
-- The readiness wait is bounded to 10 seconds and remains below the existing API/Lambda timeout. It adds no unbounded polling, queue, lease, backoff system, or recovery state machine.
+- `markReady` is conditional/idempotent. Concurrent exact readiness updates replay after a strongly consistent read; DynamoDB uncertainty propagates rather than manufacturing success.
+- Start remains replay-safe and Runtime keeps duplicate active collector tasks bounded by the same scoped capture identity.
+- Finish requires exact durable ready state, preventing Finish from racing listener installation.
+- The readiness wait is bounded to 10 seconds and adds no unbounded polling, retry system, queue, lease, or recovery state machine.
 
 ## Side-effect verification / user recovery
 
-- Collector readiness only proves observation instrumentation is attached; it does not create or weaken verification evidence.
-- CLICK/SUBMIT still require the existing redacted structural post-action verification before compilation. INPUT retains its existing privacy-safe verification contract.
-- If Runtime/CDP startup fails, the capture remains restartable through the existing replay-safe Start/cancel flow; no new recovery subsystem is introduced.
+- Collector readiness proves only that observation instrumentation is attached; it cannot create or weaken effect evidence.
+- CLICK/SUBMIT retain structural post-action verification and INPUT retains its privacy-safe verification contract.
+- Existing cancel/restart behavior remains the recovery path for failed Runtime/CDP startup.
 
 ## Cost / observability
 
-- No AWS resource, IAM permission, dependency, DynamoDB table/index, S3 bucket, AgentCore allocation, OpenAI call, Scheduler delivery, or GitHub Actions artifact is added.
-- The only added production cost is a handful of strongly consistent reads during the bounded Start handshake plus one conditional readiness update per capture.
-- Preventing an incomplete trace avoids wasted compile/Fresh Test/browser/model work caused by a silently lost first demonstration action.
+- No AWS resource, IAM permission, dependency, DynamoDB table/index, S3 bucket, AgentCore allocation, OpenAI call, Scheduler delivery, or retained Actions artifact is added.
+- Added production cost is a bounded handful of strongly consistent reads during Start plus one conditional readiness update per capture.
+- Preventing incomplete traces avoids wasted Compile/Fresh Test/browser/model work after a silently lost first demonstration action.
 
 ## Regression coverage
 
-- Core capture-control coverage proves production-style controls reject Finish while not ready, accept idempotent readiness, and permit Finish only afterward while local/mock behavior remains unchanged.
-- AWS DynamoDB coverage proves create/start store explicit not-ready state, readiness contention is classified after a strong read, Finish conditionally requires readiness, and non-conditional DynamoDB failures still propagate.
-- AWS Playwright collector coverage proves the readiness write occurs after binding/init-script/current-page/future-page instrumentation is attached while existing typed-value redaction and screenshot rules remain intact.
-- A dedicated control-plane regression proves Start does not settle before a production-style collector becomes ready and an unready collector stays on the safe pre-recording product presentation.
-- The readiness presentation regression uses one fixed test clock for both control and recording services so capture expiry cannot depend on wall-clock execution date.
+- Core capture-control tests prove Finish blocks while production readiness is false, readiness updates idempotently, and local/mock behavior remains compatible.
+- AWS DynamoDB tests prove explicit not-ready persistence, strong-read contention classification, and readiness-conditioned Finish.
+- AWS Playwright tests prove readiness is written only after binding/init-script/current-page/future-page instrumentation.
+- Control-plane tests prove Start does not settle before readiness and the unready product view remains pre-recording.
+- Readiness presentation tests use a fixed clock so expiry cannot depend on wall-clock CI date.
+- Existing capture submit-normalization fixtures now provide the required readiness callback and ready state, preserving their navigation/action assertions under the production collector contract.
 
 ## Validation
 
-- Normal product head `45ece098ceb28626e333f581f2638d76d5ccc864` triggered GitHub Actions CI #349.
-- CI #349 passed deterministic pnpm lock verification and frozen installation, then strict TypeScript stopped on parser diagnostics in `capture-recording.ts`. Root cause: the batched rewrite omitted closing braces from the existing sanitized `errorResponse()` object literals. The readiness design and dependency graph were not implicated.
-- Corrective head `46b4cd5795915840fa62a76bbfa4c828abcd540a` restored only that syntax. CI #350 then passed deterministic lock verification, frozen installation, strict `pnpm check`, all three production packaging steps, and every AWS deployment/security/demo/OIDC contract.
-- CI #350 reached the full test suite and failed only one new readiness regression because its second fixture used an August 21 capture expiry with the real wall clock instead of the fixed test clock. Production correctly classified that stale capture as inactive; the readiness implementation itself was not implicated.
-- This follow-up correction gives both readiness fixtures the same fixed `2026-08-21T00:10:00.000Z` clock and changes no production behavior or validation gate.
+- CI #349 on normal head `45ece098ceb28626e333f581f2638d76d5ccc864` passed lock verification and frozen installation, then stopped on syntax accidentally omitted during the batched rewrite; corrective head `46b4cd5795915840fa62a76bbfa4c828abcd540a` restored only that syntax.
+- CI #350 passed deterministic lock verification, frozen install, strict `pnpm check`, all three production package builds, and every AWS deployment/security/demo/OIDC contract, then failed one new readiness fixture because that fixture used the real wall clock against an August 21 expiry.
+- Head `836e4ad1dbe10707b1fa623a914a95c47dbf2948` fixed only the fixture clock. CI #351 then proved that correction: lock verification, frozen install, `pnpm check`, all production packages/contracts, all 338 core tests, and all 144 web tests passed.
+- CI #351 exposed two stale AWS `capture-submit-normalization.test.ts` fixtures that predated the new mandatory production `control.markReady` boundary; both failed before their normalization assertions with `capture collector readiness control is not configured`. Production collector behavior was not implicated.
+- This corrective commit updates only those AWS fixtures to provide an idempotent readiness callback and ready control state. No production readiness requirement or validation gate is weakened.
 - This head is complete only after GitHub Actions succeeds on the exact published SHA.
 
-Required gates remain:
-
-1. deterministic pnpm lock verification using the reviewed fingerprint;
-2. frozen installation;
-3. `pnpm check`, including strict TypeScript and Next.js production build/type validation;
-4. AgentCore Runtime, control-plane Lambda, and Next.js Lambda packaging;
-5. AWS hosting/federation/release/deployment/web-demo/live-smoke/OIDC contract checks;
-6. the full test suite, including the capture-readiness regressions.
-
-Never weaken these checks to obtain green status.
+Required gates remain deterministic lock verification, frozen install, strict `pnpm check`, all three production package builds, all AWS deployment/security/demo/OIDC contracts, and the complete test suite. Never weaken them to obtain green status.
 
 ## Known production risks / parked work
 
-- The controlled first-party AWS vertical has not yet been demonstrated end to end against live Cognito/Google, AgentCore Browser/Runtime, EventBridge/SQS/Step Functions, SES, and the actual VPC network policy.
-- VPC Browser mode is present, but route-table/DNS/security-group/firewall policy still requires live validation against private/link-local/control-plane destinations and redirects.
+- The controlled first-party AWS vertical has not yet been demonstrated end to end against live Cognito/Google, AgentCore Browser/Runtime, EventBridge/SQS/Step Functions, SES, and actual VPC network policy.
+- VPC Browser mode exists, but route-table/DNS/security-group/firewall policy still requires live validation against private/link-local/control-plane destinations and redirects.
 - DynamoDB <-> EventBridge Scheduler mutations remain fail-closed but are not cross-service transactional.
 - OpenAI remains the concrete production BYOK reasoning provider; Google remains a later adapter.
 - Capture/run screenshots can contain owner-visible page content; production retention/deletion policy remains a live operational concern.
 - Popups/new-tab capture and intentionally rapid independent navigation near action transitions still need real-site validation.
-- Repository-level `main` protection remains an operational prerequisite before the first production AWS deployment (Issue #29); the application/deployment workflow must not weaken that boundary to compensate.
+- Repository-level `main` protection remains an operational prerequisite before the first production AWS deployment (Issue #29).
 - Additional crash-recovery micro-hardening remains parked unless live execution or CI reveals a real defect.
 
 ## Next product milestone
 
-After exact-head green CI, run the protected real AWS vertical with the controlled target:
+After exact-head green CI, promote this slice, protect the trusted `main` boundary, then run the controlled real AWS vertical:
 
-1. protect the trusted `main` promotion boundary, then deploy an immutable release with `DemoTargetEnabled=true`, bounded demo session TTL, and real VPC Browser network inputs;
-2. require the strengthened live smoke and all five System capabilities to report `CONFIGURED`;
+1. deploy an immutable release with `DemoTargetEnabled=true`, bounded demo session TTL, and real VPC Browser network inputs;
+2. require strengthened live smoke and all five System capabilities `CONFIGURED`;
 3. sign in through Cognito/Google and configure one OpenAI BYOK credential;
-4. create an automation targeting `${webOrigin}/demo-target`, manually authenticate in Live View, press Start, confirm the product does not declare recording active until collector readiness is durable, then demonstrate one note + native submit-button action and finish trusted completion;
-5. review capture evidence, compile/inspect, and run a >30-second Fresh Test; verify timeline/reasoning/evidence and the SUBMIT-only semantic recovery boundary;
-6. publish with near-future recurrence/timezone and a non-secret recurring demo note; verify Scheduler -> SQS -> Step Functions -> AgentCore Runtime while the user device is off;
-7. let the demo auth cookie expire, confirm `WAITING_FOR_HUMAN / TARGET_AUTH_REQUIRED`, repair in Live View, save the Browser Profile, resume once, and verify terminal SES/CloudWatch reporting;
-8. prioritize defects exposed by that real environment over speculative recovery hardening.
+4. target `${webOrigin}/demo-target`, manually authenticate in Live View, press Start, confirm recording is not declared active until collector readiness is durable, demonstrate one note + native submit action, finish trusted completion, and inspect evidence;
+5. compile/inspect and run a >30-second Fresh Test, verifying timeline/reasoning/evidence and SUBMIT-only semantic recovery;
+6. publish a near-future recurrence/timezone and verify Scheduler -> SQS -> Step Functions -> AgentCore Runtime with the user device offline;
+7. let demo auth expire, verify `WAITING_FOR_HUMAN / TARGET_AUTH_REQUIRED`, repair in Live View, save Browser Profile, resume once, and verify terminal SES/CloudWatch reporting;
+8. prioritize live defects over speculative recovery hardening.

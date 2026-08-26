@@ -40,11 +40,13 @@ function request(onFirstPoll?: () => Promise<void> | void): CaptureCollectionSou
       status: "STARTED",
     },
     control: {
+      markReady: async () => "UPDATED" as const,
       getState: async () => {
         if (reads === 1) await onFirstPoll?.();
         return {
           phase: "WORKFLOW" as const,
           finishRequested: reads++ > 0,
+          collectorReady: true,
         };
       },
     },
@@ -129,9 +131,7 @@ describe("capture submit normalization", () => {
       purpose: "WORKFLOW",
       page: { url: "https://example.com/form" },
       target: { testId: "save", role: "button", accessibleName: "Save" },
-      expectedEffect: {
-        mode: "CUSTOM",
-      },
+      expectedEffect: { mode: "CUSTOM" },
     });
     expect(events[0]?.expectedEffect?.expected).toMatch(/^capture:state:[0-9a-f]+$/);
     expect(events.some((event) => event.kind === "CLICK")).toBe(false);
