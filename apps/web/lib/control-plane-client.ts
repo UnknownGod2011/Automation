@@ -34,13 +34,22 @@ export type WebCaptureStartResult =
   | { kind: "NOT_CONFIGURED"; reason: string };
 
 export class WebControlPlaneError extends Error {
-  constructor(readonly code: "NOT_CONFIGURED" | "CONFLICT" | "BAD_RESPONSE" | "REQUEST_FAILED") {
+  constructor(
+    readonly code:
+      | "NOT_CONFIGURED"
+      | "CONFLICT"
+      | "UNSUPPORTED_CAPTURE_CONTROL"
+      | "BAD_RESPONSE"
+      | "REQUEST_FAILED",
+  ) {
     super(
       code === "NOT_CONFIGURED"
         ? "Control plane is not configured"
         : code === "CONFLICT"
           ? "Control-plane request conflicted with current state"
-          : "Control-plane request failed",
+          : code === "UNSUPPORTED_CAPTURE_CONTROL"
+            ? "Captured workflow contains an unsupported form control"
+            : "Control-plane request failed",
     );
   }
 }
@@ -81,6 +90,15 @@ export type AutomationCommand =
   | "disable"
   | "objective"
   | "notifications";
+
+function controlPlaneConflictCode(value: unknown): "CONFLICT" | "UNSUPPORTED_CAPTURE_CONTROL" {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "CONFLICT";
+  const error = (value as { error?: unknown }).error;
+  if (!error || typeof error !== "object" || Array.isArray(error)) return "CONFLICT";
+  return (error as { code?: unknown }).code === "UNSUPPORTED_CAPTURE_CONTROL"
+    ? "UNSUPPORTED_CAPTURE_CONTROL"
+    : "CONFLICT";
+}
 
 export class WebControlPlaneClient {
   constructor(
@@ -275,7 +293,14 @@ export class WebControlPlaneClient {
       throw new WebControlPlaneError("REQUEST_FAILED");
     }
     if (!response.ok) {
-      if (response.status === 409) throw new WebControlPlaneError("CONFLICT");
+      if (response.status === 409) {
+        try {
+          throw new WebControlPlaneError(controlPlaneConflictCode(await response.json()));
+        } catch (error) {
+          if (error instanceof WebControlPlaneError) throw error;
+          throw new WebControlPlaneError("CONFLICT");
+        }
+      }
       throw new WebControlPlaneError("REQUEST_FAILED");
     }
     try {

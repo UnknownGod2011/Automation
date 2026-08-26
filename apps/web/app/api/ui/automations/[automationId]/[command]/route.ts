@@ -13,6 +13,7 @@ import { createAuthenticatedWebControlPlaneClient, WebAuthError } from "../../..
 
 function redirectBack(request: Request, automationId: string, notice: string): NextResponse { return NextResponse.redirect(new URL(`/automations/${encodeURIComponent(automationId)}?notice=${encodeURIComponent(notice)}`, request.url), 303); }
 function redirectInputs(request: Request, notice: string): NextResponse { return NextResponse.redirect(new URL(`/settings/inputs?notice=${encodeURIComponent(notice)}`, request.url), 303); }
+function redirectUnsupportedControl(request: Request, automationId: string): NextResponse { return NextResponse.redirect(new URL(`/automations/${encodeURIComponent(automationId)}/unsupported-capture-control`, request.url), 303); }
 const COMMANDS = ["capture", "record-workflow", "finish-capture", "cancel-capture", "compile", "test", "publish", "schedule", "scheduled-inputs", "pause", "resume", "disable", "objective"] as const;
 
 export async function POST(request: Request, context: { params: Promise<{ automationId: string; command: string }> }): Promise<Response> {
@@ -106,6 +107,7 @@ export async function POST(request: Request, context: { params: Promise<{ automa
     return redirectBack(request, automationId, "published");
   } catch (error) {
     if (error instanceof WebAuthError) return NextResponse.redirect(new URL(`/api/auth/sign-in?returnTo=${encodeURIComponent(command === "scheduled-inputs" ? "/settings/inputs" : `/automations/${automationId}`)}`, request.url), 303);
+    if (error instanceof WebControlPlaneError && error.code === "UNSUPPORTED_CAPTURE_CONTROL" && command === "compile") return redirectUnsupportedControl(request, automationId);
     if (error instanceof WebControlPlaneError && error.code === "NOT_CONFIGURED") return command === "scheduled-inputs" ? redirectInputs(request, "not-configured") : redirectBack(request, automationId, "not-configured");
     return command === "scheduled-inputs" ? redirectInputs(request, "request-failed") : redirectBack(request, automationId, "request-failed");
   }
