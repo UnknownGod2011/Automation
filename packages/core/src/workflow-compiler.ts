@@ -112,6 +112,11 @@ function compileEvent(
   }
 
   if (event.kind === "INPUT") {
+    if (event.inputControl !== undefined && event.inputControl !== "TEXT") {
+      throw new Error(
+        `capture input event '${event.eventId}' uses unsupported ${event.inputControl.toLowerCase()} control`,
+      );
+    }
     const input = event.input!;
     const variableName = input.kind === "PUBLIC_LITERAL"
       ? `capture.${event.eventId}.value`

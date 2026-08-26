@@ -1,6 +1,7 @@
 import type {
   CaptureArtifactRef,
   CaptureEvent,
+  CaptureInputControl,
   CaptureSemanticTarget,
   VerificationSpec,
 } from "@automation/contracts";
@@ -95,6 +96,37 @@ function safeString(value: unknown, max = MAX_TARGET_FIELD_LENGTH): string | und
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed ? trimmed.slice(0, max) : undefined;
+}
+
+export function classifyCaptureInputControl(inputType: unknown): CaptureInputControl {
+  const normalized = safeString(inputType, 64)?.toLowerCase();
+  switch (normalized) {
+    case "textarea":
+    case "text":
+    case "search":
+    case "email":
+    case "url":
+    case "tel":
+    case "number":
+    case "date":
+    case "time":
+    case "datetime-local":
+    case "month":
+    case "week":
+      return "TEXT";
+    case "select":
+      return "SELECT";
+    case "checkbox":
+      return "CHECKBOX";
+    case "radio":
+      return "RADIO";
+    case "file":
+      return "FILE";
+    case "password":
+      return "PASSWORD";
+    default:
+      return "OTHER";
+  }
 }
 
 function safeHttpUrl(value: unknown): string | null {
@@ -339,6 +371,7 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
             variableName: `capture_input_${identity.sequence}`,
             sensitive: true,
           },
+          inputControl: classifyCaptureInputControl(payload.inputType),
           expectedEffect: inputVerification(),
           artifactRefs: [],
         });
