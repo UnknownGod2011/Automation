@@ -61,7 +61,12 @@ The existing action-driven-navigation suppression only checked `pendingActionPag
 
 ## Validation
 
-This slice is complete only after GitHub Actions succeeds on the exact published head. Required gates remain:
+- Normal product head `0c05e565a3381d1f2949062174b4433b1fa553bb` triggered CI #344.
+- CI #344 stopped exclusively at the deterministic pnpm lock-snapshot gate before install, type-checking, packaging, or tests. No package manifest changed. pnpm 10.15.0 regenerated the full transitive graph from reviewed SHA `2f63d7d3ebae1f017606b4d22dc2e5508003c0cd0988374ce0f856fd14a27234` to authoritative CI-produced SHA `0d0c4be39f0fd860cdc1405b0242b3702293f4a28c5a77d1807cc51fc201902a`.
+- The single corrective commit authenticates exactly that CI-produced graph. The existing AWS SDK/DynamoDB peer-alignment assertions remain unchanged; no dependency or check is suppressed.
+- The corrective head is green only after GitHub Actions succeeds on that exact SHA.
+
+Required gates remain:
 
 1. deterministic pnpm lock verification with pnpm 10.15.0 and the reviewed fingerprint;
 2. frozen installation;
