@@ -4,53 +4,60 @@ Updated: 2026-08-26
 
 ## Current baseline
 
-- Incoming `main` is `c5be0ec48f2b204686e06ef3520a379e122b5db8` (`Keep action-driven navigation inside captured actions`).
-- Push GitHub Actions CI #341 completed successfully on that exact SHA: deterministic lock verification, frozen install, strict checks/builds, all production packaging, AWS deployment/security contracts, and the full test suite were green.
+- Incoming `main` is `0ad12eb2e0d2d46d02cd43384fb4225775061051` (`Keep live smoke aligned with signed-out auth`).
+- Push GitHub Actions CI #343 completed successfully on that exact SHA: deterministic lock verification, frozen installation, strict checks/builds, all production packaging, AWS deployment/security contracts, and the full test suite were green.
 - The AWS-first vertical is structurally present: Cognito/Google auth, Next.js control plane, controlled first-party demo target, AgentCore Live View capture + Browser Profile persistence, immutable capture traces, semantic workflow compilation/inspection, asynchronous AgentCore Fresh Test, publish/scheduling, AgentCore Browser/OpenAI BYOK execution, side-effect verification, sanitized history/timeline/reasoning/evidence, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
 - Recovery/crash-reconciliation depth remains intentionally parked unless CI or the real vertical exposes a correctness blocker.
 
-## This slice — keep the live deployment smoke aligned with the real signed-out product shell
+## This slice — close capture navigation/binding ordering race
 
-### Product/deployment defect
+### Product correctness defect
 
-The deployed signed-out dashboard now presents `Sign in with Google or email`, but `scripts/smoke-aws-deployment.sh` still required the old literal `Sign in with Cognito`. The no-cloud smoke fixture also rendered that obsolete text, so CI could remain green while the first real protected deployment failed its live smoke despite a healthy authentication route.
+The injected capture observer deliberately calls the Playwright exposed binding asynchronously (`void bridge(...)`). A fast form submission or click can therefore navigate the main frame before Node has received the corresponding CLICK/SUBMIT payload and marked that Playwright `Page` as action-owned.
 
-This is a real deployment blocker for the vertical demo, not recovery hardening.
+The existing action-driven-navigation suppression only checked `pendingActionPages` at the instant `framenavigated` reached Node. Under the reversed ordering, the same demonstrated action could still become a verified CLICK/SUBMIT plus a second executable NAVIGATION. This is directly relevant to the controlled `/demo-target` POST flow and is a Capture -> Compile -> Fresh Test correctness blocker, not recovery micro-hardening.
 
 ### Change
 
-- The live smoke no longer couples deployment health to user-facing authentication copy.
-- It now requires the stable same-origin sign-in route `href="/api/auth/sign-in?returnTo=/"`, then independently verifies that route redirects to the deployed Cognito domain using authorization-code flow, PKCE S256, the exact callback URL, required scopes, client ID, and state.
-- The fake web fixture now matches the current product copy (`Sign in with Google or email`) and includes the real sign-in href.
-- A negative regression removes the sign-in href while leaving the product shell intact and requires the smoke to fail with a sanitized missing-authentication-action error.
+- Main-frame navigation observation now uses a bounded 50 ms action-association grace before it becomes an executable capture event.
+- Each Playwright page keeps an in-memory action generation. If a CLICK/SUBMIT binding starts during that grace, the observed navigation is treated as part of that action and suppressed.
+- Navigation that arrives while an action is already unsettled remains suppressed immediately.
+- Navigation observation is tracked through the existing `pendingEffects` set, so pressing Finish cannot return a trace while an asynchronous navigation classification is still pending.
+- Independent main-frame navigation with no associated action remains a first-class `NAVIGATION` capture event after the bounded grace.
+- Native CLICK -> SUBMIT coalescing and structural post-action verification are unchanged.
 
 ## Security / tenant isolation
 
-- The smoke remains anonymous/read-only except for the harmless first-party demo target action already covered by the deployment contract.
-- No bearer token, Cognito session, BYOK secret, Browser Profile/session identity, workload token, tenant/user identifier, or Live View capability is introduced.
-- Checking the stable route rather than display copy strengthens the authentication-boundary assertion without depending on provider branding.
+- The new state is process-local to one already-authorized AgentCore Browser capture session: Playwright `Page` identity, a small counter, and a generation number only.
+- No URL/body/DOM content, cookie, Browser Profile/session identity, BYOK material, workload token, tenant/user identity, or capability is newly persisted or exposed.
+- Raw typed values remain unresolved runtime-variable placeholders; INPUT screenshots remain suppressed.
+- Tenant/user/automation/capture-session authority remains supplied by the trusted capture worker and durable session/control stores.
 
 ## Idempotency / concurrency / retry / timeout
 
-- No production mutation or execution path changes.
-- Existing bounded curl connect/overall timeouts remain unchanged.
-- The smoke still performs one sign-in redirect check and does not complete OAuth or create cloud automation state.
+- The change reduces duplicate executable effects by making one browser interaction converge on one captured action even when CDP navigation notification beats the exposed binding across the browser/Node boundary.
+- The 50 ms grace is fixed and bounded. It adds no retry loop, backoff policy, lease, queue, or durable concurrency state.
+- The action generation avoids relying only on a transient pending flag: an action that begins and settles during the grace still changes the generation and suppresses the earlier derived navigation.
+- Finish waits for navigation-classification tasks already observed before the durable finish request, preventing an incomplete trace snapshot.
 
 ## Side-effect verification / user recovery
 
-- Browser execution, workflow verification, target-auth takeover/resume, retries, leases, and reconciliation are unchanged.
-- The controlled demo action remains the only smoke mutation and continues to require its stable completion marker while rejecting reflected note content.
+- CLICK/SUBMIT still require the existing redacted structural post-action fingerprint before compilation.
+- The grace decides only whether a navigation belongs to an already-demonstrated action; it does not manufacture expected-effect evidence or broaden allowed actions.
+- Independent navigation remains capturable and receives its existing URL verification contract at compile time.
+- Scheduled execution, semantic fallback, bounded retries, target-auth takeover/resume, human-resolution claims/leases/heartbeat, and crash reconciliation are unchanged.
 
 ## Cost / observability
 
-- No AWS resource, IAM permission, dependency, AgentCore Browser/Runtime allocation, OpenAI request, Scheduler delivery, DynamoDB/S3 write, or retained GitHub Actions artifact is added.
-- The new negative contract is no-cloud CI only.
+- No AWS resource, IAM permission, dependency, DynamoDB/S3 table, AgentCore Runtime invocation, OpenAI request, Scheduler delivery, or retained GitHub Actions artifact is added.
+- The only runtime cost is up to 50 ms of capture-worker observation latency for main-frame navigation events; browser action execution itself is not delayed.
+- Preventing a duplicate NAVIGATION avoids unnecessary downstream browser navigation and verification cost.
 
 ## Regression coverage
 
-- The normal fake deployment now uses the current signed-out product copy and the stable sign-in href.
-- A shell with the product headline but without the sign-in href must fail before auth redirect validation.
-- Existing coverage still verifies PKCE S256, unsafe-origin rejection, anonymous protection of control-plane/capture-completion APIs, controlled demo auth/session/action behavior, note non-reflection, and disabled demo-target behavior.
+- The focused capture regression now delivers main-frame navigation to Node **before** the CLICK/SUBMIT exposed-binding callbacks and still requires exactly one verified SUBMIT with no CLICK/NAVIGATION duplicate.
+- A negative-path regression delivers independent navigation with no action binding and requires it to remain a captured `NAVIGATION` after the grace.
+- Existing collector/compiler tests continue to cover input redaction/no screenshot, structural verification, bounded action screenshots, phase gating, native submit coalescing, and contiguous trace ordering.
 
 ## Validation
 
@@ -61,7 +68,7 @@ This slice is complete only after GitHub Actions succeeds on the exact published
 3. `pnpm check`, including strict TypeScript and Next.js production build/type validation;
 4. AgentCore Runtime, control-plane Lambda, and Next.js Lambda packaging;
 5. AWS hosting/federation/release/deployment/web-demo/live-smoke/OIDC contract checks;
-6. full tests, including the strengthened deployment-smoke regression.
+6. full tests, including the reversed-order navigation/binding and independent-navigation regressions.
 
 Never weaken these checks to obtain green status.
 
@@ -72,7 +79,7 @@ Never weaken these checks to obtain green status.
 - Capture/run screenshots can contain owner-visible page content; retention/deletion policy remains a live-production concern.
 - DynamoDB <-> EventBridge Scheduler mutations remain fail-closed but are not cross-service transactional.
 - OpenAI remains the concrete production BYOK reasoning provider.
-- Popups/new-tab capture and rapid intentional navigation immediately after an action still need real-site validation.
+- Popups/new-tab capture and intentionally rapid independent navigation within the bounded action-association window still require real-site validation; the controlled first-party target does not depend on those patterns.
 - Additional crash-recovery micro-hardening remains parked unless live execution or CI reveals a real defect.
 
 ## Next product milestone
@@ -82,8 +89,8 @@ Run the protected real AWS vertical with the controlled target:
 1. deploy an exact-head green immutable release with `DemoTargetEnabled=true`, a bounded demo session TTL, and real VPC Browser network inputs;
 2. require the corrected live smoke plus all five System capabilities `CONFIGURED`;
 3. sign in through Cognito/Google and configure one OpenAI BYOK credential;
-4. create an automation targeting `${webOrigin}/demo-target`, capture after manual demo sign-in, demonstrate one note + native submit-button action, finish trusted completion, and review capture evidence;
-5. compile/inspect and run a >30-second Fresh Test; inspect timeline/reasoning/evidence;
+4. create an automation targeting `${webOrigin}/demo-target`, capture after manual demo sign-in, demonstrate one note + native submit-button action, finish trusted completion, and confirm capture produces one verified submit with no derived navigation even under real browser/CDP ordering;
+5. review capture screenshots, compile/inspect, and run a >30-second Fresh Test; inspect timeline/reasoning/evidence;
 6. publish with near-future recurrence/timezone and a non-secret recurring demo note; verify Scheduler -> SQS -> Step Functions -> AgentCore Runtime while the user device is off;
 7. let the demo auth cookie expire, confirm `WAITING_FOR_HUMAN / TARGET_AUTH_REQUIRED`, repair in Live View, save the Browser Profile, resume once, and verify terminal SES/CloudWatch reporting;
 8. prioritize defects exposed by that real environment over speculative recovery hardening.
