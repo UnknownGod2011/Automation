@@ -60,9 +60,10 @@ Privacy-preserving Capture intentionally replaces typed and selected values with
 
 ## Validation
 
-- This slice must not be considered complete until GitHub Actions succeeds on the exact published head.
-- Required gates remain deterministic pnpm lock verification, frozen installation, strict `pnpm check`, AgentCore Runtime packaging, control-plane Lambda packaging, Next.js Lambda packaging, every AWS hosting/federation/release/deployment/web-demo/live-smoke/OIDC contract, and the complete test suite.
-- No check may be weakened if CI exposes an integration defect; only one root-caused corrective CI-triggering commit is permitted for this run.
+- Normal implementation head `d46894c48b5162ff4e08f9d42da0e36c092b0c0d` reached GitHub Actions CI #365.
+- CI #365 stopped exclusively at the deterministic dependency-review gate before installation, type-checking, packaging, or tests. No package manifest changed; pnpm 10.15.0 regenerated the full lock graph from reviewed `0d0c4be39f0fd860cdc1405b0242b3702293f4a28c5a77d1807cc51fc201902a` to authoritative CI-produced `632f2ffac9f82283280ea3f07fe86ccd00ff820975e412a14b88446bc5401839`.
+- The one permitted corrective commit authenticates exactly that generated snapshot. Existing AWS SDK/DynamoDB peer-alignment assertions remain enabled; no dependency or CI check is suppressed.
+- This slice is complete only after GitHub Actions succeeds on the exact corrective head. Required gates remain deterministic pnpm lock verification, frozen installation, strict `pnpm check`, AgentCore Runtime packaging, control-plane Lambda packaging, Next.js Lambda packaging, every AWS hosting/federation/release/deployment/web-demo/live-smoke/OIDC contract, and the complete test suite.
 
 ## Known production risks / parked work
 
