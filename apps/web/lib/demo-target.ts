@@ -5,6 +5,9 @@ const MIN_SESSION_TTL_SECONDS = 60;
 const MAX_SESSION_TTL_SECONDS = 3600;
 const MAX_NOTE_LENGTH = 4096;
 
+export const DEMO_PRIORITIES = ["low", "normal", "high"] as const;
+export type DemoPriority = (typeof DEMO_PRIORITIES)[number];
+
 export interface DemoTargetConfig {
   enabled: boolean;
   sessionTtlSeconds: number;
@@ -83,7 +86,7 @@ export function demoTargetLoginHtml(): string {
 export function demoTargetWorkflowHtml(): string {
   return document(
     "Automation demo task",
-    '<h1>Demo workflow target</h1><p>Enter a non-secret demo note and submit it.</p><form method="post" action="/demo-target/action" data-testid="demo-form"><label for="demo-note">Demo note</label><textarea id="demo-note" name="note" data-testid="demo-note" maxlength="4096" required></textarea><button type="submit" data-testid="demo-submit">Complete demo task</button></form>',
+    '<h1>Demo workflow target</h1><p>Choose a non-secret priority, enter a non-secret demo note, and submit it.</p><form method="post" action="/demo-target/action" data-testid="demo-form"><label for="demo-priority">Priority</label><select id="demo-priority" name="priority" data-testid="demo-priority" required><option value="low">Low priority</option><option value="normal" selected>Normal priority</option><option value="high">High priority</option></select><label for="demo-note">Demo note</label><textarea id="demo-note" name="note" data-testid="demo-note" maxlength="4096" required></textarea><button type="submit" data-testid="demo-submit">Complete demo task</button></form>',
   );
 }
 
@@ -97,10 +100,14 @@ export function demoTargetCompletedHtml(): string {
 export function demoTargetBadRequestHtml(): string {
   return document(
     "Invalid demo request",
-    "<h1>Invalid demo request</h1><p>The demo note must be a string no longer than 4,096 characters.</p>",
+    "<h1>Invalid demo request</h1><p>The demo priority must be an allowed value and the note must be a string no longer than 4,096 characters.</p>",
   );
 }
 
 export function isValidDemoNote(value: FormDataEntryValue | null): value is string {
   return typeof value === "string" && value.length <= MAX_NOTE_LENGTH;
+}
+
+export function isValidDemoPriority(value: FormDataEntryValue | null): value is DemoPriority {
+  return typeof value === "string" && DEMO_PRIORITIES.includes(value as DemoPriority);
 }

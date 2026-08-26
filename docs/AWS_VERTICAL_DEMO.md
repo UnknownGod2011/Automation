@@ -27,11 +27,13 @@ The deployed Next.js app contains an intentionally harmless demo target at `${we
 }
 ```
 
-The target has no AWS data-plane permissions or durable server-side state. Its sign-in button sets only a short-lived, scoped `HttpOnly; Secure; SameSite=Lax` demo cookie. The workflow form accepts one non-secret note, never reflects that value into the response, and returns a stable structural completion page. A fresh navigation always begins from the same form, so captured structural effect verification remains meaningful on every Fresh Test and scheduled run.
+The target has no AWS data-plane permissions or durable server-side state. Its sign-in button sets only a short-lived, scoped `HttpOnly; Secure; SameSite=Lax` demo cookie. The workflow form contains one ordinary single-select priority, one non-secret note, and one native submit action. The target accepts only `low`, `normal`, or `high` as the posted priority value and never reflects either submitted workflow input into the response. A fresh navigation always begins from the same form, so captured structural effect verification remains meaningful on every Fresh Test and scheduled run.
+
+The priority dropdown is intentionally part of the first vertical because it exercises the explicit provider-neutral `SELECT` node end to end. During capture, change the dropdown from its default **Normal priority** to **High priority** so the browser emits a real select-change event. The selected label is not stored in the capture trace; the compiled workflow exposes the resulting `capture_input_N` requirement through the existing sanitized workflow-inspection/runtime-input UX. For Fresh Test and publish-time non-secret scheduled inputs, set that generated input to `High priority`. Do not place secrets in this reusable input boundary.
 
 The cookie expiry is intentional. Once the browser no longer sends it, `GET /demo-target` returns HTTP 401. The existing Playwright runtime classifies that navigation as `TARGET_AUTH_REQUIRED`, so waiting for the configured TTL provides a controlled way to exercise the real secure takeover/profile-save/resume path without depending on a third-party site's authentication behavior. This is simulated target authentication only; it protects no user data and must not be presented as a real authentication system.
 
-Recommended objective: `Enter the provided non-secret demo note and complete the demo task.` During Live View, click **Sign in to demo target** before pressing **Start recording workflow**, then record typing a non-secret note and submitting **Complete demo task**.
+Recommended objective: `Choose the provided priority, enter the provided non-secret demo note, and complete the demo task.` During Live View, click **Sign in to demo target** before pressing **Start recording workflow**, then change priority to **High priority**, type a non-secret note, and submit **Complete demo task**.
 
 ## Controlled success path
 
@@ -40,12 +42,13 @@ Recommended objective: `Enter the provided non-secret demo note and complete the
 3. Add one OpenAI BYOK credential; confirm only masked metadata returns.
 4. Create an authorized automation with HTTPS site URL, objective, consent, and notification preference. For the first controlled run, prefer `${webOrigin}/demo-target` with the built-in target enabled.
 5. Start cloud capture; sign in to the target site yourself in Live View.
-6. Start workflow recording, demonstrate the reusable flow, and finish capture.
+6. Start workflow recording only after the product reports collector readiness, change **Priority** to **High priority**, type a reusable non-secret note, submit the form, and finish capture.
 7. Confirm capture becomes Compile-ready without copying internal identifiers and review the retained capture screenshots.
-8. Compile and inspect the semantic plan, then run a fresh AgentCore test; approve only after verification succeeds. Include one test that lasts longer than 30 seconds and confirm the web request returns promptly while the page follows the durable result.
-9. Publish with a near-future recurrence/timezone and any explicitly non-secret recurring inputs, then close the user browser/device.
-10. Confirm Scheduler -> SQS -> Step Functions -> AgentCore Runtime reaches a verified terminal run.
-11. Confirm sanitized run history/timeline/reasoning/evidence, optional SES success email, and low-cardinality CloudWatch/EMF telemetry.
+8. Compile and inspect the semantic plan. Confirm it contains one explicit SELECT step, one TYPE step, and one verified SUBMIT step rather than generic/mismatched browser primitives.
+9. Run a fresh AgentCore test using the exact displayed `capture_input_N` requirements. Supply `High priority` for the select requirement and a non-secret note for the text requirement; approve only after verification succeeds. Include one test that lasts longer than 30 seconds and confirm the web request returns promptly while the page follows the durable result.
+10. Publish with a near-future recurrence/timezone and explicitly configure those same reusable values through the non-secret scheduled-input boundary, then close the user browser/device.
+11. Confirm Scheduler -> SQS -> Step Functions -> AgentCore Runtime reaches a verified terminal run with the device offline.
+12. Confirm sanitized run history/timeline/reasoning/evidence, optional SES success email, and low-cardinality CloudWatch/EMF telemetry.
 
 ## Controlled human-recovery path
 
@@ -53,6 +56,6 @@ For the built-in target, allow its short-lived demo auth cookie to expire; for a
 
 ## Stop conditions and evidence
 
-Stop and treat the result as a product defect if tenant/user/profile/credential scope can be chosen by a request, a consequential action advances without verification, duplicate delivery repeats an external effect, a target security challenge is bypassed, secrets appear in UI/email/logs, retry does not terminate in a bounded state, a Google-federated Cognito user intended for notification evidence is not both Google-linked and email-verified, or Browser networking permits access to infrastructure-local/private control-plane destinations that the deployment intends to block.
+Stop and treat the result as a product defect if tenant/user/profile/credential scope can be chosen by a request, a consequential action advances without verification, duplicate delivery repeats an external effect, a select is replayed as typing/clicking instead of the explicit SELECT primitive, a target security challenge is bypassed, secrets appear in UI/email/logs, retry does not terminate in a bounded state, a Google-federated Cognito user intended for notification evidence is not both Google-linked and email-verified, or Browser networking permits access to infrastructure-local/private control-plane destinations that the deployment intends to block.
 
 Retain only deployment outputs, sanitized run IDs/statuses, selected secret-free logs, and demo screenshots/video. Never retain cookies, OAuth tokens, BYOK keys, workload tokens, Browser Profile contents, Live View credentials, secret-bearing DOM/input values, or hidden model reasoning.
