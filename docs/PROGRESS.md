@@ -58,13 +58,16 @@ The control plane therefore could tell the user recording was active before thos
 - AWS DynamoDB coverage proves create/start store explicit not-ready state, readiness contention is classified after a strong read, Finish conditionally requires readiness, and non-conditional DynamoDB failures still propagate.
 - AWS Playwright collector coverage proves the readiness write occurs after binding/init-script/current-page/future-page instrumentation is attached while existing typed-value redaction and screenshot rules remain intact.
 - A dedicated control-plane regression proves Start does not settle before a production-style collector becomes ready and an unready collector stays on the safe pre-recording product presentation.
+- The readiness presentation regression uses one fixed test clock for both control and recording services so capture expiry cannot depend on wall-clock execution date.
 
 ## Validation
 
 - Normal product head `45ece098ceb28626e333f581f2638d76d5ccc864` triggered GitHub Actions CI #349.
-- CI #349 passed deterministic pnpm lock verification and frozen installation, then strict TypeScript stopped on three parser diagnostics in `capture-recording.ts`. Root cause: the batched rewrite accidentally omitted one closing brace from each of the existing sanitized `errorResponse()` object literals. The readiness design and dependency graph were not implicated.
-- The single corrective commit restores only those two missing braces and records this root cause. No type check, security boundary, readiness gate, or production behavior is weakened.
-- The corrective head is complete only after GitHub Actions succeeds on that exact SHA.
+- CI #349 passed deterministic pnpm lock verification and frozen installation, then strict TypeScript stopped on parser diagnostics in `capture-recording.ts`. Root cause: the batched rewrite omitted closing braces from the existing sanitized `errorResponse()` object literals. The readiness design and dependency graph were not implicated.
+- Corrective head `46b4cd5795915840fa62a76bbfa4c828abcd540a` restored only that syntax. CI #350 then passed deterministic lock verification, frozen installation, strict `pnpm check`, all three production packaging steps, and every AWS deployment/security/demo/OIDC contract.
+- CI #350 reached the full test suite and failed only one new readiness regression because its second fixture used an August 21 capture expiry with the real wall clock instead of the fixed test clock. Production correctly classified that stale capture as inactive; the readiness implementation itself was not implicated.
+- This follow-up correction gives both readiness fixtures the same fixed `2026-08-21T00:10:00.000Z` clock and changes no production behavior or validation gate.
+- This head is complete only after GitHub Actions succeeds on the exact published SHA.
 
 Required gates remain:
 
@@ -73,7 +76,7 @@ Required gates remain:
 3. `pnpm check`, including strict TypeScript and Next.js production build/type validation;
 4. AgentCore Runtime, control-plane Lambda, and Next.js Lambda packaging;
 5. AWS hosting/federation/release/deployment/web-demo/live-smoke/OIDC contract checks;
-6. the full test suite, including the new capture-readiness regressions.
+6. the full test suite, including the capture-readiness regressions.
 
 Never weaken these checks to obtain green status.
 

@@ -23,6 +23,8 @@ const session: CaptureSessionRecord = {
   status: "STARTED",
 };
 
+const testNow = () => new Date("2026-08-21T00:10:00.000Z");
+
 describe("CaptureRecordingControlPlaneService collector readiness", () => {
   it("does not acknowledge recording until the production collector is durably ready", async () => {
     const durableSessions = new InMemoryCaptureSessionStore();
@@ -44,7 +46,7 @@ describe("CaptureRecordingControlPlaneService collector readiness", () => {
     const controlService = new CaptureCollectionControlService(
       durableSessions,
       controls,
-      () => new Date("2026-08-21T00:10:00.000Z"),
+      testNow,
     );
     const start = vi.fn(async () => {
       setTimeout(() => {
@@ -56,7 +58,7 @@ describe("CaptureRecordingControlPlaneService collector readiness", () => {
       controlService,
       { start },
       undefined,
-      () => new Date("2026-08-21T00:10:00.000Z"),
+      testNow,
     );
 
     let settled = false;
@@ -97,8 +99,10 @@ describe("CaptureRecordingControlPlaneService collector readiness", () => {
     };
     const service = new CaptureRecordingControlPlaneService(
       activeSessions,
-      new CaptureCollectionControlService(durableSessions, controls),
+      new CaptureCollectionControlService(durableSessions, controls, testNow),
       { start: async () => undefined },
+      undefined,
+      testNow,
     );
 
     await expect(service.state(scope, session.automationId)).resolves.toMatchObject({
