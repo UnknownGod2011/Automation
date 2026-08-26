@@ -20,6 +20,7 @@ checkout = "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5"
 pnpm_setup = "pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1"
 setup_node = "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020"
 aws_credentials = "aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c"
+protection_gate = "Verify protected main promotion boundary"
 
 required = [
     "workflow_dispatch:",
@@ -36,6 +37,11 @@ required = [
     "pnpm install --frozen-lockfile",
     "pnpm check",
     "pnpm test",
+    protection_gate,
+    'f"{api_url}/repos/{repository}/branches/main"',
+    'branch.get("protected") is not True',
+    'branch_head != source_sha',
+    "GITHUB_TOKEN: ${{ github.token }}",
     aws_credentials,
     "role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}",
     "allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}",
@@ -79,8 +85,11 @@ for forbidden in (
 configure_position = deploy.index(aws_credentials)
 check_position = deploy.index("pnpm check")
 test_position = deploy.index("pnpm test")
+protection_position = deploy.index(protection_gate)
 if configure_position < check_position or configure_position < test_position:
     raise SystemExit("AWS credentials must be assumed only after source validation succeeds")
+if configure_position < protection_position:
+    raise SystemExit("AWS credentials must be assumed only after protected-main verification succeeds")
 
 if "${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" not in deploy:
     raise SystemExit("release identity must bind source SHA and workflow attempt")
