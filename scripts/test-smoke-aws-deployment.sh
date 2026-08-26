@@ -45,9 +45,17 @@ done
 code=500
 if [[ "$url" == "https://web.example.com/" ]]; then
   code=200
-  [[ "$out" == /dev/null ]] || cat >"$out" <<'HTML'
-<html><body><h1>Teach it once. Let the cloud run it.</h1><a>Sign in with Cognito</a></body></html>
+  [[ "$out" == /dev/null ]] || {
+    if [[ "${FAKE_WEB_MODE:-good}" == "missing-signin" ]]; then
+      cat >"$out" <<'HTML'
+<html><body><h1>Teach it once. Let the cloud run it.</h1></body></html>
 HTML
+    else
+      cat >"$out" <<'HTML'
+<html><body><h1>Teach it once. Let the cloud run it.</h1><a href="/api/auth/sign-in?returnTo=/">Sign in with Google or email</a></body></html>
+HTML
+    fi
+  }
 elif [[ "$url" == "https://web.example.com/api/auth/sign-in?returnTo=/" ]]; then
   code=307
   if [[ -n "$headers" ]]; then
@@ -99,6 +107,12 @@ chmod +x "$tmp/bin/curl"
 
 PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/good.out"
 grep -Fq 'demo-target state and action verified' "$tmp/good.out"
+
+if FAKE_WEB_MODE=missing-signin PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/missing-signin.out" 2>"$tmp/missing-signin.err"; then
+  echo 'smoke contract should reject a signed-out shell without the authentication action' >&2
+  exit 1
+fi
+grep -Fq 'signed-out authentication action is missing' "$tmp/missing-signin.err"
 
 if FAKE_AUTH_MODE=bad PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/bad.out" 2>"$tmp/bad.err"; then
   echo 'smoke contract should reject non-S256 Cognito redirects' >&2
