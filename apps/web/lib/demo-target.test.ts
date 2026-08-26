@@ -3,6 +3,7 @@ import {
   demoTargetCompletedHtml,
   demoTargetSessionCookie,
   hasDemoTargetSession,
+  isValidDemoPriority,
   readDemoTargetConfig,
 } from "./demo-target";
 import { GET as getDemoTarget } from "../app/demo-target/route";
@@ -39,6 +40,14 @@ describe("controlled demo target", () => {
     expect(hasDemoTargetSession("automation_demo_auth=forged")).toBe(false);
   });
 
+  it("accepts only the closed non-secret demo priority set", () => {
+    expect(isValidDemoPriority("low")).toBe(true);
+    expect(isValidDemoPriority("normal")).toBe(true);
+    expect(isValidDemoPriority("high")).toBe(true);
+    expect(isValidDemoPriority("urgent")).toBe(false);
+    expect(isValidDemoPriority(null)).toBe(false);
+  });
+
   it("returns 404 while disabled and 401 auth setup before the demo session exists", async () => {
     delete process.env.AUTOMATION_DEMO_TARGET_ENABLED;
     const disabled = await getDemoTarget(new Request("https://demo.example/demo-target"));
@@ -64,23 +73,26 @@ describe("controlled demo target", () => {
     expect(cookie).not.toContain("secret");
   });
 
-  it("presents a repeatable workflow only with a live demo session", async () => {
+  it("presents a repeatable select + text + submit workflow only with a live demo session", async () => {
     process.env.AUTOMATION_DEMO_TARGET_ENABLED = "true";
     const response = await getDemoTarget(new Request("https://demo.example/demo-target", {
       headers: { cookie: "automation_demo_auth=authenticated" },
     }));
     expect(response.status).toBe(200);
     const body = await response.text();
+    expect(body).toContain('data-testid="demo-priority"');
+    expect(body).toContain('<option value="high">High priority</option>');
     expect(body).toContain('data-testid="demo-note"');
     expect(body).toContain('data-testid="demo-submit"');
     expect(body).not.toContain("password");
     expect(body).not.toContain("api key");
   });
 
-  it("never reflects typed demo input into the post-action page", async () => {
+  it("accepts only an allowed priority and never reflects submitted demo inputs", async () => {
     process.env.AUTOMATION_DEMO_TARGET_ENABLED = "true";
     const secretLookingNote = "do-not-render-this-demo-value";
     const form = new FormData();
+    form.set("priority", "high");
     form.set("note", secretLookingNote);
     const response = await runDemoAction(new Request("https://demo.example/demo-target/action", {
       method: "POST",
@@ -91,12 +103,30 @@ describe("controlled demo target", () => {
     const body = await response.text();
     expect(body).toContain('data-testid="demo-complete"');
     expect(body).not.toContain(secretLookingNote);
+    expect(body).not.toContain("High priority");
     expect(demoTargetCompletedHtml()).not.toContain(secretLookingNote);
+  });
+
+  it("rejects missing or forged demo priority before reporting completion", async () => {
+    process.env.AUTOMATION_DEMO_TARGET_ENABLED = "true";
+    for (const priority of [null, "urgent"] as const) {
+      const form = new FormData();
+      if (priority !== null) form.set("priority", priority);
+      form.set("note", "safe demo note");
+      const response = await runDemoAction(new Request("https://demo.example/demo-target/action", {
+        method: "POST",
+        headers: { cookie: "automation_demo_auth=authenticated" },
+        body: form,
+      }));
+      expect(response.status).toBe(400);
+      expect(await response.text()).not.toContain('data-testid="demo-complete"');
+    }
   });
 
   it("returns 401 after the browser no longer sends the expired auth cookie", async () => {
     process.env.AUTOMATION_DEMO_TARGET_ENABLED = "true";
     const form = new FormData();
+    form.set("priority", "normal");
     form.set("note", "safe demo note");
     const response = await runDemoAction(new Request("https://demo.example/demo-target/action", {
       method: "POST",

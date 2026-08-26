@@ -5,6 +5,7 @@ import {
   demoTargetLoginHtml,
   hasDemoTargetSession,
   isValidDemoNote,
+  isValidDemoPriority,
   readDemoTargetConfig,
 } from "../../../lib/demo-target";
 
@@ -44,16 +45,18 @@ export async function POST(request: Request): Promise<Response> {
       headers: demoTargetHeaders(),
     });
   }
+  const priority = form.get("priority");
   const note = form.get("note");
-  if (!isValidDemoNote(note)) {
+  if (!isValidDemoPriority(priority) || !isValidDemoNote(note)) {
     return new Response(demoTargetBadRequestHtml(), {
       status: 400,
       headers: demoTargetHeaders(),
     });
   }
 
-  // The note is intentionally never reflected into the response. During capture it
-  // becomes a runtime variable, and INPUT screenshots remain suppressed.
+  // The selected priority and note are intentionally never reflected into the response.
+  // Capture represents the select choice and typed note through the existing runtime-input
+  // boundary, while the controlled target itself stores no durable application state.
   return new Response(demoTargetCompletedHtml(), {
     status: 200,
     headers: demoTargetHeaders(),

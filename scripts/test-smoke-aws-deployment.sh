@@ -35,7 +35,7 @@ while (($#)); do
       if [[ "$2" == Cookie:* ]]; then cookie="$2"; fi
       shift 2
       ;;
-    --data-urlencode) encoded_data="$2"; shift 2 ;;
+    --data-urlencode) encoded_data+="|$2"; shift 2 ;;
     --connect-timeout|--max-time|--proto|--proto-redir|--data) shift 2 ;;
     --silent|--show-error) shift ;;
     http*) url="$1"; shift ;;
@@ -74,7 +74,13 @@ elif [[ "$url" == "https://web.example.com/demo-target" ]]; then
     code=404
   elif [[ "$cookie" == "Cookie: automation_demo_auth=authenticated" && "${FAKE_DEMO_MODE:-good}" != "session-broken" ]]; then
     code=200
-    [[ "$out" == /dev/null ]] || printf '<html><textarea data-testid="demo-note"></textarea><button data-testid="demo-submit">Complete</button></html>' >"$out"
+    [[ "$out" == /dev/null ]] || {
+      if [[ "${FAKE_DEMO_MODE:-good}" == "missing-select" ]]; then
+        printf '<html><textarea data-testid="demo-note"></textarea><button data-testid="demo-submit">Complete</button></html>' >"$out"
+      else
+        printf '<html><select data-testid="demo-priority"><option value="normal">Normal priority</option><option value="high">High priority</option></select><textarea data-testid="demo-note"></textarea><button data-testid="demo-submit">Complete</button></html>' >"$out"
+      fi
+    }
   else
     code=401
     [[ "$out" == /dev/null ]] || printf '<html><button data-testid="demo-login">Sign in</button></html>' >"$out"
@@ -92,13 +98,13 @@ elif [[ "$url" == "https://web.example.com/demo-target/action" && "$method" == "
   else
     code=200
     if [[ "$out" != /dev/null ]]; then
-      if [[ "${FAKE_DEMO_MODE:-good}" == "reflect-note" ]]; then
-        printf '<html><div data-testid="demo-complete">deployment-smoke-note</div></html>' >"$out"
+      if [[ "${FAKE_DEMO_MODE:-good}" == "reflect-inputs" ]]; then
+        printf '<html><div data-testid="demo-complete">High priority deployment-smoke-note</div></html>' >"$out"
       else
         printf '<html><div data-testid="demo-complete">Demo task completed.</div></html>' >"$out"
       fi
     fi
-    [[ "$encoded_data" == "note=deployment-smoke-note" ]] || code=400
+    [[ "$encoded_data" == *"|priority=high"* && "$encoded_data" == *"|note=deployment-smoke-note"* ]] || code=400
   fi
 fi
 if [[ "$write" == *'%{http_code}'* ]]; then printf '%s' "$code"; fi
@@ -143,17 +149,23 @@ if FAKE_DEMO_MODE=session-broken PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/s
 fi
 grep -Fq 'issued session cookie was not accepted' "$tmp/demo-session.err"
 
+if FAKE_DEMO_MODE=missing-select PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/demo-select.out" 2>"$tmp/demo-select.err"; then
+  echo 'smoke contract should reject a controlled demo target missing the select primitive fixture' >&2
+  exit 1
+fi
+grep -Fq 'authenticated workflow select control is missing' "$tmp/demo-select.err"
+
 if FAKE_DEMO_MODE=action-broken PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/demo-action.out" 2>"$tmp/demo-action.err"; then
   echo 'smoke contract should reject a broken controlled demo action' >&2
   exit 1
 fi
 grep -Fq 'controlled workflow action expected 200' "$tmp/demo-action.err"
 
-if FAKE_DEMO_MODE=reflect-note PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/demo-reflect.out" 2>"$tmp/demo-reflect.err"; then
-  echo 'smoke contract should reject demo responses that reflect the submitted note' >&2
+if FAKE_DEMO_MODE=reflect-inputs PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/demo-reflect.out" 2>"$tmp/demo-reflect.err"; then
+  echo 'smoke contract should reject demo responses that reflect submitted workflow inputs' >&2
   exit 1
 fi
-grep -Fq 'submitted note was reflected' "$tmp/demo-reflect.err"
+grep -Fq 'submitted workflow inputs were reflected' "$tmp/demo-reflect.err"
 
 python3 - "$tmp/environment.json" >"$tmp/demo-disabled.json" <<'PY'
 import json,sys

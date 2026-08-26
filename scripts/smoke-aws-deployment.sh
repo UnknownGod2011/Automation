@@ -183,15 +183,17 @@ PY
     demo_workflow_body="$tmp_dir/demo-workflow.html"
     demo_workflow_code="$(curl "${curl_common[@]}" --header "Cookie: $demo_cookie" --output "$demo_workflow_body" --write-out '%{http_code}' "$WEB_ORIGIN/demo-target")"
     [[ "$demo_workflow_code" == "200" ]] || { echo "demo-target smoke failed: issued session cookie was not accepted; expected 200, received $demo_workflow_code" >&2; exit 14; }
+    grep -Fq 'data-testid="demo-priority"' "$demo_workflow_body" || { echo 'demo-target smoke failed: authenticated workflow select control is missing' >&2; exit 14; }
+    grep -Fq '<option value="high">High priority</option>' "$demo_workflow_body" || { echo 'demo-target smoke failed: expected controlled select option is missing' >&2; exit 14; }
     grep -Fq 'data-testid="demo-note"' "$demo_workflow_body" || { echo 'demo-target smoke failed: authenticated workflow note field is missing' >&2; exit 14; }
     grep -Fq 'data-testid="demo-submit"' "$demo_workflow_body" || { echo 'demo-target smoke failed: authenticated workflow submit action is missing' >&2; exit 14; }
 
     demo_action_body="$tmp_dir/demo-action.html"
-    demo_action_code="$(curl "${curl_common[@]}" --request POST --header "Cookie: $demo_cookie" --header 'content-type: application/x-www-form-urlencoded' --data-urlencode 'note=deployment-smoke-note' --output "$demo_action_body" --write-out '%{http_code}' "$WEB_ORIGIN/demo-target/action")"
+    demo_action_code="$(curl "${curl_common[@]}" --request POST --header "Cookie: $demo_cookie" --header 'content-type: application/x-www-form-urlencoded' --data-urlencode 'priority=high' --data-urlencode 'note=deployment-smoke-note' --output "$demo_action_body" --write-out '%{http_code}' "$WEB_ORIGIN/demo-target/action")"
     [[ "$demo_action_code" == "200" ]] || { echo "demo-target smoke failed: controlled workflow action expected 200, received $demo_action_code" >&2; exit 14; }
     grep -Fq 'data-testid="demo-complete"' "$demo_action_body" || { echo 'demo-target smoke failed: controlled workflow completion marker is missing' >&2; exit 14; }
-    if grep -Fq 'deployment-smoke-note' "$demo_action_body"; then
-      echo 'demo-target smoke failed: submitted note was reflected into the response' >&2
+    if grep -Fq 'deployment-smoke-note' "$demo_action_body" || grep -Fq 'High priority' "$demo_action_body"; then
+      echo 'demo-target smoke failed: submitted workflow inputs were reflected into the response' >&2
       exit 14
     fi
   else
