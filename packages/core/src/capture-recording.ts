@@ -244,9 +244,9 @@ function parts(path: string): readonly string[] {
 function errorResponse(error: unknown): ControlPlaneHttpResponse {
   if (error instanceof ControlPlaneError) {
     const status = error.code === "BAD_REQUEST" ? 400 : error.code === "NOT_FOUND" ? 404 : error.code === "NOT_CONFIGURED" ? 503 : 409;
-    return { status, body: { error: { code: error.code, message: error.message } };
+    return { status, body: { error: { code: error.code, message: error.message } } };
   }
-  return { status: 500, body: { error: { code: "INTERNAL", message: "control-plane request failed" } };
+  return { status: 500, body: { error: { code: "INTERNAL", message: "control-plane request failed" } } };
 }
 
 export class CaptureAwareControlPlaneHttpHandler implements ControlPlaneHttpHandlerPort {

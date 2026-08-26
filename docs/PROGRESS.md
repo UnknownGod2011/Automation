@@ -61,7 +61,12 @@ The control plane therefore could tell the user recording was active before thos
 
 ## Validation
 
-This slice is complete only after GitHub Actions succeeds on the exact published head. Required gates remain:
+- Normal product head `45ece098ceb28626e333f581f2638d76d5ccc864` triggered GitHub Actions CI #349.
+- CI #349 passed deterministic pnpm lock verification and frozen installation, then strict TypeScript stopped on three parser diagnostics in `capture-recording.ts`. Root cause: the batched rewrite accidentally omitted one closing brace from each of the existing sanitized `errorResponse()` object literals. The readiness design and dependency graph were not implicated.
+- The single corrective commit restores only those two missing braces and records this root cause. No type check, security boundary, readiness gate, or production behavior is weakened.
+- The corrective head is complete only after GitHub Actions succeeds on that exact SHA.
+
+Required gates remain:
 
 1. deterministic pnpm lock verification using the reviewed fingerprint;
 2. frozen installation;
