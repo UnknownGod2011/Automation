@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { AutomationSummaryView, WorkflowInspectionView } from "@automation/core";
+import { scheduledStructuredInputFields, type ScheduledStructuredInputField } from "../../../lib/scheduled-input-form";
 import {
   createAuthenticatedWebControlPlaneClient,
   getWebAuthStatus,
@@ -12,12 +13,8 @@ export const dynamic = "force-dynamic";
 type ConfigurableAutomation = {
   automation: AutomationSummaryView;
   workflow: WorkflowInspectionView;
-  keys: readonly string[];
+  fields: readonly ScheduledStructuredInputField[];
 };
-
-function inputTemplate(keys: readonly string[]): string {
-  return JSON.stringify(Object.fromEntries(keys.map((key) => [key, ""])), null, 2);
-}
 
 export default async function ScheduledInputSettingsPage({
   searchParams,
@@ -57,10 +54,8 @@ export default async function ScheduledInputSettingsPage({
     );
     configurable = inspected.flatMap(({ automation, workflow }) => {
       if (!workflow) return [];
-      const keys = [...new Set(workflow.runtimeInputs.map((input) => input.key))].sort((a, b) =>
-        a.localeCompare(b, undefined, { numeric: true }),
-      );
-      return keys.length > 0 ? [{ automation, workflow, keys }] : [];
+      const fields = scheduledStructuredInputFields(workflow.runtimeInputs);
+      return fields && fields.length > 0 ? [{ automation, workflow, fields }] : [];
     });
   } catch (error) {
     if (error instanceof WebAuthError) {
@@ -86,7 +81,7 @@ export default async function ScheduledInputSettingsPage({
   return (
     <div className="stack">
       {notice === "updated" ? <div className="notice">Scheduled values updated for future runs.</div> : null}
-      {notice === "invalid-input" ? <div className="notice">Enter the complete required key set and acknowledge that every value is non-secret.</div> : null}
+      {notice === "invalid-input" ? <div className="notice">Enter every required value and acknowledge that all of them are non-secret.</div> : null}
       {notice === "request-failed" ? <div className="notice">The update failed safely. Existing scheduled values were preserved.</div> : null}
       {notice === "not-configured" ? <div className="notice">The authenticated control plane is not configured.</div> : null}
 
@@ -95,11 +90,11 @@ export default async function ScheduledInputSettingsPage({
           <div className="eyebrow">Scheduled inputs</div>
           <h1>Reusable values for future runs</h1>
           <p>Change non-secret captured values without reteaching or republishing the immutable workflow.</p>
-          <p className="muted">Saved values are write-only here. Existing values are never returned to the browser.</p>
+          <p className="muted">Saved values are write-only here. Existing values and internal workflow-variable names are never returned to the browser.</p>
         </div>
         <div className="card subtle stack">
           <strong>Safety boundary</strong>
-          <p className="muted">Use this only for ordinary reusable text. Never store passwords, OTPs, API keys, tokens, or other authentication secrets here.</p>
+          <p className="muted">Use this only for ordinary reusable text or selections. Never store passwords, OTPs, API keys, tokens, or other authentication secrets here.</p>
         </div>
       </section>
 
@@ -111,32 +106,39 @@ export default async function ScheduledInputSettingsPage({
         {configurable.length === 0 ? (
           <div className="card subtle stack">
             <h3>No configurable scheduled inputs</h3>
-            <p className="muted">Only ACTIVE or PAUSED published workflows with unresolved captured text inputs appear here.</p>
+            <p className="muted">Only ACTIVE or PAUSED published workflows with unresolved captured inputs appear here.</p>
             <Link href="/">Back to dashboard</Link>
           </div>
         ) : (
           <div className="list">
-            {configurable.map(({ automation, workflow, keys }) => (
+            {configurable.map(({ automation, workflow, fields }) => (
               <div className="list-item" key={automation.automationId}>
                 <div className="stack">
                   <div className="row"><h3>{automation.name}</h3><span className="badge">{automation.status}</span></div>
                   <div className="muted">Workflow v{workflow.version} · {automation.websiteUrl}</div>
-                  <div className="muted">Required keys: {keys.join(", ")}</div>
+                  <div className="muted">Provide one reusable value for each semantic workflow step below.</div>
                 </div>
                 <form
                   className="stack"
                   action={`/api/ui/automations/${encodeURIComponent(automation.automationId)}/scheduled-inputs`}
                   method="post"
                 >
-                  <label>
-                    Complete replacement JSON
-                    <textarea
-                      name="scheduledNonSecretInputs"
-                      rows={Math.max(4, keys.length + 2)}
-                      defaultValue={inputTemplate(keys)}
-                      required
-                    />
-                  </label>
+                  {fields.map((field, index) => {
+                    const requirement = workflow.runtimeInputs[index]!;
+                    return (
+                      <label key={field.name}>
+                        Step {requirement.step} reusable scheduled value
+                        <input
+                          name={field.name}
+                          type="text"
+                          maxLength={4_096}
+                          autoComplete="off"
+                          aria-label={`Step ${requirement.step} reusable scheduled value`}
+                          required
+                        />
+                      </label>
+                    );
+                  })}
                   <label>
                     <input type="checkbox" name="scheduledInputsAreNonSecret" value="yes" required />
                     I confirm every value above is non-secret and safe to persist for future scheduled runs.

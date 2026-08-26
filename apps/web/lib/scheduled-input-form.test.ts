@@ -1,16 +1,79 @@
 import { describe, expect, it } from "vitest";
-import { parseScheduledInputForm } from "./scheduled-input-form";
+import {
+  parseScheduledGuidedInputForm,
+  parseScheduledInputForm,
+  scheduledStructuredInputFields,
+} from "./scheduled-input-form";
 
-describe("parseScheduledInputForm", () => {
-  it("accepts explicitly acknowledged non-secret string values", () => {
-    expect(parseScheduledInputForm('{"capture_input_3":"ops@example.test"}', true)).toEqual({ values: { capture_input_3: "ops@example.test" }, acknowledged: true });
+describe("scheduled input forms", () => {
+  it("accepts explicitly acknowledged legacy JSON values", () => {
+    expect(parseScheduledInputForm('{"capture_input_3":"ops@example.test"}', true)).toEqual({
+      values: { capture_input_3: "ops@example.test" },
+      acknowledged: true,
+    });
   });
-  it("rejects persisted values without acknowledgement and malformed/non-string data", () => {
+
+  it("rejects legacy persisted values without acknowledgement and malformed/non-string data", () => {
     expect(parseScheduledInputForm('{"capture_input_3":"ops@example.test"}', false)).toBeNull();
     expect(parseScheduledInputForm('{"capture_input_3":7}', true)).toBeNull();
     expect(parseScheduledInputForm("not-json", true)).toBeNull();
   });
-  it("allows workflows with no scheduled input payload", () => {
+
+  it("allows workflows with no legacy scheduled input payload", () => {
     expect(parseScheduledInputForm("", false)).toEqual({ acknowledged: false });
+  });
+
+  it("maps guided ordinal fields only to the trusted workflow requirement order", () => {
+    const requirements = [{ key: "capture_input_2" }, { key: "capture_input_7" }];
+    expect(scheduledStructuredInputFields(requirements)).toEqual([
+      { name: "scheduledInput-1", ordinal: 1 },
+      { name: "scheduledInput-2", ordinal: 2 },
+    ]);
+
+    const form = new FormData();
+    form.set("scheduledInput-1", "High");
+    form.set("scheduledInput-2", "Acme note");
+    form.set("scheduledInputsAreNonSecret", "yes");
+    expect(parseScheduledGuidedInputForm(form, requirements)).toEqual({
+      values: { capture_input_2: "High", capture_input_7: "Acme note" },
+      acknowledged: true,
+    });
+  });
+
+  it("rejects forged, missing, duplicate, mixed, or unacknowledged guided fields", () => {
+    const requirements = [{ key: "capture_input_1" }];
+
+    const forged = new FormData();
+    forged.set("scheduledInput-2", "forged");
+    forged.set("scheduledInputsAreNonSecret", "yes");
+    expect(parseScheduledGuidedInputForm(forged, requirements)).toBeNull();
+
+    const missing = new FormData();
+    missing.set("scheduledInputsAreNonSecret", "yes");
+    expect(parseScheduledGuidedInputForm(missing, requirements)).toBeNull();
+
+    const duplicate = new FormData();
+    duplicate.append("scheduledInput-1", "first");
+    duplicate.append("scheduledInput-1", "second");
+    duplicate.set("scheduledInputsAreNonSecret", "yes");
+    expect(parseScheduledGuidedInputForm(duplicate, requirements)).toBeNull();
+
+    const mixed = new FormData();
+    mixed.set("scheduledInput-1", "guided");
+    mixed.set("scheduledNonSecretInputs", '{"capture_input_1":"json"}');
+    mixed.set("scheduledInputsAreNonSecret", "yes");
+    expect(parseScheduledGuidedInputForm(mixed, requirements)).toBeNull();
+
+    const unacknowledged = new FormData();
+    unacknowledged.set("scheduledInput-1", "value");
+    expect(parseScheduledGuidedInputForm(unacknowledged, requirements)).toBeNull();
+  });
+
+  it("fails closed on malformed trusted requirement metadata", () => {
+    const form = new FormData();
+    form.set("scheduledInput-1", "value");
+    form.set("scheduledInputsAreNonSecret", "yes");
+    expect(parseScheduledGuidedInputForm(form, [{ key: "customer.email" }])).toBeNull();
+    expect(parseScheduledGuidedInputForm(form, [{ key: "capture_input_1" }, { key: "capture_input_1" }])).toBeNull();
   });
 });

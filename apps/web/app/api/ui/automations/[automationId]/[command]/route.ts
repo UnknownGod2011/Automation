@@ -8,7 +8,7 @@ import { parseFreshTestRuntimeInputForm } from "../../../../../../lib/fresh-test
 import { isSameOriginMutation } from "../../../../../../lib/mutation-security";
 import { freshTestRunId, serverResolvedPublishWorkflowVersion } from "../../../../../../lib/product-flow-identities";
 import { scheduleFromFormData } from "../../../../../../lib/schedule-form";
-import { parseScheduledInputForm } from "../../../../../../lib/scheduled-input-form";
+import { parseScheduledGuidedInputForm, parseScheduledInputForm } from "../../../../../../lib/scheduled-input-form";
 import { createAuthenticatedWebControlPlaneClient, WebAuthError } from "../../../../../../lib/server-auth";
 
 function redirectBack(request: Request, automationId: string, notice: string): NextResponse { return NextResponse.redirect(new URL(`/automations/${encodeURIComponent(automationId)}?notice=${encodeURIComponent(notice)}`, request.url), 303); }
@@ -73,10 +73,9 @@ export async function POST(request: Request, context: { params: Promise<{ automa
       return redirectBack(request, automationId, "tested");
     }
     if (command === "scheduled-inputs") {
-      const scheduledInputs = parseScheduledInputForm(
-        String(form.get("scheduledNonSecretInputs") ?? ""),
-        form.get("scheduledInputsAreNonSecret") === "yes",
-      );
+      const workflow = await client.workflow(automationId);
+      if (!workflow) return redirectInputs(request, "invalid-input");
+      const scheduledInputs = parseScheduledGuidedInputForm(form, workflow.runtimeInputs);
       if (!scheduledInputs?.values || !scheduledInputs.acknowledged) return redirectInputs(request, "invalid-input");
       await client.command(automationId, "scheduled-inputs", {
         scheduledNonSecretInputs: scheduledInputs.values,
