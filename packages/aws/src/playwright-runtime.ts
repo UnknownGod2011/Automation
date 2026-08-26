@@ -366,6 +366,7 @@ async function verifyCaptureCustomState(
   node: WorkflowNode,
   expected: string | undefined,
   timeoutMs: number,
+  outputs: Readonly<Record<string, unknown>>,
 ): Promise<{ verified: boolean; detail: string }> {
   if (expected === "capture:input-filled") {
     const deadlineMs = Date.now() + timeoutMs;
@@ -377,6 +378,22 @@ async function verifyCaptureCustomState(
     return value.length > 0
       ? { verified: true, detail: "captured input verification passed" }
       : { verified: false, detail: "captured input verification failed" };
+  }
+
+  if (expected === "capture:select-bound-value") {
+    const selectedValue = primitiveString(outputs, ["selectedValue"]);
+    if (selectedValue === null) {
+      return { verified: false, detail: "captured select verification has no selected value" };
+    }
+    const deadlineMs = Date.now() + timeoutMs;
+    const locator = await resolveNodeLocator(page, node, deadlineMs);
+    if (!locator) {
+      return { verified: false, detail: "captured select verification target was not found" };
+    }
+    const actualValue = await locator.inputValue({ timeout: remainingMs(deadlineMs) });
+    return actualValue === selectedValue
+      ? { verified: true, detail: "captured select verification passed" }
+      : { verified: false, detail: "captured select verification failed" };
   }
 
   if (expected?.startsWith("capture:state:")) {
@@ -423,6 +440,8 @@ export class AgentCorePlaywrightBrowserExecutor implements BrowserExecutor {
           return await this.click(node, deadlineMs);
         case "TYPE":
           return await this.type(node, inputs, deadlineMs);
+        case "SELECT":
+          return await this.select(node, inputs, deadlineMs);
         case "EXTRACT":
           return await this.extract(node, deadlineMs);
         case "WAIT":
@@ -727,6 +746,45 @@ export class AgentCorePlaywrightBrowserExecutor implements BrowserExecutor {
     return this.success(node, { value: true }, "type", false);
   }
 
+  private async select(
+    node: WorkflowNode,
+    inputs: Readonly<Record<string, unknown>>,
+    deadlineMs: number,
+  ): Promise<BrowserActionResult> {
+    const value = primitiveString(inputs, ["value"]);
+    if (value === null) {
+      return sanitizedFailure(
+        "POLICY_BLOCKED",
+        "select node has no bound option label",
+        node.id,
+        false,
+      );
+    }
+    const locator = await resolveNodeLocator(this.page, node, deadlineMs);
+    if (!locator) return this.missingTarget(node, "select-missing");
+    const selectedValues = await locator.selectOption(
+      { label: value },
+      { timeout: remainingMs(deadlineMs) },
+    );
+    if (selectedValues.length !== 1 || selectedValues[0] === undefined) {
+      return sanitizedFailure(
+        "EFFECT_NOT_VERIFIED",
+        "select node did not choose exactly one option",
+        node.id,
+        true,
+      );
+    }
+
+    // The bound option can be private per-run data. Preserve only metadata evidence;
+    // verification receives the transient selected value directly from this action result.
+    return this.success(
+      node,
+      { selectedValue: selectedValues[0] },
+      "select",
+      false,
+    );
+  }
+
   private async extract(
     node: WorkflowNode,
     deadlineMs: number,
@@ -866,6 +924,7 @@ export class AgentCorePlaywrightVerificationEngine
             context.node,
             expected,
             context.verification.timeoutMs,
+            context.outputs,
           );
           verified = result.verified;
           detail = result.detail;
@@ -884,7 +943,7 @@ export class AgentCorePlaywrightVerificationEngine
         this.page,
         context.node,
         verified ? "verify-passed" : "verify-failed",
-        context.node.kind !== "TYPE",
+        context.node.kind !== "TYPE" && context.node.kind !== "SELECT",
       );
       return {
         verified,
