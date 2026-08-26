@@ -73,19 +73,26 @@ export interface AutomationControlPlaneDependencies {
   freshTests?: FreshTestExecutionPort; scheduleLifecycle?: AutomationScheduleLifecyclePort; now?: () => Date;
 }
 export class ControlPlaneError extends Error {
-  constructor(readonly code: "BAD_REQUEST" | "NOT_FOUND" | "CONFLICT" | "NOT_CONFIGURED", message: string) { super(message); }
+  constructor(readonly code: "BAD_REQUEST" | "NOT_FOUND" | "CONFLICT" | "NOT_CONFIGURED" | "UNSUPPORTED_CAPTURE_CONTROL", message: string) { super(message); }
 }
 const attentionStatuses = new Set<AutomationStatus>(["NEEDS_AUTH", "NEEDS_API_KEY", "NEEDS_ATTENTION", "PAUSED"]);
 const OBJECTIVE_REVISION_STATUSES = new Set<AutomationStatus>(["DRAFT", "COMPILING", "READY_TO_TEST", "READY_TO_PUBLISH", "DISABLED"]);
 const MAX_SCHEDULED_INPUTS = 64;
 const MAX_SCHEDULED_INPUT_VALUE_CHARS = 4_096;
 const MAX_SCHEDULED_INPUT_TOTAL_CHARS = 32_768;
+const UNSUPPORTED_CAPTURE_CONTROLS = ["checkbox", "radio", "file", "password", "other"] as const;
 function requireToken(value: string, name: string): string { const trimmed = value.trim(); if (!trimmed) throw new ControlPlaneError("BAD_REQUEST", `${name} is required`); if (trimmed.length > 160) throw new ControlPlaneError("BAD_REQUEST", `${name} is too long`); return trimmed; }
 function normalizeObjective(value: string): string {
   if (value.length > AUTOMATION_DRAFT_LIMITS.objective) throw new ControlPlaneError("BAD_REQUEST", `objective must be at most ${AUTOMATION_DRAFT_LIMITS.objective} characters`);
   const trimmed = value.trim();
   if (!trimmed) throw new ControlPlaneError("BAD_REQUEST", "objective is required");
   return trimmed;
+}
+function isUnsupportedCaptureControlCompileError(error: unknown): boolean {
+  if (!(error instanceof Error) || !error.message.includes("capture input event '")) return false;
+  return UNSUPPORTED_CAPTURE_CONTROLS.some((control) =>
+    error.message.endsWith(`uses unsupported ${control} control`),
+  );
 }
 export function canUpdateAutomationObjective(status: AutomationStatus): boolean { return OBJECTIVE_REVISION_STATUSES.has(status); }
 function matchesCreateReplay(record: AutomationRecord, command: CreateAutomationCommand): boolean {
@@ -307,8 +314,17 @@ export class AutomationControlPlaneService {
     if (!automation) throw new ControlPlaneError("NOT_FOUND", "automation not found");
     const capture = completedCapture(await this.dependencies.captureState.latestCompletedForAutomation(scope, id));
     if (!capture) throw new ControlPlaneError("CONFLICT", "a completed capture is required before compilation");
-    try { return await this.dependencies.lifecycle.compile({ scope, automationId: id, traceId: capture.traceId!, workflowId: id }); }
-    catch { throw new ControlPlaneError("CONFLICT", "automation could not be compiled from the latest capture"); }
+    try {
+      return await this.dependencies.lifecycle.compile({ scope, automationId: id, traceId: capture.traceId!, workflowId: id });
+    } catch (error) {
+      if (isUnsupportedCaptureControlCompileError(error)) {
+        throw new ControlPlaneError(
+          "UNSUPPORTED_CAPTURE_CONTROL",
+          "capture includes a form control that is not supported for safe replay",
+        );
+      }
+      throw new ControlPlaneError("CONFLICT", "automation could not be compiled from the latest capture");
+    }
   }
   async runFreshTest(scope: OwnershipScope, automationId: string, command: TestAutomationCommand): Promise<FreshTestExecutionResult> {
     const id = requireToken(automationId, "automationId");
