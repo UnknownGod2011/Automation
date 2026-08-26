@@ -96,7 +96,7 @@ web_body="$tmp_dir/web.html"
 web_code="$(curl "${curl_common[@]}" --output "$web_body" --write-out '%{http_code}' "$WEB_ORIGIN/")"
 [[ "$web_code" == "200" ]] || { echo "web smoke failed: expected 200, received $web_code" >&2; exit 10; }
 grep -Fq 'Teach it once. Let the cloud run it.' "$web_body" || { echo 'web smoke failed: expected product shell was not rendered' >&2; exit 10; }
-grep -Fq 'Sign in with Cognito' "$web_body" || { echo 'web smoke failed: signed-out Cognito action is missing' >&2; exit 10; }
+grep -Fq 'href="/api/auth/sign-in?returnTo=/"' "$web_body" || { echo 'web smoke failed: signed-out authentication action is missing' >&2; exit 10; }
 if grep -Fq 'Authentication is not configured for this deployment' "$web_body" || grep -Fq 'The authenticated control-plane URL is not configured' "$web_body"; then
   echo 'web smoke failed: deployment is still in NOT_CONFIGURED bootstrap state' >&2
   exit 10
