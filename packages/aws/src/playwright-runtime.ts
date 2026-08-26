@@ -491,6 +491,19 @@ export class AgentCorePlaywrightBrowserExecutor implements BrowserExecutor {
     const deadlineMs = Date.now() + node.timeoutMs;
 
     try {
+      if (
+        node.kind !== "REASON" &&
+        node.allowedSideEffects.length > 0 &&
+        !node.allowedSideEffects.includes(decision.action)
+      ) {
+        return sanitizedFailure(
+          "POLICY_BLOCKED",
+          "semantic action is outside the immutable node side-effect constraints",
+          node.id,
+          false,
+        );
+      }
+
       switch (decision.action) {
         case "NAVIGATE": {
           const url = primitiveString(decision.arguments, ["url"]);
@@ -519,6 +532,35 @@ export class AgentCorePlaywrightBrowserExecutor implements BrowserExecutor {
           }
           await locator.click({ timeout: remainingMs(deadlineMs) });
           return await this.success(node, {}, "semantic-click", true);
+        }
+        case "SUBMIT": {
+          if (
+            node.allowedSideEffects.length !== 1 ||
+            node.allowedSideEffects[0] !== "SUBMIT"
+          ) {
+            return sanitizedFailure(
+              "POLICY_BLOCKED",
+              "semantic submit requires immutable submit-only side-effect authority",
+              node.id,
+              false,
+            );
+          }
+          const locator = semanticLocator(this.page, decision.arguments);
+          if (!locator) {
+            return sanitizedFailure(
+              "POLICY_BLOCKED",
+              "semantic submit did not provide a constrained target",
+              node.id,
+              false,
+            );
+          }
+          if (!(await locatorVisible(locator, remainingMs(deadlineMs)))) {
+            return await this.missingTarget(node, "semantic-submit-missing");
+          }
+          // Resolve one constrained target and activate it exactly once. Verification
+          // remains a separate mandatory engine step before the workflow can advance.
+          await locator.click({ timeout: remainingMs(deadlineMs) });
+          return await this.success(node, {}, "semantic-submit", true);
         }
         case "TYPE": {
           const locator = semanticLocator(this.page, decision.arguments);

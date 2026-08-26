@@ -187,6 +187,13 @@ function failureResult(failure: RunFailure): NodeActionResult {
 
 function semanticAllowedActions(node: WorkflowNode): readonly string[] {
   if (node.kind === "REASON") return node.allowedSideEffects;
+  if (
+    node.kind === "CLICK" &&
+    node.allowedSideEffects.length === 1 &&
+    node.allowedSideEffects[0] === "SUBMIT"
+  ) {
+    return ["SUBMIT"];
+  }
   return [node.kind];
 }
 
