@@ -63,7 +63,10 @@ Capture deliberately classifies form controls such as checkbox, radio, file, pas
 
 ## Validation
 
-This slice is complete only after GitHub Actions succeeds on the exact published head. Required gates remain deterministic pnpm lock verification, frozen installation, strict `pnpm check`, all three production package builds, every AWS hosting/federation/release/deployment/web-demo/live-smoke/OIDC contract, and the complete test suite. Never weaken these checks to obtain green status.
+- Normal implementation head `19c8dbcb83bc11cd54c0ab7ad8568578b38a1985` reached CI #362. Deterministic lock verification and frozen installation passed.
+- CI #362 then failed at strict core TypeScript checking because the new test fixture's `CaptureSessionStarter` mock widened `kind: "NOT_CONFIGURED"` to `string`. Production code was not implicated.
+- The single corrective change keeps the strict contract and annotates only that fixture literal with `as const`; no compiler option or production check is weakened.
+- This slice is complete only after GitHub Actions succeeds on the exact corrective head. Required gates remain deterministic pnpm lock verification, frozen installation, strict `pnpm check`, all three production package builds, every AWS hosting/federation/release/deployment/web-demo/live-smoke/OIDC contract, and the complete test suite.
 
 ## Known production risks / parked work
 

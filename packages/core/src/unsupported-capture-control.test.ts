@@ -58,7 +58,7 @@ async function makeService(compileError: Error) {
     }),
   } as unknown as AutomationLifecyclePort;
   const captureSessions: CaptureSessionStarter = {
-    start: vi.fn(async () => ({ kind: "NOT_CONFIGURED", reason: "not used" })),
+    start: vi.fn(async () => ({ kind: "NOT_CONFIGURED" as const, reason: "not used" })),
   };
   const service = new AutomationControlPlaneService({
     automations,
