@@ -16,6 +16,7 @@ import { captureSafePageStateFingerprint } from "./capture-verification-state.js
 const DEFAULT_CONTROL_POLL_MS = 250;
 const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
 const DEFAULT_EFFECT_SETTLE_MS = 400;
+const DEFAULT_NAVIGATION_ACTION_GRACE_MS = 50;
 const MAX_TARGET_FIELD_LENGTH = 512;
 const MAX_CAPTURE_SCREENSHOT_BYTES = 2 * 1024 * 1024;
 
@@ -212,6 +213,7 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
     const pendingEffects = new Set<Promise<void>>();
     const pendingClicksByUrl = new Map<string, PendingClick[]>();
     const pendingActionPages = new Map<Page, number>();
+    const actionGenerationByPage = new Map<Page, number>();
     let sequence = 0;
     let lastTimestamp = new Date(request.session.startedAt).getTime();
 
@@ -264,6 +266,7 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
     };
     const beginAction = (page: Page): void => {
       pendingActionPages.set(page, (pendingActionPages.get(page) ?? 0) + 1);
+      actionGenerationByPage.set(page, (actionGenerationByPage.get(page) ?? 0) + 1);
     };
     const endAction = (page: Page): void => {
       const remaining = (pendingActionPages.get(page) ?? 1) - 1;
@@ -376,26 +379,36 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
         // Navigation can replace the document while instrumentation is being installed;
         // addInitScript covers the replacement document.
       }
-      page.on("framenavigated", async (frame) => {
+      page.on("framenavigated", (frame) => {
         if (frame !== page.mainFrame()) return;
-        // A click/submit already owns the resulting page transition while its bounded
-        // post-action verification is settling. Recording that same transition as a
-        // second executable NAVIGATION would replay one demonstrated action twice.
-        if (pendingActionPages.has(page)) return;
-        const url = safeHttpUrl(frame.url());
-        if (!url) return;
-        let title: string | undefined;
-        try {
-          title = safeString(await page.title());
-        } catch {
-          title = undefined;
-        }
-        append(reserve(), {
-          kind: "NAVIGATION",
-          page: { url, ...(title ? { title } : {}) },
-          navigationUrl: url,
-          artifactRefs: [],
-        });
+        const actionGeneration = actionGenerationByPage.get(page) ?? 0;
+        track((async () => {
+          // Browser event handlers call the exposed Playwright binding asynchronously.
+          // A very fast navigation can therefore reach Node before the initiating
+          // CLICK/SUBMIT. Give that binding a tiny bounded window to claim the page.
+          if (pendingActionPages.has(page)) return;
+          await delay(DEFAULT_NAVIGATION_ACTION_GRACE_MS);
+          if (
+            pendingActionPages.has(page)
+            || (actionGenerationByPage.get(page) ?? 0) !== actionGeneration
+          ) {
+            return;
+          }
+          const url = safeHttpUrl(frame.url());
+          if (!url) return;
+          let title: string | undefined;
+          try {
+            title = safeString(await page.title());
+          } catch {
+            title = undefined;
+          }
+          append(reserve(), {
+            kind: "NAVIGATION",
+            page: { url, ...(title ? { title } : {}) },
+            navigationUrl: url,
+            artifactRefs: [],
+          });
+        })());
       });
     };
 
