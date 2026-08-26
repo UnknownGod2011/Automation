@@ -88,9 +88,9 @@ describe("CaptureRecordingControlPlaneService collector readiness", () => {
         captureSessionId: session.captureSessionId,
         updatedAt: session.startedAt,
       }),
-      phase: "WORKFLOW",
       collectorReady: false,
     });
+    await controls.startWorkflow(scope, session.captureSessionId, "2026-08-21T00:00:01.000Z");
     const activeSessions: ActiveCaptureSessionStore = {
       async activeForAutomation() { return structuredClone(session); },
       async cancel() { return "CANCELED"; },
