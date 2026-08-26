@@ -13,6 +13,7 @@ const record: CaptureCollectionControlRecord = {
   captureSessionId: "capture-a",
   phase: "AUTH_SETUP",
   finishRequested: false,
+  collectorReady: false,
   updatedAt: "2026-08-21T00:00:00.000Z",
 };
 
@@ -33,7 +34,7 @@ class FakeClient implements CaptureControlDynamoClientLike {
 }
 
 describe("AwsDynamoCaptureCollectionControlStore", () => {
-  it("creates capture control state with a create-only write", async () => {
+  it("creates capture control state with a create-only not-ready write", async () => {
     const client = new FakeClient();
     const store = new AwsDynamoCaptureCollectionControlStore(client, "state-table");
     await store.putInitial(record);
@@ -44,11 +45,15 @@ describe("AwsDynamoCaptureCollectionControlStore", () => {
     });
   });
 
-  it("reads state strongly consistently and revalidates ownership", async () => {
+  it("reads readiness strongly consistently and revalidates ownership", async () => {
     const client = new FakeClient();
     client.responses.push({ Item: { entity: "CaptureCollectionControl", record } });
     const store = new AwsDynamoCaptureCollectionControlStore(client, "state-table");
-    await expect(store.getState(scope, "capture-a")).resolves.toEqual({ phase: "AUTH_SETUP", finishRequested: false });
+    await expect(store.getState(scope, "capture-a")).resolves.toEqual({
+      phase: "AUTH_SETUP",
+      finishRequested: false,
+      collectorReady: false,
+    });
     expect(client.inputs[0]).toMatchObject({ ConsistentRead: true });
   });
 
@@ -64,11 +69,41 @@ describe("AwsDynamoCaptureCollectionControlStore", () => {
     expect(client.inputs[1]).toMatchObject({ ConsistentRead: true });
   });
 
+  it("durably marks collector readiness and classifies exact contention as replay", async () => {
+    const client = new FakeClient();
+    client.responses.push(
+      conditionalFailure(),
+      { Item: { entity: "CaptureCollectionControl", record: { ...record, phase: "WORKFLOW", collectorReady: true } } },
+    );
+    const store = new AwsDynamoCaptureCollectionControlStore(client, "state-table");
+    await expect(store.markReady(scope, "capture-a", "2026-08-21T00:01:30.000Z"))
+      .resolves.toBe("REPLAY");
+    expect(client.inputs[0]).toMatchObject({
+      UpdateExpression: expect.stringContaining("#record.#ready = :true"),
+      ConditionExpression: expect.stringContaining("#record.#phase = :workflow"),
+    });
+    expect(client.inputs[1]).toMatchObject({ ConsistentRead: true });
+  });
+
   it("does not allow finish before WORKFLOW phase", async () => {
     const client = new FakeClient();
     client.responses.push(conditionalFailure(), { Item: { entity: "CaptureCollectionControl", record } });
     const store = new AwsDynamoCaptureCollectionControlStore(client, "state-table");
     await expect(store.requestFinish(scope, "capture-a", "2026-08-21T00:02:00.000Z")).rejects.toThrow(/must start/);
+  });
+
+  it("does not allow finish before the collector is ready", async () => {
+    const client = new FakeClient();
+    client.responses.push(
+      conditionalFailure(),
+      { Item: { entity: "CaptureCollectionControl", record: { ...record, phase: "WORKFLOW", collectorReady: false } } },
+    );
+    const store = new AwsDynamoCaptureCollectionControlStore(client, "state-table");
+    await expect(store.requestFinish(scope, "capture-a", "2026-08-21T00:02:00.000Z"))
+      .rejects.toThrow("collector is not ready");
+    expect(client.inputs[0]).toMatchObject({
+      ConditionExpression: expect.stringContaining("#record.#ready = :true"),
+    });
   });
 
   it("propagates DynamoDB uncertainty instead of manufacturing a replay", async () => {
