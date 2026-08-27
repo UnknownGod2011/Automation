@@ -80,6 +80,16 @@ function checkVerification(event: CaptureEvent): VerificationSpec {
   };
 }
 
+function radioVerification(event: CaptureEvent): VerificationSpec {
+  const captured = verificationFor(event);
+  return {
+    description: "Captured radio option remains selected",
+    mode: "CUSTOM",
+    expected: "capture:check-bound-state",
+    timeoutMs: captured.timeoutMs,
+  };
+}
+
 function navigationNode(id: string, url: string, nextNodeId: string): WorkflowNode {
   return {
     id,
@@ -157,8 +167,33 @@ function compileEvent(
         retryPolicy: DEFAULT_RETRY,
         timeoutMs: 20_000,
         next: [nextNodeId],
-        // Checkbox state is deterministic workflow intent. Do not send it to a model;
-        // selector drift retries safely via idempotent check/uncheck and then escalates.
+        escalation: "HUMAN",
+      };
+    }
+    if (control === "RADIO") {
+      const input = event.input!;
+      // Production radio capture intentionally redacts the HTML value and emits an
+      // unresolved descriptor. A native radio change fires only for the newly selected
+      // option, so the semantic target itself is the immutable demonstrated choice.
+      if (input.kind !== "RUNTIME_VARIABLE") {
+        throw new Error(`capture input event '${event.eventId}' uses unsupported radio control`);
+      }
+      const variableName = `capture.${event.eventId}.checked`;
+      initialVariables[variableName] = true;
+      return {
+        id: nodeId,
+        kind: "CHECK",
+        objective: `Select captured radio option for event ${event.eventId}`,
+        deterministicStrategies,
+        inputBindings: { checked: variableName },
+        outputBindings: {},
+        allowedSideEffects: ["CHECK"],
+        verification: radioVerification(event),
+        retryPolicy: DEFAULT_RETRY,
+        timeoutMs: 20_000,
+        next: [nextNodeId],
+        // Radio selection is fixed captured intent. Playwright check() is idempotent;
+        // selector drift retries safely and then escalates without model fallback.
         escalation: "HUMAN",
       };
     }
@@ -187,8 +222,6 @@ function compileEvent(
       retryPolicy: DEFAULT_RETRY,
       timeoutMs: 20_000,
       next: [nextNodeId],
-      // SELECT currently remains deterministic-only: selector drift retries and then
-      // escalates to the owner rather than sending the bound option value to a model.
       escalation: isSelect ? "HUMAN" : "SEMANTIC_RECOVERY",
     };
   }
