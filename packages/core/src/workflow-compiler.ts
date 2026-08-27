@@ -26,6 +26,19 @@ const DEFAULT_RETRY: RetryPolicy = {
   retryableFailureCodes: ["TRANSIENT_NETWORK", "ELEMENT_NOT_FOUND", "EFFECT_NOT_VERIFIED"],
 };
 
+const TRUSTED_OBJECTIVE_ROLES = new Set([
+  "button",
+  "link",
+  "textbox",
+  "searchbox",
+  "spinbutton",
+  "slider",
+  "combobox",
+  "listbox",
+  "checkbox",
+  "radio",
+]);
+
 function required(value: string, name: string): void {
   if (!value.trim()) throw new Error(`${name} is required`);
 }
@@ -45,6 +58,12 @@ function strategiesForTarget(target: CaptureSemanticTarget | undefined): readonl
   if (target.css) strategies.push({ kind: "CSS", value: target.css, confidence: 0.75 });
   if (target.xpath) strategies.push({ kind: "XPATH", value: target.xpath, confidence: 0.6 });
   return strategies;
+}
+
+function targetObjectiveLabel(target: CaptureSemanticTarget | undefined): string {
+  const role = target?.role?.trim().toLowerCase();
+  if (!role || !TRUSTED_OBJECTIVE_ROLES.has(role)) return "captured target";
+  return `captured ${role}`;
 }
 
 function verificationFor(event: CaptureEvent): VerificationSpec {
@@ -113,12 +132,13 @@ function navigationNode(id: string, url: string, nextNodeId: string): WorkflowNo
 }
 
 function objectiveFor(event: CaptureEvent): string {
+  const target = targetObjectiveLabel(event.target);
   switch (event.kind) {
     case "NAVIGATION": return `Navigate to ${event.navigationUrl ?? event.page.url}`;
-    case "CLICK": return `Activate captured target for event ${event.eventId}`;
-    case "SUBMIT": return `Submit captured form for event ${event.eventId}`;
-    case "INPUT": return `Enter captured input for event ${event.eventId}`;
-    case "SCROLL": return `Observe scroll event ${event.eventId}`;
+    case "CLICK": return `Activate ${target}`;
+    case "SUBMIT": return `Submit ${target}`;
+    case "INPUT": return `Enter value in ${target}`;
+    case "SCROLL": return "Observe captured scroll";
   }
 }
 
@@ -143,6 +163,7 @@ function compileEvent(
 
   if (event.kind === "INPUT") {
     const control = event.inputControl ?? "TEXT";
+    const target = targetObjectiveLabel(event.target);
     if (control === "CHECKBOX") {
       const input = event.input!;
       if (
@@ -158,7 +179,7 @@ function compileEvent(
       return {
         id: nodeId,
         kind: "CHECK",
-        objective: `Set captured checkbox state for event ${event.eventId}`,
+        objective: `Set ${target} to the demonstrated checked state`,
         deterministicStrategies,
         inputBindings: { checked: variableName },
         outputBindings: {},
@@ -183,7 +204,7 @@ function compileEvent(
       return {
         id: nodeId,
         kind: "CHECK",
-        objective: `Select captured radio option for event ${event.eventId}`,
+        objective: `Select ${target}`,
         deterministicStrategies,
         inputBindings: { checked: variableName },
         outputBindings: {},
@@ -212,8 +233,8 @@ function compileEvent(
       id: nodeId,
       kind: isSelect ? "SELECT" : "TYPE",
       objective: isSelect
-        ? `Select captured option for event ${event.eventId}`
-        : objectiveFor(event),
+        ? `Select an option in ${target}`
+        : `Enter text in ${target}`,
       deterministicStrategies,
       inputBindings: { value: variableName },
       outputBindings: {},
