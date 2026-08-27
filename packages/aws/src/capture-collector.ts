@@ -22,7 +22,7 @@ const DEFAULT_NAVIGATION_ACTION_GRACE_MS = 50;
 const MAX_TARGET_FIELD_LENGTH = 512;
 const MAX_CAPTURE_SCREENSHOT_BYTES = 2 * 1024 * 1024;
 
-const CAPTURE_INSTALLER = `(() => {
+export const CAPTURE_INSTALLER = `(() => {
   const key = "__automationCaptureInstalled";
   if (window[key]) return;
   window[key] = true;
@@ -49,7 +49,7 @@ const CAPTURE_INSTALLER = `(() => {
   const inputType = (element) => element instanceof HTMLInputElement
     ? element.type
     : element instanceof HTMLSelectElement
-      ? "select"
+      ? (element.multiple ? "select-multiple" : "select")
       : undefined;
   const emit = (payload) => {
     const bridge = window.__automationCaptureEvent;
@@ -65,7 +65,11 @@ const CAPTURE_INSTALLER = `(() => {
   document.addEventListener("change", (event) => {
     const element = event.target;
     if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement)) return;
-    const inputType = element instanceof HTMLInputElement ? element.type : element.tagName.toLowerCase();
+    const inputType = element instanceof HTMLInputElement
+      ? element.type
+      : element instanceof HTMLSelectElement
+        ? (element.multiple ? "select-multiple" : "select")
+        : element.tagName.toLowerCase();
     emit({
       kind: "INPUT",
       target: target(element),
@@ -136,6 +140,11 @@ export function classifyCaptureInputControl(inputType: unknown): CaptureInputCon
       return "TEXT";
     case "select":
       return "SELECT";
+    case "select-multiple":
+      // Multi-select requires a list-valued workflow primitive and independent
+      // verification. Preserve it as unsupported OTHER instead of silently compiling
+      // it through the single-value SELECT path.
+      return "OTHER";
     case "checkbox":
       return "CHECKBOX";
     case "radio":
@@ -147,6 +156,13 @@ export function classifyCaptureInputControl(inputType: unknown): CaptureInputCon
     default:
       return "OTHER";
   }
+}
+
+export function shouldSuppressDiscreteControlClick(inputType: unknown): boolean {
+  const normalized = safeString(inputType, 64)?.toLowerCase();
+  if (normalized === "select-multiple") return true;
+  const control = classifyCaptureInputControl(inputType);
+  return control === "SELECT" || control === "CHECKBOX" || control === "RADIO";
 }
 
 function inputVerification(): VerificationSpec {
@@ -413,14 +429,12 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
       const title = safeString(pageRecord.title);
       const target = normalizeTarget((payload as unknown as { target?: unknown }).target);
 
-      if (payload.kind === "CLICK") {
-        const control = classifyCaptureInputControl(payload.inputType);
-        if (control === "SELECT" || control === "CHECKBOX" || control === "RADIO") {
-          // Select/checkbox/radio changes have explicit form-control events. Suppress
-          // their initiating click—even when the user clicked an associated label—so
-          // one demonstrated state change cannot compile into two browser actions.
-          return;
-        }
+      if (payload.kind === "CLICK" && shouldSuppressDiscreteControlClick(payload.inputType)) {
+        // Select/checkbox/radio changes and unsupported multi-select changes have
+        // explicit form-control events. Suppress their initiating click—even when the
+        // user clicked an associated label—so one demonstration cannot become two
+        // browser actions before the compiler applies the control-specific policy.
+        return;
       }
 
       if (payload.kind === "INPUT") {

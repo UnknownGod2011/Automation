@@ -2,91 +2,77 @@
 
 Updated: 2026-08-27
 
-## Current baseline
+## Current validated baseline
 
-- Incoming `main` is `f4b9d33a306ee0d0cca73ed678dda2c7b1630bee` (`Support deterministic captured radio selection`) and is independently green on push CI #378.
-- The AWS-first product vertical is structurally present: Cognito/Google authentication, Next.js control plane, controlled first-party demo target, AgentCore Live View capture + Browser Profile persistence, immutable capture traces, semantic workflow compilation/inspection, asynchronous AgentCore Fresh Test, publish/scheduling, Scheduler -> SQS -> Step Functions -> AgentCore execution, OpenAI BYOK reasoning, explicit effect verification, sanitized timeline/reasoning/evidence/history, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
-- Build reproducibility remains fail-closed through the reviewed pnpm lock fingerprint and frozen install. AWS SDK/DynamoDB peer-alignment assertions remain enabled.
-- Recovery/crash-reconciliation depth remains intentionally parked unless CI or the real vertical exposes a correctness blocker.
-- GitHub still reports `main` as unprotected. The deployment workflow refuses AWS OIDC credentials unless the exact current `main` head is protected, so repository protection remains an operational prerequisite for the first live AWS deployment.
+`main` is `520e6b6faf447170b11cb7ba6819e7c6f988fdac` (`Exercise RADIO in controlled AWS demo`). Push CI #380 completed successfully on that exact SHA. The repository is organized as a provider-neutral core/contracts layer, a Next.js authenticated control plane, AWS adapters/IaC, and deterministic release/deployment scripts.
 
-## This slice — exercise RADIO in the controlled first-party AWS vertical
+The AWS-first product vertical is structurally implemented: Cognito/Google sign-in, automation dashboard/create/revision, isolated AgentCore Live View capture with persisted Browser Profiles and traces, semantic workflow compilation/inspection, asynchronous Fresh Test, guided runtime/scheduled inputs, publish/schedule management, EventBridge Scheduler → SQS → Step Functions → AgentCore Runtime execution, OpenAI BYOK routing through AgentCore Identity, deterministic-first browser execution with constrained semantic fallback, mandatory effect verification, run history/timeline/reasoning/evidence, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
 
-### Product gap
+Further recovery/outbox/lease micro-hardening remains parked unless CI or the real vertical exposes a correctness blocker.
 
-Deterministic native radio-button support is now production-ready, but the recommended `/demo-target` still exercised only SELECT + TYPE + CHECK + SUBMIT. That left the new radio path outside the one controlled workflow intended to prove the complete Capture -> Compile -> Fresh Test -> scheduled execution vertical.
+## This development slice — fail closed on native multi-select capture
+
+### Defect
+
+The capture installer previously emitted the same `select` marker for both ordinary `<select>` and `<select multiple>`. The compiler therefore could not distinguish a list-valued multi-select interaction from the supported single-value `SELECT` primitive. A demonstrated multi-select could silently compile into the wrong replay semantics.
 
 ### Change
 
-- Added a native two-option **Handling mode** radio group to `/demo-target`.
-- Every fresh authenticated form starts with **Standard handling** selected; successful completion requires **Focused handling**, so the radio action must actually execute rather than pass from the default page state.
-- Capture of the Focused option uses the existing privacy-preserving RADIO shape. Compile discards the radio HTML value and binds immutable checked-state intent to the demonstrated semantic target.
-- The controlled target accepts only the single required Focused mode at submission and never reflects or persists it.
-- The protected AWS live smoke now requires the radio fixture, submits `mode=focused`, and rejects a deployment whose radio fixture disappears.
-- `docs/AWS_VERTICAL_DEMO.md` now uses one first-party workflow to prove SELECT + TYPE + RADIO + CHECK + verified SUBMIT.
+- Browser capture now emits `select-multiple` for native multiple selects on both click and change paths.
+- The AWS capture classifier deliberately maps `select-multiple` to the existing unsupported `OTHER` control category. This preserves the current closed capture schema while preventing the single-value `SELECT` compiler path from accepting the interaction.
+- The initiating multi-select click is coalesced with its change event, just like other discrete controls, so one unsupported demonstration does not create a misleading extra CLICK action before compilation fails.
+- Existing ordinary single-select behavior is unchanged.
+- Compilation remains fail-closed through the existing unsupported-control path; the authenticated product already turns that closed compiler refusal into an actionable reteach message.
 
-## Security / tenant isolation
+This slice intentionally does **not** invent multi-select execution. Supporting it safely requires an explicit list-valued provider-neutral primitive, deterministic Playwright selection semantics, runtime-input representation, and independent selected-set verification.
 
-- The radio group is part of the staging/demo-only first-party target and remains disabled by default with `/demo-target`.
-- Radio HTML values are not capture authority, workflow runtime inputs, durable application state, or model context. The semantic target identifies the demonstrated option and the compiled checked-state intent contains only `checked=true`.
-- Submitted priority/mode/note/confirmation values are never reflected by the completion response.
-- Tenant/user ownership, Browser Profile references, capture/session identities, BYOK secrets, workload tokens, and execution authority remain server-owned and unchanged.
-- Password, file, miscellaneous, and multi-select controls remain outside this boundary.
+### Security / tenancy
 
-## Idempotency / concurrency / retry / timeout
+No tenant authority or secret boundary changes. Raw selected values remain excluded from capture data. The change does not expose Browser Profile/session IDs, trace IDs, BYOK material, workload tokens, selectors, or provider errors to the browser.
 
-- Native radio change is already normalized to one executable event; the initiating click is coalesced rather than becoming `CLICK + CHECK`.
-- Production radio execution reuses idempotent `check()` semantics and independent `isChecked()` verification. Repeating the node cannot reverse the selected option.
-- No new queue, lock, lease, retry policy, timeout, persistence authority, Browser allocation, or recovery state is introduced.
+### Idempotency / concurrency / retries
 
-## Side-effect verification / user recovery
+No persistence, scheduling, retry, lease, or human-resume behavior changes. Discrete click/change coalescing reduces duplicate-action risk during capture. Unsupported multi-select reaches Compile as one unsupported INPUT event and cannot execute.
 
-- The radio selection remains deterministic-only and must satisfy `capture:check-bound-state` before execution advances.
-- The controlled target additionally requires Focused handling at submit time, so skipping the radio step cannot accidentally produce a successful end-to-end target response.
-- Existing SELECT, TYPE, CHECK, and SUBMIT verification remains unchanged.
-- Existing target-auth recovery remains unchanged: after the short-lived demo cookie expires, navigation returns 401 and enters the current `TARGET_AUTH_REQUIRED` takeover/profile-save/resume path.
+### Side-effect verification
 
-## Cost / observability
+No verification gate is weakened. Supported single-select continues to require `capture:select-bound-value` verification. Multi-select is rejected before Fresh Test or scheduled browser execution because no truthful list-valued verification contract exists yet.
 
-- No new AWS resource, IAM permission, dependency, AgentCore/model invocation, Scheduler delivery, DynamoDB/S3 write, or retained GitHub Actions artifact is added.
-- The strengthened protected smoke adds no extra HTTP request; it validates and submits the radio value through the existing controlled form request.
-- Radio/check evidence remains metadata-only in execution, avoiding extra screenshot cost/privacy exposure.
+### Cost / observability
 
-## Regression coverage
+No AWS resource, model call, browser allocation, database, queue, or IAM permission is added. Failing during Compile avoids Fresh Test/AgentCore/model cost for a workflow the runtime cannot faithfully replay.
 
-- Web target tests prove the authenticated form exposes Standard and Focused radio options, only Focused is accepted for completion, and submitted mode values are never reflected.
-- The protected live smoke requires `demo-mode-focused`, posts `mode=focused`, and rejects a missing-radio fixture.
-- Existing core/AWS tests continue to prove RADIO capture normalization, compile-time value redaction, deterministic checked-state execution, and independent verification.
+### Regression coverage
 
-## Validation
+New tests require:
 
-- Incoming `main` is independently green on push CI #378.
-- This slice is complete only after GitHub Actions passes on the exact batched head.
-- Required gates remain deterministic pnpm lock verification, frozen installation, strict `pnpm check`, AgentCore Runtime packaging, control-plane Lambda packaging, Next.js Lambda packaging, every AWS hosting/federation/release/deployment/web-demo/live-smoke/OIDC contract, and the complete test suite.
-- No check may be weakened to obtain green CI. A deterministic lock mismatch requires inspection of the authoritative CI-produced graph before the single permitted corrective commit.
+- browser instrumentation to distinguish `select` from `select-multiple`;
+- single-select classification to remain `SELECT`;
+- multi-select classification to remain unsupported and its click to be coalesced;
+- the compiler to reject the unsupported multi-select representation instead of producing a `SELECT` node.
 
-## Known production risks / parked work
+GitHub Actions on the exact branch head remains authoritative; this document does not claim the new slice is green until that run exists and completes successfully.
 
-- `main` still needs actual GitHub branch/ruleset protection before the deployment workflow will issue AWS credentials.
-- The controlled first-party AWS vertical has not yet been demonstrated end to end against live Cognito/Google, AgentCore Browser/Runtime, EventBridge/SQS/Step Functions, SES, and actual VPC network policy.
-- File upload, password, miscellaneous controls, and multi-select remain intentionally unsupported until they receive explicit provider-neutral semantics and verification.
-- SELECT, CHECK, and radio checked-state execution remain deterministic-only; model fallback is intentionally not used for private runtime values or immutable checked-state intent.
-- VPC Browser route-table/DNS/security-group/firewall policy still requires live validation against private/link-local/control-plane destinations and redirects.
-- DynamoDB <-> EventBridge Scheduler mutations remain fail-closed but are not cross-service transactional.
-- OpenAI remains the concrete production BYOK reasoning provider; Google remains a later adapter.
-- Capture/run screenshots can contain owner-visible page content; production retention/deletion policy remains a live operational concern.
-- Additional crash-recovery micro-hardening remains parked unless live execution or CI reveals a real defect.
+## Known production risks / intentionally parked work
+
+- GitHub currently reports `main` as unprotected. The manual AWS deployment workflow correctly refuses OIDC AWS credentials unless the checked-out SHA is the current protected `main` head. Repository/Environment protection must be configured operationally before first real deployment.
+- VPC AgentCore Browser mode is provisioned/verified, but real route-table, DNS, security-group, NACL, and egress policy still need live validation against private/link-local/control-plane access and redirect/DNS-rebinding scenarios.
+- Only OpenAI has a concrete production BYOK reasoning adapter today; core credential routing remains provider-neutral.
+- DynamoDB ↔ EventBridge Scheduler mutations are fail-closed but not cross-service transactional; operational reconciliation remains a known boundary.
+- File inputs, passwords, miscellaneous controls, and native multi-select remain intentionally unsupported. Password/authentication stays in Browser Profile + human-auth flows. Add new primitives only with deterministic execution and explicit verification.
 
 ## Next product milestone
 
-After exact-head green CI, promote this slice, configure required GitHub `main` protection, then run the controlled real AWS vertical:
+After exact-head CI and promotion of this slice, the highest-value milestone remains the protected real AWS vertical demonstration, not further recovery hardening:
 
-1. deploy an immutable release with `DemoTargetEnabled=true`, bounded demo session TTL, and real VPC Browser network inputs;
-2. require strengthened live smoke and all five System capabilities `CONFIGURED`;
-3. sign in through Cognito/Google and configure one OpenAI BYOK credential;
-4. target `${webOrigin}/demo-target`, authenticate in Live View, record **SELECT + RADIO + TYPE + CHECK + verified SUBMIT**, finish trusted completion, and inspect capture evidence;
-5. Compile and confirm the semantic plan contains one SELECT, one TYPE, two checked-state actions (radio + checkbox), and one verified SUBMIT, with no duplicate generic CLICK for discrete controls;
-6. run a Fresh Test lasting beyond the control-plane HTTP timeout and confirm durable asynchronous completion;
-7. approve/publish with recurrence, timezone, and guided explicitly non-secret reusable SELECT/TEXT values;
-8. verify EventBridge Scheduler -> SQS -> Step Functions -> AgentCore execution, effect verification, timeline/reasoning/evidence/history, SES, and CloudWatch;
-9. let controlled target authentication expire, require `TARGET_AUTH_REQUIRED`, complete secure Live View repair, save the Browser Profile, resume once, and reach terminal success.
+1. Configure actual `main`/production-environment protection so the OIDC deployment gate can issue credentials.
+2. Deploy immutable artifacts and require strengthened live smoke plus all five System capabilities = `CONFIGURED`.
+3. Sign in through Cognito/Google and configure one OpenAI BYOK credential.
+4. Capture the controlled first-party workflow in AgentCore Live View: SELECT → RADIO → TYPE → CHECK → one verified SUBMIT.
+5. Finish trusted capture, inspect retained capture evidence, Compile, and inspect the semantic plan.
+6. Run a >30-second asynchronous Fresh Test using guided values and inspect timeline/reasoning/run evidence.
+7. Approve/publish with recurrence/timezone and guided reusable non-secret scheduled inputs.
+8. Observe EventBridge/SQS/Step Functions/AgentCore execution, effect verification, history, SES, and CloudWatch.
+9. Let the controlled target authentication expire, use secure Live View repair, save the Browser Profile, resume, and confirm terminal success/reporting.
+
+Concrete defects from that environment should determine subsequent engineering priorities.
