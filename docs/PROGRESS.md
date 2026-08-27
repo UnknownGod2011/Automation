@@ -14,7 +14,7 @@ Further crash-recovery/outbox/lease micro-hardening remains parked unless CI or 
 
 ### Product defect
 
-Captured text-entry nodes currently use the custom verification contract `capture:input-filled`. Production Playwright verification interprets that as only “the field is non-empty.” A browser/page can therefore transform, reject, or replace a submitted value and still satisfy verification as long as some non-empty text remains. That is weaker than the deterministic intent already available to the executor and can produce a false successful Fresh Test or scheduled run.
+Captured text-entry nodes currently use the custom verification contract `capture:input-filled`. Production Playwright verification interpreted that as only “the field is non-empty.” A browser/page could therefore transform, reject, or replace a submitted value and still satisfy verification as long as some non-empty text remained. That is weaker than the deterministic intent already available to the executor and can produce a false successful Fresh Test or scheduled run.
 
 This matters directly to the controlled AWS vertical because its TYPE step is a privacy-preserving per-run input. Verification should prove the browser contains the value the action actually attempted to place, not merely that the control contains something.
 
@@ -60,7 +60,9 @@ New AWS Playwright coverage proves:
 - constrained semantic TYPE fallback returns the same transient verification value without screenshots;
 - browser-side transformation is detected rather than accepted as merely populated.
 
-GitHub Actions on the exact branch head is authoritative. This document must not be read as claiming the slice is green until that run exists and completes successfully.
+Normal implementation commit: `12d2e148693d37c85abd03448fad43aa816118ac` (`Verify captured TYPE against bound value`). CI #395 passed deterministic lock verification, frozen installation, strict `pnpm check`, all three production packaging paths, and every AWS deployment/security/demo/OIDC/main-protection contract. The full suite then failed on exactly one stale AWS regression in `playwright-runtime.test.ts`: it invoked the strengthened TYPE verifier with `outputs: {}` and still expected the legacy non-empty contract to pass. The new dedicated TYPE tests all passed, and production code was not implicated by that failure.
+
+The single corrective commit updates only that legacy test fixture to provide `{ typedValue: "runtime-secret-value" }`, matching the transient output that deterministic/semantic TYPE execution supplies in production. No verifier behavior or safety gate is weakened. GitHub Actions on the corrective exact head remains authoritative; this document must not be read as claiming green validation before that run completes successfully.
 
 ## Known production risks / intentionally parked work
 

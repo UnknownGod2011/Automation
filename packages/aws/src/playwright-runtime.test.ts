@@ -392,7 +392,7 @@ describe("AgentCorePlaywrightVerificationEngine", () => {
           expected: "capture:input-filled",
           timeoutMs: 1_000,
         },
-        outputs: {},
+        outputs: { typedValue: "runtime-secret-value" },
         evidenceRefs: [],
       }),
     ).resolves.toMatchObject({ verified: true });
