@@ -5,6 +5,7 @@ import {
   demoTargetLoginHtml,
   hasDemoTargetSession,
   isValidDemoConfirmation,
+  isValidDemoMode,
   isValidDemoNote,
   isValidDemoPriority,
   readDemoTargetConfig,
@@ -47,10 +48,12 @@ export async function POST(request: Request): Promise<Response> {
     });
   }
   const priority = form.get("priority");
+  const mode = form.get("mode");
   const note = form.get("note");
   const confirmation = form.get("confirm");
   if (
     !isValidDemoPriority(priority)
+    || !isValidDemoMode(mode)
     || !isValidDemoNote(note)
     || !isValidDemoConfirmation(confirmation)
   ) {
@@ -61,8 +64,8 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   // Submitted values are intentionally never reflected into the response. Capture represents
-  // priority and note through runtime inputs while the checkbox becomes immutable CHECK intent.
-  // The controlled target stores no durable application state.
+  // priority and note through runtime inputs while radio/checkbox choices become immutable
+  // checked-state intent. The controlled target stores no durable application state.
   return new Response(demoTargetCompletedHtml(), {
     status: 200,
     headers: demoTargetHeaders(),
