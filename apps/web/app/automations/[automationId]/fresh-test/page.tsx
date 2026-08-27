@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { WebControlPlaneError } from "../../../../lib/control-plane-client";
 import { freshTestStructuredInputFields } from "../../../../lib/fresh-test-input-form";
+import { runtimeInputSemanticPresentations } from "../../../../lib/runtime-input-presentation";
 import { createAuthenticatedWebControlPlaneClient, WebAuthError } from "../../../../lib/server-auth";
 
 export const dynamic = "force-dynamic";
@@ -63,7 +64,8 @@ export default async function GuidedFreshTestPage({
   }
 
   const fields = freshTestStructuredInputFields(workflow.runtimeInputs);
-  if (!fields) {
+  const semanticInputs = runtimeInputSemanticPresentations(workflow);
+  if (!fields || !semanticInputs || fields.length !== semanticInputs.length) {
     return (
       <section className="card stack">
         <div className="eyebrow">Fresh Test blocked</div>
@@ -94,17 +96,18 @@ export default async function GuidedFreshTestPage({
       )}
       <form action={`/api/ui/automations/${encodeURIComponent(automationId)}/test`} method="post">
         {fields.map((field, index) => {
-          const requirement = workflow.runtimeInputs[index]!;
+          const presentation = semanticInputs[index]!;
           return (
             <label key={field.name}>
-              Step {requirement.step} runtime value
+              {presentation.label}
               <input
                 name={field.name}
                 type="text"
                 maxLength={4_096}
                 autoComplete="off"
-                aria-label={`Step ${requirement.step} runtime value`}
+                aria-label={presentation.label}
               />
+              <span className="muted">{presentation.guidance}</span>
             </label>
           );
         })}

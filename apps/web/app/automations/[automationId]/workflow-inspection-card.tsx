@@ -1,7 +1,9 @@
 import Link from "next/link";
 import type { WorkflowInspectionView } from "@automation/core";
+import { runtimeInputSemanticPresentations } from "../../../lib/runtime-input-presentation";
 
 export function WorkflowInspectionCard({ workflow }: { workflow: WorkflowInspectionView }) {
+  const semanticInputs = runtimeInputSemanticPresentations(workflow);
   return (
     <div className="card subtle stack" style={{ marginTop: 12 }}>
       <div className="row">
@@ -20,7 +22,7 @@ export function WorkflowInspectionCard({ workflow }: { workflow: WorkflowInspect
           Review capture screenshots
         </Link>
       ) : null}
-      {workflow.runtimeInputs.length > 0 ? (
+      {workflow.runtimeInputs.length > 0 ? semanticInputs ? (
         <div className="notice stack">
           <strong>Fresh test needs {workflow.runtimeInputs.length} runtime {workflow.runtimeInputs.length === 1 ? "value" : "values"}</strong>
           <p>
@@ -29,8 +31,8 @@ export function WorkflowInspectionCard({ workflow }: { workflow: WorkflowInspect
             variable names back to the server.
           </p>
           <div className="stack">
-            {workflow.runtimeInputs.map((input) => (
-              <span key={`${input.step}-${input.key}`}>Step {input.step} · runtime value required</span>
+            {semanticInputs.map((input) => (
+              <span key={`${input.step}-${input.kind}`}>{input.label} required</span>
             ))}
           </div>
           {workflow.automationId ? (
@@ -46,6 +48,11 @@ export function WorkflowInspectionCard({ workflow }: { workflow: WorkflowInspect
             run checkpoint state; target-site authentication belongs in the persisted Browser Profile. Scheduled runs
             still require explicitly non-secret reusable values configured at publish time.
           </p>
+        </div>
+      ) : (
+        <div className="notice">
+          Runtime-input metadata is inconsistent with the semantic workflow. Recompile the trusted capture rather
+          than guessing at browser inputs.
         </div>
       ) : null}
       <div className="list">
