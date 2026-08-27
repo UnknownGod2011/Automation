@@ -1,6 +1,7 @@
 const DEMO_AUTH_COOKIE = "automation_demo_auth";
 const DEMO_AUTH_VALUE = "authenticated";
 const DEMO_CONFIRMATION_VALUE = "confirmed";
+const DEMO_REQUIRED_MODE = "focused";
 const DEFAULT_SESSION_TTL_SECONDS = 900;
 const MIN_SESSION_TTL_SECONDS = 60;
 const MAX_SESSION_TTL_SECONDS = 3600;
@@ -87,7 +88,7 @@ export function demoTargetLoginHtml(): string {
 export function demoTargetWorkflowHtml(): string {
   return document(
     "Automation demo task",
-    '<h1>Demo workflow target</h1><p>Choose a non-secret priority, enter a non-secret demo note, confirm the harmless demo action, and submit it.</p><form method="post" action="/demo-target/action" data-testid="demo-form"><label for="demo-priority">Priority</label><select id="demo-priority" name="priority" data-testid="demo-priority" required><option value="low">Low priority</option><option value="normal" selected>Normal priority</option><option value="high">High priority</option></select><label for="demo-note">Demo note</label><textarea id="demo-note" name="note" data-testid="demo-note" maxlength="4096" required></textarea><label for="demo-confirm"><input id="demo-confirm" name="confirm" type="checkbox" value="confirmed" data-testid="demo-confirm" required> Confirm this harmless demo action</label><button type="submit" data-testid="demo-submit">Complete demo task</button></form>',
+    '<h1>Demo workflow target</h1><p>Choose a non-secret priority, select Focused handling, enter a non-secret demo note, confirm the harmless demo action, and submit it.</p><form method="post" action="/demo-target/action" data-testid="demo-form"><label for="demo-priority">Priority</label><select id="demo-priority" name="priority" data-testid="demo-priority" required><option value="low">Low priority</option><option value="normal" selected>Normal priority</option><option value="high">High priority</option></select><fieldset data-testid="demo-mode"><legend>Handling mode</legend><label for="demo-mode-standard"><input id="demo-mode-standard" name="mode" type="radio" value="standard" data-testid="demo-mode-standard" checked required> Standard handling</label><label for="demo-mode-focused"><input id="demo-mode-focused" name="mode" type="radio" value="focused" data-testid="demo-mode-focused" required> Focused handling</label></fieldset><label for="demo-note">Demo note</label><textarea id="demo-note" name="note" data-testid="demo-note" maxlength="4096" required></textarea><label for="demo-confirm"><input id="demo-confirm" name="confirm" type="checkbox" value="confirmed" data-testid="demo-confirm" required> Confirm this harmless demo action</label><button type="submit" data-testid="demo-submit">Complete demo task</button></form>',
   );
 }
 
@@ -101,7 +102,7 @@ export function demoTargetCompletedHtml(): string {
 export function demoTargetBadRequestHtml(): string {
   return document(
     "Invalid demo request",
-    "<h1>Invalid demo request</h1><p>The demo priority must be allowed, the note must be a string no longer than 4,096 characters, and the harmless demo confirmation must be checked.</p>",
+    "<h1>Invalid demo request</h1><p>The demo priority must be allowed, Focused handling must be selected, the note must be a string no longer than 4,096 characters, and the harmless demo confirmation must be checked.</p>",
   );
 }
 
@@ -111,6 +112,10 @@ export function isValidDemoNote(value: FormDataEntryValue | null): value is stri
 
 export function isValidDemoPriority(value: FormDataEntryValue | null): value is DemoPriority {
   return typeof value === "string" && DEMO_PRIORITIES.includes(value as DemoPriority);
+}
+
+export function isValidDemoMode(value: FormDataEntryValue | null): boolean {
+  return value === DEMO_REQUIRED_MODE;
 }
 
 export function isValidDemoConfirmation(value: FormDataEntryValue | null): boolean {
