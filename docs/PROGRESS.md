@@ -4,54 +4,63 @@ Updated: 2026-08-28
 
 ## Current validated baseline
 
-Authoritative GitHub state at the start of this slice: `main` is `182575b2ad97fbe0351f8a647c40b59b35f65fcd` (`Improve native capture semantic targets`), and push CI #390 completed successfully on that exact SHA. There were no open pull requests. GitHub still reports `main.protected=false`; the fail-closed deployment workflow must continue issuing zero AWS credentials until repository protection is actually configured.
+Authoritative GitHub state at the start of this slice: `main` is `c5b72f59f28e96decdf0a5c30d64353137243733` (`Clarify compiled capture step intent`), and push CI #394 completed successfully on that exact SHA. There were no open pull requests. GitHub still reports `main.protected=false`; the fail-closed deployment workflow must continue issuing zero AWS credentials until repository protection is actually configured.
 
 The AWS-first product vertical is structurally implemented: Cognito/Google sign-in, dashboard/create/revision, AgentCore Live View capture with durable Browser Profiles/traces, semantic compilation/inspection, guided asynchronous Fresh Test, guided publish/scheduled inputs, EventBridge Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution, OpenAI BYOK through AgentCore Identity, deterministic-first browser execution with constrained reasoning fallback, mandatory effect verification, authenticated capture/run evidence, run timeline/reasoning/history, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
 
 Further crash-recovery/outbox/lease micro-hardening remains parked unless CI or the real vertical exposes a correctness blocker.
 
-## This development slice — remove opaque event IDs from compiled step intent
+## This development slice — verify TYPE against the bound value
 
 ### Product defect
 
-Capture retains strong semantic target metadata, but the compiler still generated objectives such as `Enter captured input for event ...`, `Submit captured form for event ...`, and `Activate captured target for event ...`. Those strings are user-visible through semantic workflow inspection and are also supplied to constrained semantic recovery. They leak internal capture event identities into product-facing workflow intent and give the reasoner less useful task semantics than the browser action type already provides.
+Captured text-entry nodes currently use the custom verification contract `capture:input-filled`. Production Playwright verification interprets that as only “the field is non-empty.” A browser/page can therefore transform, reject, or replace a submitted value and still satisfy verification as long as some non-empty text remains. That is weaker than the deterministic intent already available to the executor and can produce a false successful Fresh Test or scheduled run.
 
-Using raw accessible names directly as trusted workflow objectives would create a different security problem: accessible names and explicit ARIA roles are website-controlled content and can contain prompt-injection-like text. The workflow objective boundary must improve semantics without promoting arbitrary page text into trusted model instructions.
+This matters directly to the controlled AWS vertical because its TYPE step is a privacy-preserving per-run input. Verification should prove the browser contains the value the action actually attempted to place, not merely that the control contains something.
 
 ### Change
 
-- Captured executable node objectives now use closed, role-based intent rather than capture event IDs.
-- Examples: `Activate captured link`, `Enter text in captured textbox`, `Select an option in captured combobox`, `Set captured checkbox to the demonstrated checked state`, `Select captured radio`, and `Submit captured button`.
-- Only a closed allowlist of common native roles may enter this trusted objective label. Unknown or site-invented role strings fall back to `captured target`.
-- Page-controlled accessible names/text remain available only in the existing deterministic target strategies; they are not copied into the trusted objective string by this slice.
-- Navigation objectives remain URL-based because the immutable navigation URL is already the declared browser side effect and verification authority.
-- Deterministic selectors, allowed side effects, retry policy, verification contracts, runtime bindings, workflow versioning, and escalation behavior are unchanged.
+- Deterministic TYPE execution now returns the bound typed value only as a transient `typedValue` action output after `fill()` succeeds.
+- Constrained semantic TYPE fallback returns the same transient output after its bounded fill operation.
+- `capture:input-filled` verification for a TYPE node now requires that transient bound value and compares it exactly with Playwright `inputValue()`.
+- An intentionally empty bound value verifies successfully only when the browser is also empty; the previous non-empty-only contract could not express this valid case.
+- Missing transient TYPE output fails verification closed instead of falling back to a weak non-empty check.
+- Compatibility is preserved for legacy non-TYPE nodes that may still carry `capture:input-filled`: those continue using the older non-empty behavior. Dedicated SELECT and CHECK verification contracts are unchanged.
+- TYPE action and verification screenshots remain suppressed.
+
+The compiler contract remains compatible: existing immutable workflows using `capture:input-filled` automatically receive the stronger TYPE semantics when executed by the updated production runtime, so no workflow-version migration is required.
 
 ### Security / tenant isolation / privacy
 
-No tenant/user/profile/credential authority changes. This is compiler metadata derived from an already-authorized capture trace. The new trusted objective label deliberately excludes accessible names, arbitrary text, selectors, captured values, Browser Profile/session identities, BYOK material, cookies, and workload tokens. Unknown roles fail to the generic `captured target` label instead of being interpreted as instructions.
+No ownership or authorization boundary changes. The typed value already exists in the run’s authorized input/checkpoint variables; this slice does not add it to workflow graphs, evidence metadata, screenshots, logs, notifications, Browser Profiles, or user-facing diagnostics. `typedValue` is an in-memory action output consumed by verification. Captured TYPE nodes have no output binding, so the verifier result does not create a new durable workflow variable.
+
+The existing warnings remain applicable: Fresh Test inputs can enter durable checkpoint state and must not contain passwords, OTPs, API keys, tokens, or authentication secrets. Target-site authentication remains in the Browser Profile/human-auth path.
 
 ### Idempotency / concurrency / retry / timeout
 
-No run identity, occurrence key, lock, retry budget, lease, heartbeat, schedule, capture claim, or persistence transition changes. Existing bounded retries and semantic-recovery admission remain authoritative. The change should reduce ambiguous recovery prompts without adding model calls or browser work.
+No run identity, occurrence key, lock, lease, heartbeat, retry budget, schedule, capture claim, or persistence transition changes. Exact verification runs inside the existing bounded node verification timeout. A mismatch remains `EFFECT_NOT_VERIFIED` and follows the existing bounded retry/escalation policy.
 
 ### Side-effect verification / user recovery
 
-No browser authority is broadened. Consequential actions retain the exact immutable allowed-side-effect set and existing effect verification. Semantic recovery remains constrained to that action boundary. Human escalation behavior is unchanged.
+This strengthens verification without broadening browser authority. TYPE remains constrained to the immutable node target/action. Semantic fallback remains allowed only through the existing TYPE action boundary. A page transformation that changes the typed value now fails verification rather than being accepted as success, after which existing retry/human escalation applies.
 
 ### Cost / observability
 
-No AWS resource, IAM permission, dependency, Browser/AgentCore allocation, S3 write, model request, queue delivery, or retained Actions artifact is added. The only effect is clearer bounded workflow metadata and less opaque user-facing inspection/recovery intent.
+No AWS resource, IAM permission, dependency, AgentCore Browser/Runtime allocation, S3 write, model request, queue delivery, retained Actions artifact, or additional network call is introduced. Verification performs one `inputValue()` read on the already-open page, replacing a weaker read of the same control. Screenshot suppression remains intact, so there is no evidence-storage cost increase.
 
 ### Regression coverage / validation
 
-Focused compiler coverage proves CLICK, TYPE, SELECT, CHECKBOX, RADIO, and SUBMIT objectives are closed role-based descriptions; capture event IDs and page-controlled accessible names do not appear in trusted objectives; and an unapproved role string falls back to a generic target.
+New AWS Playwright coverage proves:
 
-Normal implementation commit: `a145cc802d1c5ffde57409a420183839cdf8d371` (`Clarify compiled capture step intent`). CI #391 stopped exclusively at the deterministic pnpm supply-chain gate before installation or code validation. No package manifest changed. pnpm 10.15.0 regenerated the full reviewed graph from `632f2ffac9f82283280ea3f07fe86ccd00ff820975e412a14b88446bc5401839` to authoritative SHA-256 `9e7dfd36a9d7ed11f6a1693ca19b49e7c465263c57a53db3eb56d104741d259f`.
+- deterministic TYPE returns the transient bound value and takes no screenshot;
+- exact browser value verifies successfully;
+- a different non-empty browser value fails verification;
+- intentionally empty text can verify exactly;
+- missing transient bound value fails closed for TYPE;
+- constrained semantic TYPE fallback returns the same transient verification value without screenshots;
+- browser-side transformation is detected rather than accepted as merely populated.
 
-Corrective head `c68bcfcd50447f8d5f87288d2e38bb2132977c3e` authenticated exactly that graph and retained the existing DynamoDB/AWS SDK peer-alignment assertions. CI #392 then passed deterministic lock verification, frozen installation, strict `pnpm check`, all three production packaging paths, and every AWS deployment/security/demo/OIDC contract. The full test suite reached 350 passing core tests with one stale regression assertion: `radio-control.test.ts` still expected the old event-ID-bearing objective even though production correctly emits `Select captured radio`.
-
-This corrective batch changes only that stale expectation to the new closed semantic objective. It does not restore capture event IDs or page-controlled accessible names to trusted workflow intent. GitHub Actions on the new exact head remains authoritative; this document must not be read as claiming green validation before that run completes successfully.
+GitHub Actions on the exact branch head is authoritative. This document must not be read as claiming the slice is green until that run exists and completes successfully.
 
 ## Known production risks / intentionally parked work
 
