@@ -1,55 +1,61 @@
 # Production Progress
 
-Updated: 2026-08-27
+Updated: 2026-08-28
 
 ## Current validated baseline
 
-Authoritative GitHub state at the start of this slice: `main` is `d6b9dd01352e21d2aca983d50167f97843a7ea2a` (`Make main protection bootstrap operable`), and push CI #388 completed successfully on that exact SHA. There were no open pull requests. GitHub still reports `main.protected=false`; Issue #29 tracks the operational protection step required before the first AWS deployment.
+Authoritative GitHub state at the start of this slice: `main` is `182575b2ad97fbe0351f8a647c40b59b35f65fcd` (`Improve native capture semantic targets`), and push CI #390 completed successfully on that exact SHA. There were no open pull requests. GitHub still reports `main.protected=false`; the fail-closed deployment workflow must continue issuing zero AWS credentials until repository protection is actually configured.
 
 The AWS-first product vertical is structurally implemented: Cognito/Google sign-in, dashboard/create/revision, AgentCore Live View capture with durable Browser Profiles/traces, semantic compilation/inspection, guided asynchronous Fresh Test, guided publish/scheduled inputs, EventBridge Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution, OpenAI BYOK through AgentCore Identity, deterministic-first browser execution with constrained reasoning fallback, mandatory effect verification, authenticated capture/run evidence, run timeline/reasoning/history, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
 
 Further crash-recovery/outbox/lease micro-hardening remains parked unless CI or the real vertical exposes a correctness blocker.
 
-## This development slice — improve native capture semantics
+## This development slice — remove opaque event IDs from compiled step intent
 
 ### Product defect
 
-The browser capture installer previously recorded `role` only when a site explicitly supplied an ARIA `role` attribute and recorded `accessibleName` only from `aria-label`. Ordinary native controls such as `<button>`, labelled `<input>`, `<textarea>`, `<select>`, checkbox, radio, and normal links therefore often lost the semantic role/name that Playwright can target reliably. On real sites without `data-testid` or stable IDs this pushed compiled workflows toward brittle tag/CSS fallbacks and unnecessary semantic recovery even though the browser already exposed stronger native semantics.
+Capture retains strong semantic target metadata, but the compiler still generated objectives such as `Enter captured input for event ...`, `Submit captured form for event ...`, and `Activate captured target for event ...`. Those strings are user-visible through semantic workflow inspection and are also supplied to constrained semantic recovery. They leak internal capture event identities into product-facing workflow intent and give the reasoner less useful task semantics than the browser action type already provides.
+
+Using raw accessible names directly as trusted workflow objectives would create a different security problem: accessible names and explicit ARIA roles are website-controlled content and can contain prompt-injection-like text. The workflow objective boundary must improve semantics without promoting arbitrary page text into trusted model instructions.
 
 ### Change
 
-- Capture now infers conservative native roles for common controls: button, link, textbox/searchbox/spinbutton/slider, combobox/listbox, checkbox, and radio.
-- Accessible-name capture now prefers explicit `aria-label`, then `aria-labelledby`, then associated native `<label>` text, then button/link text.
-- Role/name strings remain bounded to the existing capture metadata limits.
-- The installer deliberately never reads `element.value` to derive semantic metadata; user-entered values remain on the existing redacted/runtime-input boundary.
-- Explicit ARIA roles still take precedence over inferred native roles.
-- The compiler/runtime are unchanged: TEST_ID remains the highest-priority deterministic strategy, then ROLE/name, then text/CSS/XPath. Existing effect verification remains mandatory before success.
+- Captured executable node objectives now use closed, role-based intent rather than capture event IDs.
+- Examples: `Activate captured link`, `Enter text in captured textbox`, `Select an option in captured combobox`, `Set captured checkbox to the demonstrated checked state`, `Select captured radio`, and `Submit captured button`.
+- Only a closed allowlist of common native roles may enter this trusted objective label. Unknown or site-invented role strings fall back to `captured target`.
+- Page-controlled accessible names/text remain available only in the existing deterministic target strategies; they are not copied into the trusted objective string by this slice.
+- Navigation objectives remain URL-based because the immutable navigation URL is already the declared browser side effect and verification authority.
+- Deterministic selectors, allowed side effects, retry policy, verification contracts, runtime bindings, workflow versioning, and escalation behavior are unchanged.
 
 ### Security / tenant isolation / privacy
 
-This is capture metadata only. No tenant authority, Browser Profile identity, capture-session identity, BYOK secret, workload token, run variable, cookie, or provider credential is added to the trace. Associated labels and ARIA naming text are bounded UI metadata; field values are never consulted. Authentication setup remains separated from executable WORKFLOW capture and password/file/miscellaneous unsupported-control rules remain unchanged.
+No tenant/user/profile/credential authority changes. This is compiler metadata derived from an already-authorized capture trace. The new trusted objective label deliberately excludes accessible names, arbitrary text, selectors, captured values, Browser Profile/session identities, BYOK material, cookies, and workload tokens. Unknown roles fail to the generic `captured target` label instead of being interpreted as instructions.
 
 ### Idempotency / concurrency / retry / timeout
 
-No idempotency key, durable state transition, retry budget, lease, heartbeat, or scheduling behavior changes. Better deterministic target metadata should reduce selector failures and therefore reduce retry/model fallback cost rather than add work. Capture collector readiness, click/change coalescing, submit normalization, navigation association, and Finish fencing are unchanged.
+No run identity, occurrence key, lock, retry budget, lease, heartbeat, schedule, capture claim, or persistence transition changes. Existing bounded retries and semantic-recovery admission remain authoritative. The change should reduce ambiguous recovery prompts without adding model calls or browser work.
 
 ### Side-effect verification / user recovery
 
-Native semantic metadata changes only target resolution quality. It does not authorize a new browser primitive or weaken allowed-side-effect constraints. Consequential actions still require the existing captured expected-effect verification. If all deterministic strategies drift, the existing bounded retry/escalation policy remains authoritative.
+No browser authority is broadened. Consequential actions retain the exact immutable allowed-side-effect set and existing effect verification. Semantic recovery remains constrained to that action boundary. Human escalation behavior is unchanged.
 
 ### Cost / observability
 
-No AWS resource, IAM permission, dependency, Browser allocation, model request, S3 write, queue delivery, or retained Actions artifact is added. The additional DOM reads are local to the already-running capture page and bounded. More reliable ROLE/name strategies should reduce unnecessary semantic-recovery/model usage on ordinary sites.
+No AWS resource, IAM permission, dependency, Browser/AgentCore allocation, S3 write, model request, queue delivery, or retained Actions artifact is added. The only effect is clearer bounded workflow metadata and less opaque user-facing inspection/recovery intent.
 
 ### Regression coverage / validation
 
-Focused tests cover native role inference for common HTML controls, bounded accessible-name selection, inclusion of the semantic helpers in the actual injected installer, `aria-labelledby` support, and an explicit guard that the installer does not read `element.value` for semantic naming.
+Focused compiler coverage proves CLICK, TYPE, SELECT, CHECKBOX, RADIO, and SUBMIT objectives are closed role-based descriptions; capture event IDs and page-controlled accessible names do not appear in trusted objectives; and an unapproved role string falls back to a generic target.
 
-GitHub Actions on the exact branch head remains authoritative; this document must not be read as claiming the slice is green until that run exists and completes successfully.
+Normal implementation commit: `a145cc802d1c5ffde57409a420183839cdf8d371` (`Clarify compiled capture step intent`). CI #391 stopped exclusively at the deterministic pnpm supply-chain gate before installation or code validation. No package manifest changed. pnpm 10.15.0 regenerated the full reviewed graph from `632f2ffac9f82283280ea3f07fe86ccd00ff820975e412a14b88446bc5401839` to authoritative SHA-256 `9e7dfd36a9d7ed11f6a1693ca19b49e7c465263c57a53db3eb56d104741d259f`.
+
+Corrective head `c68bcfcd50447f8d5f87288d2e38bb2132977c3e` authenticated exactly that graph and retained the existing DynamoDB/AWS SDK peer-alignment assertions. CI #392 then passed deterministic lock verification, frozen installation, strict `pnpm check`, all three production packaging paths, and every AWS deployment/security/demo/OIDC contract. The full test suite reached 350 passing core tests with one stale regression assertion: `radio-control.test.ts` still expected the old event-ID-bearing objective even though production correctly emits `Select captured radio`.
+
+This corrective batch changes only that stale expectation to the new closed semantic objective. It does not restore capture event IDs or page-controlled accessible names to trusted workflow intent. GitHub Actions on the new exact head remains authoritative; this document must not be read as claiming green validation before that run completes successfully.
 
 ## Known production risks / intentionally parked work
 
-- `main` is still unprotected until an administrator runs `scripts/configure-main-protection.sh --apply` (or configures an equivalent stronger policy) and GitHub confirms it. The deploy workflow correctly issues zero AWS credentials until then.
+- `main` is still unprotected until an administrator applies/verifies the existing branch-protection helper (or configures an equivalent stronger policy). The deploy workflow correctly issues zero AWS credentials until then.
 - Production GitHub Environment restrictions/reviewers remain an independent operational control and must be configured separately.
 - VPC AgentCore Browser mode is provisioned/verified, but real route-table, DNS, security-group, NACL, and egress policy still need live validation against private/link-local/control-plane access and redirect/DNS-rebinding scenarios.
 - Only OpenAI has a concrete production BYOK reasoning adapter today; core credential routing remains provider-neutral.
@@ -60,9 +66,8 @@ GitHub Actions on the exact branch head remains authoritative; this document mus
 ## Next product milestone
 
 1. Promote this slice only after exact-head CI is green.
-2. Apply/verify `main` protection with the existing admin helper and close Issue #29.
-3. Configure/verify the protected production GitHub Environment and its OIDC deployment variables/reviewer policy.
-4. Run the manual immutable AWS deployment and require strengthened live smoke plus all five System capabilities = `CONFIGURED`.
-5. Execute the controlled vertical: Cognito/Google -> OpenAI BYOK -> AgentCore Live View capture -> trusted completion/evidence -> Compile/inspect -> guided >30-second Fresh Test -> guided Publish -> Scheduler/SQS/Step Functions/AgentCore -> SES/CloudWatch -> controlled auth expiry -> secure repair/resume -> terminal success.
+2. Apply/verify real `main` protection and configure/verify the protected production GitHub Environment.
+3. Run the manual immutable AWS deployment and require strengthened live smoke plus all five System capabilities = `CONFIGURED`.
+4. Execute the controlled vertical: Cognito/Google -> OpenAI BYOK -> AgentCore Live View capture -> trusted completion/evidence -> Compile/inspect -> guided >30-second Fresh Test -> guided Publish -> Scheduler/SQS/Step Functions/AgentCore -> SES/CloudWatch -> controlled auth expiry -> secure repair/resume -> terminal success.
 
 Concrete live-environment defects should determine subsequent engineering priorities rather than additional recovery micro-hardening.
