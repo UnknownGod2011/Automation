@@ -4,6 +4,7 @@ import {
   demoTargetHeaders,
   demoTargetLoginHtml,
   hasDemoTargetSession,
+  isValidDemoConfirmation,
   isValidDemoNote,
   isValidDemoPriority,
   readDemoTargetConfig,
@@ -47,16 +48,21 @@ export async function POST(request: Request): Promise<Response> {
   }
   const priority = form.get("priority");
   const note = form.get("note");
-  if (!isValidDemoPriority(priority) || !isValidDemoNote(note)) {
+  const confirmation = form.get("confirm");
+  if (
+    !isValidDemoPriority(priority)
+    || !isValidDemoNote(note)
+    || !isValidDemoConfirmation(confirmation)
+  ) {
     return new Response(demoTargetBadRequestHtml(), {
       status: 400,
       headers: demoTargetHeaders(),
     });
   }
 
-  // The selected priority and note are intentionally never reflected into the response.
-  // Capture represents the select choice and typed note through the existing runtime-input
-  // boundary, while the controlled target itself stores no durable application state.
+  // Submitted values are intentionally never reflected into the response. Capture represents
+  // priority and note through runtime inputs while the checkbox becomes immutable CHECK intent.
+  // The controlled target stores no durable application state.
   return new Response(demoTargetCompletedHtml(), {
     status: 200,
     headers: demoTargetHeaders(),

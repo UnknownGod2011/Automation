@@ -3,6 +3,7 @@ import {
   demoTargetCompletedHtml,
   demoTargetSessionCookie,
   hasDemoTargetSession,
+  isValidDemoConfirmation,
   isValidDemoPriority,
   readDemoTargetConfig,
 } from "./demo-target";
@@ -40,12 +41,15 @@ describe("controlled demo target", () => {
     expect(hasDemoTargetSession("automation_demo_auth=forged")).toBe(false);
   });
 
-  it("accepts only the closed non-secret demo priority set", () => {
+  it("accepts only the closed non-secret demo priority and confirmation values", () => {
     expect(isValidDemoPriority("low")).toBe(true);
     expect(isValidDemoPriority("normal")).toBe(true);
     expect(isValidDemoPriority("high")).toBe(true);
     expect(isValidDemoPriority("urgent")).toBe(false);
     expect(isValidDemoPriority(null)).toBe(false);
+    expect(isValidDemoConfirmation("confirmed")).toBe(true);
+    expect(isValidDemoConfirmation("on")).toBe(false);
+    expect(isValidDemoConfirmation(null)).toBe(false);
   });
 
   it("returns 404 while disabled and 401 auth setup before the demo session exists", async () => {
@@ -73,7 +77,7 @@ describe("controlled demo target", () => {
     expect(cookie).not.toContain("secret");
   });
 
-  it("presents a repeatable select + text + submit workflow only with a live demo session", async () => {
+  it("presents a repeatable select + text + checkbox + submit workflow only with a live demo session", async () => {
     process.env.AUTOMATION_DEMO_TARGET_ENABLED = "true";
     const response = await getDemoTarget(new Request("https://demo.example/demo-target", {
       headers: { cookie: "automation_demo_auth=authenticated" },
@@ -83,17 +87,20 @@ describe("controlled demo target", () => {
     expect(body).toContain('data-testid="demo-priority"');
     expect(body).toContain('<option value="high">High priority</option>');
     expect(body).toContain('data-testid="demo-note"');
+    expect(body).toContain('type="checkbox"');
+    expect(body).toContain('data-testid="demo-confirm"');
     expect(body).toContain('data-testid="demo-submit"');
     expect(body).not.toContain("password");
     expect(body).not.toContain("api key");
   });
 
-  it("accepts only an allowed priority and never reflects submitted demo inputs", async () => {
+  it("accepts only the controlled inputs and never reflects submitted demo values", async () => {
     process.env.AUTOMATION_DEMO_TARGET_ENABLED = "true";
     const secretLookingNote = "do-not-render-this-demo-value";
     const form = new FormData();
     form.set("priority", "high");
     form.set("note", secretLookingNote);
+    form.set("confirm", "confirmed");
     const response = await runDemoAction(new Request("https://demo.example/demo-target/action", {
       method: "POST",
       headers: { cookie: "automation_demo_auth=authenticated" },
@@ -104,15 +111,22 @@ describe("controlled demo target", () => {
     expect(body).toContain('data-testid="demo-complete"');
     expect(body).not.toContain(secretLookingNote);
     expect(body).not.toContain("High priority");
+    expect(body).not.toContain("confirmed");
     expect(demoTargetCompletedHtml()).not.toContain(secretLookingNote);
   });
 
-  it("rejects missing or forged demo priority before reporting completion", async () => {
+  it("rejects missing or forged demo priority/confirmation before reporting completion", async () => {
     process.env.AUTOMATION_DEMO_TARGET_ENABLED = "true";
-    for (const priority of [null, "urgent"] as const) {
+    for (const [priority, confirmation] of [
+      [null, "confirmed"],
+      ["urgent", "confirmed"],
+      ["normal", null],
+      ["normal", "forged"],
+    ] as const) {
       const form = new FormData();
       if (priority !== null) form.set("priority", priority);
       form.set("note", "safe demo note");
+      if (confirmation !== null) form.set("confirm", confirmation);
       const response = await runDemoAction(new Request("https://demo.example/demo-target/action", {
         method: "POST",
         headers: { cookie: "automation_demo_auth=authenticated" },
@@ -128,6 +142,7 @@ describe("controlled demo target", () => {
     const form = new FormData();
     form.set("priority", "normal");
     form.set("note", "safe demo note");
+    form.set("confirm", "confirmed");
     const response = await runDemoAction(new Request("https://demo.example/demo-target/action", {
       method: "POST",
       body: form,

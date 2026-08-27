@@ -4,76 +4,63 @@ Updated: 2026-08-27
 
 ## Current baseline
 
-- `main` is `8fec94203607acc318630bfd209adf0fa84ba85d` (`Guide initial publish workflow inputs`) and is independently green on push CI #371.
+- `main` is `26273d18ae5da991c8f10a8747b89a4f752f3e20` (`Add deterministic checkbox workflow support`) and is independently green on push CI #374.
 - The AWS-first product vertical is structurally present: Cognito/Google authentication, Next.js control plane, controlled first-party demo target, AgentCore Live View capture + Browser Profile persistence, immutable capture traces, semantic workflow compilation/inspection, asynchronous AgentCore Fresh Test, publish/scheduling, Scheduler -> SQS -> Step Functions -> AgentCore execution, OpenAI BYOK reasoning, explicit effect verification, sanitized timeline/reasoning/evidence/history, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
-- Fresh Test, initial Publish, and post-publish Scheduled Inputs now use guided per-step values with server-owned mapping to internal `capture_input_N` variables.
 - Build reproducibility remains fail-closed through the reviewed pnpm lock fingerprint and frozen install. AWS SDK/DynamoDB peer-alignment assertions remain enabled.
 - Recovery/crash-reconciliation depth remains intentionally parked unless CI or the real vertical exposes a correctness blocker.
 - GitHub still reports `main` as unprotected. The deployment workflow refuses AWS OIDC credentials unless the exact current `main` head is protected, so repository protection remains an operational prerequisite for the first live AWS deployment.
 
-## This slice — explicit checkbox workflow support + discrete control event normalization
+## This slice — exercise CHECK in the controlled first-party AWS vertical
 
 ### Product gap
 
-Capture already classified checkbox changes distinctly, but Compile intentionally rejected them because the workflow/runtime had no faithful checkbox primitive. The first implementation added the correct deterministic CHECK primitive, then self-review found a capture-source correctness blocker: native select/checkbox/radio interactions can emit an initiating click followed by a change event, which could otherwise become two executable workflow actions.
+The provider-neutral deterministic `CHECK` primitive is now production-ready, but the recommended first-party `/demo-target` still exercised only SELECT + TYPE + SUBMIT. The runbook therefore required a separate permitted checkbox page to prove CHECK end to end, weakening the determinism and reproducibility of the first real AWS demonstration.
 
 ### Change
 
-- Added provider-neutral `CHECK` workflow node semantics.
-- The capture collector retains only the demonstrated checkbox boolean (`true` / `false`) as a non-secret public literal; it never captures the checkbox HTML `value`.
-- Compile converts trusted checkbox capture into a `CHECK` node with one immutable boolean binding and explicit `capture:check-bound-state` verification.
-- AWS Playwright uses `locator.check()` / `locator.uncheck()` rather than generic click. Those operations are idempotent, so a retry cannot reverse an already-applied checkbox state.
-- The executor re-reads `isChecked()` immediately after mutation, and the verification engine independently re-reads the checkbox before the workflow may advance.
-- CHECK remains deterministic-only with owner escalation after bounded retry. The demonstrated state is workflow intent and is never sent to semantic/model recovery.
-- The injected capture installer now identifies the effective form control for clicks, including clicks on associated labels, and includes its input type in the internal browser binding payload.
-- The Node capture boundary suppresses initiating CLICK events for SELECT, CHECKBOX, and RADIO controls because their subsequent change event is the authoritative state-changing interaction. Text-input click behavior is intentionally unchanged.
-- Radio, file-upload, password, miscellaneous controls, and multi-select remain fail-closed at Compile/runtime until they receive explicit provider-neutral semantics.
+- Added one required harmless checkbox, **Confirm this harmless demo action**, to `/demo-target`.
+- The demo action accepts completion only when the checkbox posts the single closed confirmation value; missing/forged confirmation fails with the same bounded 400 response as malformed priority/note input.
+- The target never reflects or durably stores the checkbox value, priority, or note.
+- The protected AWS live smoke now requires the checkbox fixture to exist, submits its fixed confirmation alongside the existing select/note values, and rejects a deployment whose controlled checkbox fixture disappears.
+- `docs/AWS_VERTICAL_DEMO.md` now uses one first-party workflow to prove SELECT + TYPE + CHECK + verified SUBMIT together.
 
 ## Security / tenant isolation
 
-- Tenant/user ownership remains unchanged and is still enforced by the existing run/capture/browser boundaries.
-- Checkbox capture stores only a boolean state. It does not store the HTML input `value`, page text, cookies, credentials, or Browser Profile data.
-- CHECK action and verification evidence are metadata-only; screenshots are suppressed to avoid retaining private form-state context unnecessarily.
-- A malformed browser capture payload without an explicit boolean checkbox state is discarded rather than becoming replay authority.
-- Discrete-control normalization uses only control category metadata already available inside the trusted capture binding. It does not add browser-visible durable authority or new persisted identifiers.
-- Password and target authentication remain outside workflow replay and continue to use Browser Profile / human-auth boundaries.
+- The checkbox is a first-party staging/demo fixture only and remains disabled by default with the rest of `/demo-target`.
+- No tenant/user authority, Browser Profile reference, session identifier, workflow identifier, credential reference, or execution capability is added to browser requests.
+- Capture stores only CHECK's demonstrated boolean state. The target-side fixed form value is not capture authority and is never returned by the completed page.
+- Passwords, MFA, target authentication, API keys, tokens, and other secrets remain outside workflow inputs and continue through Browser Profile / BYOK / human-auth boundaries.
 
 ## Idempotency / concurrency / retry / timeout
 
-- CHECK uses Playwright's idempotent check/uncheck primitives rather than toggle-click semantics. Repeating the same desired state is safe and cannot invert it.
-- One native select/checkbox/radio interaction now produces one executable state-change event rather than CLICK + INPUT. This removes duplicate replay authority at the capture source instead of relying on runtime recovery.
-- Existing bounded retry policy remains unchanged (`ELEMENT_NOT_FOUND` / `EFFECT_NOT_VERIFIED` plus transient network handling).
-- CHECK has no semantic fallback. Selector drift retries deterministically and then escalates to the owner.
-- No new run identity, queue, lease, outbox, lock, or persistence authority is introduced.
+- CHECK execution remains idempotent because production Playwright uses `check()` / `uncheck()` for the desired immutable state rather than toggle-click semantics.
+- The previously merged discrete-control event normalization ensures one checkbox click/change interaction yields one executable CHECK event rather than CLICK + CHECK.
+- The demo target itself remains stateless and repeatable; a fresh authenticated GET always renders the same starting form.
+- No new queue, lease, lock, retry policy, timeout, persistence authority, or recovery state is introduced.
 
 ## Side-effect verification / user recovery
 
-- CHECK is side-effecting and therefore always compiles with explicit verification.
-- The deterministic action confirms the reached checkbox state and returns that state only as transient action output.
-- The verification engine independently resolves the target and compares `isChecked()` with the action's desired/observed state before execution advances.
-- Discrete-control click suppression cannot manufacture success: the change event still has to compile into its own supported primitive/verification contract, and unsupported RADIO remains fail-closed.
-- Human recovery remains the existing bounded path; no new recovery subsystem was added.
+- CHECK remains a side-effecting workflow node with mandatory independent selected-state verification before execution may advance.
+- The controlled demo now verifies one semantic plan containing explicit SELECT, TYPE, CHECK, and SUBMIT steps; generic CLICK must not replace the SELECT/CHECK state-changing primitives.
+- Existing target-auth recovery remains unchanged: after the short-lived demo cookie expires, a later navigation returns 401 and must enter the existing `TARGET_AUTH_REQUIRED` takeover/profile-save/resume path.
 
 ## Cost / observability
 
-- No new AWS resource, IAM permission, dependency, AgentCore allocation, model request, Scheduler delivery, database read, or retained Actions artifact is added.
-- Checkbox execution adds only bounded Playwright state inspection inside the already-running browser session.
-- Discrete-control normalization is in-process capture logic and adds no cloud API call or storage write.
-- Evidence stays metadata-only for CHECK action/verification, avoiding screenshot storage cost and privacy exposure.
+- No new AWS resource, IAM permission, dependency, AgentCore allocation, model request, Scheduler delivery, DynamoDB/S3 write, or retained GitHub Actions artifact is added.
+- The protected smoke adds no extra HTTP round trip beyond the existing controlled action; it only includes the checkbox value in the same form POST and verifies the rendered fixture.
+- CHECK action/verification evidence remains metadata-only in production execution, avoiding extra screenshot cost/privacy exposure.
 
 ## Regression coverage
 
-- Capture tests prove checkbox changes retain only `true`/`false` and malformed missing state is rejected.
-- A new capture-source regression proves CLICK + change for CHECKBOX, SELECT, and RADIO yields only the discrete INPUT event, while a text-input click remains preserved alongside its INPUT event.
-- Compiler tests prove trusted checkbox capture becomes a verified `CHECK` node with an immutable boolean initial variable.
-- Compiler rejects a checkbox represented as an unresolved runtime string instead of trusted boolean capture state.
-- AWS runtime tests prove check and uncheck behavior, repeat-safe execution, independent selected-state verification, metadata-only evidence, and rejection before browser mutation when bound state is invalid.
-- Existing radio/file/password fail-closed coverage remains in place through the unsupported-control path.
+- Web target tests prove the authenticated form exposes the checkbox, accepts only the fixed checked confirmation, rejects missing/forged confirmation, and does not reflect submitted values.
+- The deployment smoke contract requires the checkbox fixture and sends the fixed confirmation through the same controlled action.
+- A negative smoke fixture proves a deployment missing the checkbox cannot pass the protected vertical gate.
+- Existing core/AWS CHECK tests continue to prove boolean-only capture, duplicate click/change suppression, compile semantics, idempotent check/uncheck execution, and independent verification.
 
 ## Validation
 
-- CI #372 passed completely on the original checkbox-support head `10e90529ca2f3c0bfa3510d848456599d771d8cd`, but self-review correctly blocked merge because click/change normalization was still missing.
-- This corrective product slice is complete only after GitHub Actions succeeds on the new exact batched head.
+- Incoming `main` (`26273d18ae5da991c8f10a8747b89a4f752f3e20`) is independently green on push CI #374.
+- This slice is complete only after GitHub Actions passes on the exact batched head.
 - Required gates remain deterministic pnpm lock verification, frozen installation, strict `pnpm check`, AgentCore Runtime packaging, control-plane Lambda packaging, Next.js Lambda packaging, every AWS hosting/federation/release/deployment/web-demo/live-smoke/OIDC contract, and the complete test suite.
 - No check may be weakened to obtain green CI. A deterministic lock mismatch, if one occurs, requires inspection of the authoritative CI-produced graph before the single permitted corrective commit.
 
@@ -82,7 +69,7 @@ Capture already classified checkbox changes distinctly, but Compile intentionall
 - `main` still needs actual GitHub branch/ruleset protection before the deployment workflow will issue AWS credentials.
 - The controlled first-party AWS vertical has not yet been demonstrated end to end against live Cognito/Google, AgentCore Browser/Runtime, EventBridge/SQS/Step Functions, SES, and actual VPC network policy.
 - Radio, file-upload, password, miscellaneous controls, and multi-select remain intentionally unsupported until they receive explicit provider-neutral semantics and verification. Single-select and checkbox are deterministic-only supported controls.
-- SELECT semantic recovery remains intentionally disabled because the bound option may be private per-run data; CHECK semantic recovery is intentionally disabled because the captured boolean is immutable deterministic workflow intent.
+- SELECT semantic recovery remains intentionally disabled because the bound option may be private per-run data; CHECK semantic recovery remains disabled because the captured boolean is immutable deterministic workflow intent.
 - VPC Browser route-table/DNS/security-group/firewall policy still requires live validation against private/link-local/control-plane destinations and redirects.
 - DynamoDB <-> EventBridge Scheduler mutations remain fail-closed but are not cross-service transactional.
 - OpenAI remains the concrete production BYOK reasoning provider; Google remains a later adapter.
@@ -96,10 +83,9 @@ After exact-head green CI, promote this slice, configure required GitHub `main` 
 1. deploy an immutable release with `DemoTargetEnabled=true`, bounded demo session TTL, and real VPC Browser network inputs;
 2. require strengthened live smoke and all five System capabilities `CONFIGURED`;
 3. sign in through Cognito/Google and configure one OpenAI BYOK credential;
-4. target `${webOrigin}/demo-target`, authenticate in Live View, record the supported SELECT + TYPE + SUBMIT workflow, finish trusted completion, and inspect capture evidence;
-5. separately exercise one harmless checkbox workflow on a permitted test page and verify one native checkbox interaction produces exactly one CHECK event/action;
-6. Compile, inspect the semantic plan, and use the guided Fresh Test values;
-7. run a Fresh Test lasting beyond the control-plane HTTP timeout and confirm durable asynchronous completion;
-8. approve/publish with recurrence, timezone, and guided explicitly non-secret reusable scheduled values;
-9. verify EventBridge Scheduler -> SQS -> Step Functions -> AgentCore execution, effect verification, timeline/reasoning/evidence/history, SES, and CloudWatch;
-10. let controlled target authentication expire, require `TARGET_AUTH_REQUIRED`, complete the secure Live View repair, save the Browser Profile, resume once, and reach terminal success.
+4. target `${webOrigin}/demo-target`, authenticate in Live View, record **SELECT + TYPE + CHECK + SUBMIT**, finish trusted completion, and inspect capture evidence;
+5. Compile and confirm the semantic plan contains one explicit SELECT, TYPE, CHECK, and verified SUBMIT with no duplicate generic CLICK for discrete controls;
+6. run a Fresh Test lasting beyond the control-plane HTTP timeout and confirm durable asynchronous completion;
+7. approve/publish with recurrence, timezone, and guided explicitly non-secret reusable SELECT/TEXT values;
+8. verify EventBridge Scheduler -> SQS -> Step Functions -> AgentCore execution, effect verification, timeline/reasoning/evidence/history, SES, and CloudWatch;
+9. let controlled target authentication expire, require `TARGET_AUTH_REQUIRED`, complete secure Live View repair, save the Browser Profile, resume once, and reach terminal success.
