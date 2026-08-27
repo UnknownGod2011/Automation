@@ -135,6 +135,99 @@ describe("AgentCorePlaywrightCaptureEventSource", () => {
     expect(artifacts.put).not.toHaveBeenCalled();
   });
 
+  it("coalesces discrete control clicks into their change event while preserving text-input click behavior", async () => {
+    let binding: ((source: { page: unknown }, payload: unknown) => Promise<void>) | undefined;
+    const page = {
+      evaluate: vi.fn(async (script: unknown) => {
+        if (typeof script === "string") {
+          await binding?.({ page }, {
+            kind: "CLICK",
+            page: { url: "https://example.com/app", title: "App" },
+            target: { testId: "enabled", css: "#enabled" },
+            inputType: "checkbox",
+          });
+          await binding?.({ page }, {
+            kind: "INPUT",
+            page: { url: "https://example.com/app", title: "App" },
+            target: { testId: "enabled", css: "#enabled" },
+            inputType: "checkbox",
+            checked: true,
+          });
+          await binding?.({ page }, {
+            kind: "CLICK",
+            page: { url: "https://example.com/app", title: "App" },
+            target: { testId: "priority", css: "#priority" },
+            inputType: "select",
+          });
+          await binding?.({ page }, {
+            kind: "INPUT",
+            page: { url: "https://example.com/app", title: "App" },
+            target: { testId: "priority", css: "#priority" },
+            inputType: "select",
+          });
+          await binding?.({ page }, {
+            kind: "CLICK",
+            page: { url: "https://example.com/app", title: "App" },
+            target: { testId: "choice-a", css: "#choice-a" },
+            inputType: "radio",
+          });
+          await binding?.({ page }, {
+            kind: "INPUT",
+            page: { url: "https://example.com/app", title: "App" },
+            target: { testId: "choice-a", css: "#choice-a" },
+            inputType: "radio",
+          });
+          await binding?.({ page }, {
+            kind: "CLICK",
+            page: { url: "https://example.com/app", title: "App" },
+            target: { testId: "note", css: "#note" },
+            inputType: "text",
+          });
+          await binding?.({ page }, {
+            kind: "INPUT",
+            page: { url: "https://example.com/app", title: "App" },
+            target: { testId: "note", css: "#note" },
+            inputType: "text",
+          });
+          return undefined;
+        }
+        return [{ tag: "input", id: "note" }];
+      }),
+      on: vi.fn(),
+      mainFrame: vi.fn(),
+      title: vi.fn(async () => "App"),
+      url: vi.fn(() => "https://example.com/app"),
+      waitForTimeout: vi.fn(async () => undefined),
+      screenshot: vi.fn(async () => new Uint8Array([137, 80, 78, 71])),
+    };
+    const context = {
+      exposeBinding: vi.fn(async (_name: string, callback: typeof binding) => { binding = callback; }),
+      addInitScript: vi.fn(async () => undefined),
+      pages: vi.fn(() => [page]),
+      on: vi.fn(),
+    };
+    playwright.connectOverCDP.mockResolvedValue({ contexts: () => [context] });
+
+    const source = new AgentCorePlaywrightCaptureEventSource(signer(), "aws.browser.v1", {
+      now: () => new Date("2026-08-21T00:01:00.000Z"),
+      controlPollMs: 1,
+      effectSettleMs: 1,
+    });
+    const events = await source.collect(request());
+
+    expect(events.map((event) => [
+      event.kind,
+      "inputControl" in event ? event.inputControl : undefined,
+    ])).toEqual([
+      ["INPUT", "CHECKBOX"],
+      ["INPUT", "SELECT"],
+      ["INPUT", "RADIO"],
+      ["CLICK", undefined],
+      ["INPUT", "TEXT"],
+    ]);
+    expect(events.filter((event) => event.kind === "CLICK")).toHaveLength(1);
+  });
+
   it("records redacted structural verification plus a bounded post-action screenshot for clicks", async () => {
     let binding: ((source: { page: unknown }, payload: unknown) => Promise<void>) | undefined;
     const screenshotBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]);

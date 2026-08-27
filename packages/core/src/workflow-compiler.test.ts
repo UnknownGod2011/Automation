@@ -113,11 +113,47 @@ describe("compileCaptureTrace", () => {
     expect(graph.initialVariables).toEqual({});
   });
 
+  it("compiles a demonstrated checkbox state into an idempotent verified CHECK node", () => {
+    const trace = fixture();
+    const events = trace.events.map((event) => event.eventId === "note" ? {
+      ...event,
+      target: { role: "checkbox", accessibleName: "Include archived", testId: "include-archived" },
+      input: { kind: "PUBLIC_LITERAL" as const, value: "true" },
+      inputControl: "CHECKBOX" as const,
+      expectedEffect: {
+        description: "Captured checkbox remains in the demonstrated state",
+        mode: "CUSTOM" as const,
+        expected: "capture:check-bound-state",
+        timeoutMs: 5_000,
+      },
+    } : event);
+    const graph = compileCaptureTrace({ trace: { ...trace, events }, workflowId: "workflow-checkbox", version: 1, createdAt: "2026-08-19T11:00:00Z" });
+    expect(graph.nodes["capture-4-note"]).toMatchObject({
+      kind: "CHECK",
+      inputBindings: { checked: "capture.note.checked" },
+      allowedSideEffects: ["CHECK"],
+      escalation: "HUMAN",
+      verification: { mode: "CUSTOM", expected: "capture:check-bound-state", timeoutMs: 5_000 },
+    });
+    expect(graph.initialVariables).toEqual({ "capture.note.checked": true });
+  });
+
+  it("fails closed when a captured checkbox does not contain a trusted boolean state", () => {
+    const trace = fixture();
+    const events = trace.events.map((event) => event.eventId === "note" ? {
+      ...event,
+      input: { kind: "RUNTIME_VARIABLE" as const, variableName: "capture_input_4", sensitive: true },
+      inputControl: "CHECKBOX" as const,
+    } : event);
+    expect(() => compileCaptureTrace({ trace: { ...trace, events }, workflowId: "workflow-checkbox-invalid", version: 1, createdAt: "2026-08-19T11:00:00Z" }))
+      .toThrow("checkbox state must be a captured boolean literal");
+  });
+
   it("still fails closed on captured controls without an explicit runtime primitive", () => {
     const trace = fixture();
-    const events = trace.events.map((event) => event.eventId === "note" ? { ...event, inputControl: "CHECKBOX" as const } : event);
-    expect(() => compileCaptureTrace({ trace: { ...trace, events }, workflowId: "workflow-checkbox", version: 1, createdAt: "2026-08-19T11:00:00Z" }))
-      .toThrow("uses unsupported checkbox control");
+    const events = trace.events.map((event) => event.eventId === "note" ? { ...event, inputControl: "RADIO" as const } : event);
+    expect(() => compileCaptureTrace({ trace: { ...trace, events }, workflowId: "workflow-radio", version: 1, createdAt: "2026-08-19T11:00:00Z" }))
+      .toThrow("uses unsupported radio control");
   });
 
   it("keeps legacy text-input traces without explicit control metadata compilable", () => {

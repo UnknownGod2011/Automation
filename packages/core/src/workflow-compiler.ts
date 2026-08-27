@@ -70,6 +70,16 @@ function selectVerification(event: CaptureEvent): VerificationSpec {
   };
 }
 
+function checkVerification(event: CaptureEvent): VerificationSpec {
+  const captured = verificationFor(event);
+  return {
+    description: "Checkbox state matches the demonstrated state",
+    mode: "CUSTOM",
+    expected: "capture:check-bound-state",
+    timeoutMs: captured.timeoutMs,
+  };
+}
+
 function navigationNode(id: string, url: string, nextNodeId: string): WorkflowNode {
   return {
     id,
@@ -123,6 +133,35 @@ function compileEvent(
 
   if (event.kind === "INPUT") {
     const control = event.inputControl ?? "TEXT";
+    if (control === "CHECKBOX") {
+      const input = event.input!;
+      if (
+        input.kind !== "PUBLIC_LITERAL"
+        || (input.value !== "true" && input.value !== "false")
+      ) {
+        throw new Error(
+          `capture input event '${event.eventId}' checkbox state must be a captured boolean literal`,
+        );
+      }
+      const variableName = `capture.${event.eventId}.checked`;
+      initialVariables[variableName] = input.value === "true";
+      return {
+        id: nodeId,
+        kind: "CHECK",
+        objective: `Set captured checkbox state for event ${event.eventId}`,
+        deterministicStrategies,
+        inputBindings: { checked: variableName },
+        outputBindings: {},
+        allowedSideEffects: ["CHECK"],
+        verification: checkVerification(event),
+        retryPolicy: DEFAULT_RETRY,
+        timeoutMs: 20_000,
+        next: [nextNodeId],
+        // Checkbox state is deterministic workflow intent. Do not send it to a model;
+        // selector drift retries safely via idempotent check/uncheck and then escalates.
+        escalation: "HUMAN",
+      };
+    }
     if (control !== "TEXT" && control !== "SELECT") {
       throw new Error(
         `capture input event '${event.eventId}' uses unsupported ${control.toLowerCase()} control`,

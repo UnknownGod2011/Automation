@@ -2,6 +2,7 @@ import type {
   CaptureArtifactRef,
   CaptureEvent,
   CaptureInputControl,
+  CaptureInputValue,
   CaptureSemanticTarget,
   VerificationSpec,
 } from "@automation/contracts";
@@ -26,6 +27,12 @@ const CAPTURE_INSTALLER = `(() => {
   if (window[key]) return;
   window[key] = true;
   const clip = (value, max = 512) => typeof value === "string" ? value.trim().slice(0, max) : undefined;
+  const activationElement = (node) => {
+    const raw = node instanceof Element ? node : node?.parentElement;
+    const label = raw?.closest?.("label");
+    if (label instanceof HTMLLabelElement && label.control) return label.control;
+    return raw?.closest?.("button,input,textarea,select,a,[role],[data-testid],[data-test-id]") || raw;
+  };
   const target = (node) => {
     const raw = node instanceof Element ? node : node?.parentElement;
     const element = raw?.closest?.("button,input,textarea,select,a,[role],[data-testid],[data-test-id]") || raw;
@@ -39,6 +46,11 @@ const CAPTURE_INSTALLER = `(() => {
     const css = id ? "#" + CSS.escape(id) : tag;
     return { role, accessibleName, testId, text, css };
   };
+  const inputType = (element) => element instanceof HTMLInputElement
+    ? element.type
+    : element instanceof HTMLSelectElement
+      ? "select"
+      : undefined;
   const emit = (payload) => {
     const bridge = window.__automationCaptureEvent;
     if (typeof bridge === "function") void bridge({
@@ -47,12 +59,19 @@ const CAPTURE_INSTALLER = `(() => {
     });
   };
   document.addEventListener("click", (event) => {
-    emit({ kind: "CLICK", target: target(event.target) });
+    const element = activationElement(event.target);
+    emit({ kind: "CLICK", target: target(element || event.target), inputType: inputType(element) });
   }, true);
   document.addEventListener("change", (event) => {
     const element = event.target;
     if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement)) return;
-    emit({ kind: "INPUT", target: target(element), inputType: element instanceof HTMLInputElement ? element.type : element.tagName.toLowerCase() });
+    const inputType = element instanceof HTMLInputElement ? element.type : element.tagName.toLowerCase();
+    emit({
+      kind: "INPUT",
+      target: target(element),
+      inputType,
+      checked: element instanceof HTMLInputElement && inputType === "checkbox" ? element.checked : undefined,
+    });
   }, true);
   document.addEventListener("submit", (event) => {
     emit({ kind: "SUBMIT", target: target(event.submitter || event.target) });
@@ -64,6 +83,7 @@ interface BrowserCapturePayload {
   page: { url: string; title?: string };
   target: CaptureSemanticTarget;
   inputType?: string;
+  checked?: boolean;
 }
 
 interface ReservedEventIdentity {
@@ -129,6 +149,48 @@ export function classifyCaptureInputControl(inputType: unknown): CaptureInputCon
   }
 }
 
+function inputVerification(): VerificationSpec {
+  return {
+    description: "Captured input target remains populated after typing",
+    mode: "CUSTOM",
+    expected: "capture:input-filled",
+    timeoutMs: 5_000,
+  };
+}
+
+function checkboxVerification(): VerificationSpec {
+  return {
+    description: "Captured checkbox remains in the demonstrated state",
+    mode: "CUSTOM",
+    expected: "capture:check-bound-state",
+    timeoutMs: 5_000,
+  };
+}
+
+export function captureInputDescriptor(
+  control: CaptureInputControl,
+  variableName: string,
+  checked: unknown,
+): { input: CaptureInputValue; expectedEffect: VerificationSpec } {
+  if (control === "CHECKBOX") {
+    if (typeof checked !== "boolean") {
+      throw new Error("captured checkbox state is required");
+    }
+    return {
+      input: { kind: "PUBLIC_LITERAL", value: checked ? "true" : "false" },
+      expectedEffect: checkboxVerification(),
+    };
+  }
+  return {
+    input: {
+      kind: "RUNTIME_VARIABLE",
+      variableName,
+      sensitive: true,
+    },
+    expectedEffect: inputVerification(),
+  };
+}
+
 function safeHttpUrl(value: unknown): string | null {
   if (typeof value !== "string") return null;
   try {
@@ -164,15 +226,6 @@ function isBrowserPayload(value: unknown): value is BrowserCapturePayload {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function inputVerification(): VerificationSpec {
-  return {
-    description: "Captured input target remains populated after typing",
-    mode: "CUSTOM",
-    expected: "capture:input-filled",
-    timeoutMs: 5_000,
-  };
 }
 
 async function postActionScreenshot(
@@ -360,19 +413,37 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
       const title = safeString(pageRecord.title);
       const target = normalizeTarget((payload as unknown as { target?: unknown }).target);
 
+      if (payload.kind === "CLICK") {
+        const control = classifyCaptureInputControl(payload.inputType);
+        if (control === "SELECT" || control === "CHECKBOX" || control === "RADIO") {
+          // Select/checkbox/radio changes have explicit form-control events. Suppress
+          // their initiating click—even when the user clicked an associated label—so
+          // one demonstrated state change cannot compile into two browser actions.
+          return;
+        }
+      }
+
       if (payload.kind === "INPUT") {
         const identity = reserve();
+        const inputControl = classifyCaptureInputControl(payload.inputType);
+        let descriptor: ReturnType<typeof captureInputDescriptor>;
+        try {
+          descriptor = captureInputDescriptor(
+            inputControl,
+            `capture_input_${identity.sequence}`,
+            payload.checked,
+          );
+        } catch {
+          // Malformed browser-side checkbox data cannot be trusted as replay intent.
+          return;
+        }
         append(identity, {
           kind: payload.kind,
           page: { url, ...(title ? { title } : {}) },
           target,
-          input: {
-            kind: "RUNTIME_VARIABLE",
-            variableName: `capture_input_${identity.sequence}`,
-            sensitive: true,
-          },
-          inputControl: classifyCaptureInputControl(payload.inputType),
-          expectedEffect: inputVerification(),
+          input: descriptor.input,
+          inputControl,
+          expectedEffect: descriptor.expectedEffect,
           artifactRefs: [],
         });
         return;

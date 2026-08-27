@@ -35,6 +35,7 @@ export const WORKFLOW_NODE_KINDS = [
   "CLICK",
   "TYPE",
   "SELECT",
+  "CHECK",
   "EXTRACT",
   "REASON",
   "CONDITION",
