@@ -14,9 +14,9 @@ Further crash-recovery/outbox/lease micro-hardening remains parked unless CI or 
 
 ### Product defect
 
-Capture now retains stronger native semantic target metadata, but the compiler still generated objectives such as `Enter captured input for event ...`, `Submit captured form for event ...`, and `Activate captured target for event ...`. Those strings are user-visible through semantic workflow inspection and are also supplied to constrained semantic recovery. They leak internal capture event identities into product-facing workflow intent and give the reasoner less useful task semantics than the browser action type already provides.
+Capture retains strong semantic target metadata, but the compiler still generated objectives such as `Enter captured input for event ...`, `Submit captured form for event ...`, and `Activate captured target for event ...`. Those strings are user-visible through semantic workflow inspection and are also supplied to constrained semantic recovery. They leak internal capture event identities into product-facing workflow intent and give the reasoner less useful task semantics than the browser action type already provides.
 
-Using raw accessible names directly as trusted workflow objectives would be a different security problem: accessible names and explicit ARIA roles are website-controlled content and can contain prompt-injection-like text. The workflow objective boundary must therefore improve semantics without promoting arbitrary page text into trusted model instructions.
+Using raw accessible names directly as trusted workflow objectives would create a different security problem: accessible names and explicit ARIA roles are website-controlled content and can contain prompt-injection-like text. The workflow objective boundary must improve semantics without promoting arbitrary page text into trusted model instructions.
 
 ### Change
 
@@ -45,9 +45,11 @@ No AWS resource, IAM permission, dependency, Browser/AgentCore allocation, S3 wr
 
 ### Regression coverage / validation
 
-Focused compiler coverage now proves CLICK, TYPE, SELECT, CHECKBOX, RADIO, and SUBMIT objectives are closed role-based descriptions; capture event IDs and page-controlled accessible names do not appear in trusted objectives; and an unapproved role string falls back to a generic target.
+Focused compiler coverage proves CLICK, TYPE, SELECT, CHECKBOX, RADIO, and SUBMIT objectives are closed role-based descriptions; capture event IDs and page-controlled accessible names do not appear in trusted objectives; and an unapproved role string falls back to a generic target.
 
-GitHub Actions on the exact branch head is authoritative. This document does not claim the slice is green until that exact-head run exists and completes successfully.
+Normal implementation commit: `a145cc802d1c5ffde57409a420183839cdf8d371` (`Clarify compiled capture step intent`). CI #391 stopped exclusively at the deterministic pnpm supply-chain gate before installation or code validation. No package manifest changed. pnpm 10.15.0 regenerated the full reviewed graph from `632f2ffac9f82283280ea3f07fe86ccd00ff820975e412a14b88446bc5401839` to authoritative SHA-256 `9e7dfd36a9d7ed11f6a1693ca19b49e7c465263c57a53db3eb56d104741d259f`.
+
+The single permitted corrective commit authenticates exactly that CI-produced graph and retains the existing DynamoDB/AWS SDK peer-alignment assertions. GitHub Actions on the corrective exact head remains authoritative; this document must not be read as claiming green validation before that run actually completes successfully.
 
 ## Known production risks / intentionally parked work
 
@@ -61,7 +63,7 @@ GitHub Actions on the exact branch head is authoritative. This document does not
 
 ## Next product milestone
 
-1. Promote this slice only after exact-head CI is green.
+1. Promote this slice only after corrective exact-head CI is green.
 2. Apply/verify real `main` protection and configure/verify the protected production GitHub Environment.
 3. Run the manual immutable AWS deployment and require strengthened live smoke plus all five System capabilities = `CONFIGURED`.
 4. Execute the controlled vertical: Cognito/Google -> OpenAI BYOK -> AgentCore Live View capture -> trusted completion/evidence -> Compile/inspect -> guided >30-second Fresh Test -> guided Publish -> Scheduler/SQS/Step Functions/AgentCore -> SES/CloudWatch -> controlled auth expiry -> secure repair/resume -> terminal success.
