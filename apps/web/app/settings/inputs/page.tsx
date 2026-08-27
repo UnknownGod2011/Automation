@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { AutomationSummaryView, WorkflowInspectionView } from "@automation/core";
+import { runtimeInputSemanticPresentations, type RuntimeInputSemanticPresentation } from "../../../lib/runtime-input-presentation";
 import { scheduledStructuredInputFields, type ScheduledStructuredInputField } from "../../../lib/scheduled-input-form";
 import {
   createAuthenticatedWebControlPlaneClient,
@@ -14,6 +15,7 @@ type ConfigurableAutomation = {
   automation: AutomationSummaryView;
   workflow: WorkflowInspectionView;
   fields: readonly ScheduledStructuredInputField[];
+  semanticInputs: readonly RuntimeInputSemanticPresentation[];
 };
 
 export default async function ScheduledInputSettingsPage({
@@ -55,7 +57,10 @@ export default async function ScheduledInputSettingsPage({
     configurable = inspected.flatMap(({ automation, workflow }) => {
       if (!workflow) return [];
       const fields = scheduledStructuredInputFields(workflow.runtimeInputs);
-      return fields && fields.length > 0 ? [{ automation, workflow, fields }] : [];
+      const semanticInputs = runtimeInputSemanticPresentations(workflow);
+      return fields && semanticInputs && fields.length > 0 && fields.length === semanticInputs.length
+        ? [{ automation, workflow, fields, semanticInputs }]
+        : [];
     });
   } catch (error) {
     if (error instanceof WebAuthError) {
@@ -111,7 +116,7 @@ export default async function ScheduledInputSettingsPage({
           </div>
         ) : (
           <div className="list">
-            {configurable.map(({ automation, workflow, fields }) => (
+            {configurable.map(({ automation, workflow, fields, semanticInputs }) => (
               <div className="list-item" key={automation.automationId}>
                 <div className="stack">
                   <div className="row"><h3>{automation.name}</h3><span className="badge">{automation.status}</span></div>
@@ -124,18 +129,19 @@ export default async function ScheduledInputSettingsPage({
                   method="post"
                 >
                   {fields.map((field, index) => {
-                    const requirement = workflow.runtimeInputs[index]!;
+                    const presentation = semanticInputs[index]!;
                     return (
                       <label key={field.name}>
-                        Step {requirement.step} reusable scheduled value
+                        {presentation.label.replace(" value", " reusable value")}
                         <input
                           name={field.name}
                           type="text"
                           maxLength={4_096}
                           autoComplete="off"
-                          aria-label={`Step ${requirement.step} reusable scheduled value`}
+                          aria-label={`${presentation.label} reusable scheduled value`}
                           required
                         />
+                        <span className="muted">{presentation.guidance}</span>
                       </label>
                     );
                   })}
