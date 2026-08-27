@@ -4,75 +4,79 @@ Updated: 2026-08-27
 
 ## Current validated baseline
 
-Authoritative GitHub state at the start of this slice: `main` is `68d7db5414a07c3aa7482e2894363ae3175963e5` (`Clarify guided runtime input semantics`) and push CI #384 completed successfully on that exact SHA. There were no open pull requests. The repository remains organized as a provider-neutral core/contracts layer, a Next.js authenticated control plane, AWS adapters/IaC, and deterministic release/deployment scripts.
+Authoritative GitHub state at the start of this slice: `main` is `c31c5293fbb160c1a42c4571e9912338e22b355b` (`Align Publish runtime input guidance`) and push CI #386 completed successfully on that exact SHA. There are no open pull requests. GitHub reports `main.protected=false`; Issue #29 tracks that operational blocker.
 
-The AWS-first product vertical is structurally implemented: Cognito/Google sign-in, automation dashboard/create/revision, isolated AgentCore Live View capture with persisted Browser Profiles and traces, semantic workflow compilation/inspection, asynchronous Fresh Test, guided runtime/scheduled inputs, publish/schedule management, EventBridge Scheduler → SQS → Step Functions → AgentCore Runtime execution, OpenAI BYOK routing through AgentCore Identity, deterministic-first browser execution with constrained semantic fallback, mandatory effect verification, run history/timeline/reasoning/evidence, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
+The AWS-first product vertical is structurally implemented: Cognito/Google sign-in, dashboard/create/revision, AgentCore Live View capture with durable Browser Profiles/traces, semantic compilation/inspection, guided asynchronous Fresh Test, guided publish/scheduled inputs, EventBridge Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution, OpenAI BYOK through AgentCore Identity, deterministic-first browser execution with constrained reasoning fallback, mandatory effect verification, run timeline/reasoning/evidence, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
 
-Further recovery/outbox/lease micro-hardening remains parked unless CI or the real vertical exposes a correctness blocker.
+Further crash-recovery/outbox/lease micro-hardening remains parked unless CI or the real vertical exposes a correctness blocker.
 
-## This development slice — make initial Publish input guidance semantic
+## This development slice — make the protected promotion boundary operable
 
-### Product defect
+### Product/deployment blocker
 
-Fresh Test and post-publish Scheduled Inputs already explain unresolved captured values in semantic terms: TYPE needs ordinary text and SELECT needs the visible option label. Initial Publish still rendered every reusable value as the generic `Step N reusable scheduled value`. That left the final approval step less understandable than the two surrounding product surfaces even though the same trusted workflow inspection was already available on the page.
+The production deploy workflow intentionally refuses AWS OIDC credentials unless its source is the current protected `main` head, but the repository is presently unprotected. The GitHub connector available to development has repository content/workflow permissions but no Administration write permission, so it cannot safely change branch protection itself. Leaving the requirement as prose alone makes the first real deployment unnecessarily manual and error-prone.
 
 ### Change
 
-- Added a shared `publishRuntimeInputFields()` presentation boundary that combines the existing opaque `scheduledInput-N` field mapping with the already-sanitized semantic runtime-input guidance.
-- Initial Publish now renders TYPE values as text values and SELECT values as visible option labels, with the same guidance used by Fresh Test and post-publish Scheduled Inputs.
-- The browser still submits only opaque ordinal field names. Internal `capture_input_N` keys remain server-side and are reconstructed only by the existing trusted publish parser.
-- Malformed workflow input metadata, invalid capture-variable keys, unsupported semantic steps, or an ordering mismatch fail closed and suppress Publish rather than guessing.
-- Workflows with no unresolved captured values remain publishable without a non-secret-value acknowledgement.
+- Added `scripts/configure-main-protection.sh`, an explicit admin-operated GitHub CLI command for the repository's minimum production branch-protection policy.
+- The command defaults to verification. Mutation requires `--apply`; no GitHub token is accepted as a CLI argument.
+- Before applying protection, the command resolves the current `main` SHA and requires its `validate` check to be completed successfully by the GitHub Actions app (`app_id=15368`). A red, missing, stale, or foreign check causes zero protection mutation.
+- The baseline requires strict/up-to-date `validate`, PR-based promotion with zero mandatory external approvals, administrator enforcement, stale-review dismissal, conversation resolution, and blocks force pushes/deletion.
+- If `main` is already protected, the command never overwrites or relaxes the existing policy. It verifies the minimum baseline and fails closed if the existing policy is weaker/incompatible.
+- After applying a new policy, it verifies that `main` is protected, that the head SHA did not move during the operation, and that GitHub reports the expected controls.
+- Added `scripts/test-configure-main-protection.sh` with a fake `gh` API and wired it into CI.
+- Updated `docs/AWS_OIDC_DEPLOYMENT.md` with the required admin permission and safe application/verification sequence.
 
-No workflow graph, capture, browser executor, Scheduler, persistence, credential, or recovery semantics changed.
+The existing deployment workflow remains unchanged and continues to perform its own live `protected=true` + exact-main-head check immediately before OIDC role assumption.
 
 ### Security / tenant isolation
 
-The new helper consumes only authenticated, sanitized workflow-inspection metadata plus the existing trusted runtime-input requirements. It does not receive or expose captured values, selectors, durable workflow/node IDs, Browser Profile/session identifiers, BYOK material, workload tokens, provider errors, or tenant/user authority. Tenant ownership remains enforced by the authenticated control-plane reads and by the publish mutation itself.
+This slice changes repository promotion policy only; it has no application tenant authority. The script inherits GitHub CLI authentication and deliberately never accepts, stores, logs, or writes an administration token. GitHub's branch-protection API requires repository Administration write permission; operators should use a short-lived GitHub App user token or fine-grained PAT scoped only to this repository.
+
+No AWS, BYOK, Browser Profile, capture session, workflow/run state, user data, or provider secret crosses this boundary.
 
 ### Idempotency / concurrency / retry / timeout
 
-This is presentation-only. Publish still reloads trusted workflow requirements server-side immediately before mutation, validates exact opaque ordinal fields, verifies successful Fresh-Test provenance and the latest immutable workflow version, and then performs the existing Scheduler-backed lifecycle transition. A stale page gains no new workflow-variable or scheduling authority. Retry and timeout behavior are unchanged.
+Applying to an unprotected branch is one explicit PUT followed by authoritative reads. Exact reruns against a compliant protected branch are read-only and return success. Existing incomplete protection is never overwritten automatically. The script also verifies the branch head after mutation; if `main` moves during the operation it fails and requires an operator re-check rather than guessing.
+
+GitHub API/auth/network uncertainty fails closed. There is no retry loop that could repeatedly mutate repository policy.
 
 ### Side-effect verification / user recovery
 
-No execution or verification gate changed. TYPE, SELECT, deterministic browser actions, semantic fallback, effect verification, schedule admission, and human repair/resume retain their existing contracts. The slice only makes the reusable values understandable before production scheduling begins.
+Browser side-effect verification and user recovery are unchanged. This slice gates code promotion/deployment, not workflow execution. The existing deployment workflow still validates source and tests before checking branch protection and requesting AWS credentials.
 
 ### Cost / observability
 
-No AWS request, Browser/AgentCore allocation, model call, database operation, queue delivery, new resource, IAM permission, dependency, or retained Actions artifact is added. The automation detail page already loads the workflow inspection and runtime-input requirements needed for Publish.
+The helper makes a bounded handful of GitHub API calls only when an administrator explicitly runs it. CI uses a fake `gh` implementation and makes no GitHub administration call. No AWS resource, Browser/AgentCore allocation, model request, database write, queue delivery, dependency, retained Actions artifact, or recovery infrastructure is added.
 
-### Regression coverage
+### Regression coverage / validation
 
-New tests require the Publish presentation boundary to:
+The no-cloud protection contract proves:
 
-- preserve the trusted runtime-input ordering while keeping browser field names opaque;
-- label SELECT inputs as visible option labels and TYPE inputs as text values;
-- fail closed for unsupported semantic metadata or invalid capture-variable keys;
-- accept workflows with no unresolved runtime values.
+- an unprotected green `main` gets exactly one protection PUT with the expected baseline;
+- a compliant existing policy is verified without mutation;
+- an incomplete existing policy fails without being overwritten;
+- a missing/failed required `validate` check prevents mutation;
+- verify-only mode reports unprotected state without mutation;
+- malformed repository identity fails before invoking GitHub CLI.
 
-GitHub Actions on the exact branch head remains authoritative. This document does not claim the new slice is green until that run exists and completes successfully.
+Local shell syntax and the no-cloud contract pass before publication. GitHub Actions on the exact branch head remains authoritative; this document does not claim the new slice is green until that run exists and completes successfully.
 
 ## Known production risks / intentionally parked work
 
-- GitHub currently reports `main` as unprotected. The manual AWS deployment workflow correctly refuses OIDC AWS credentials unless the checked-out SHA is the current protected `main` head. Repository/Environment protection must be configured operationally before first real deployment.
+- `main` is still unprotected until an administrator actually runs the new helper (or configures an equivalent stronger policy) and GitHub confirms it. The deploy workflow will correctly issue zero AWS credentials until then.
+- Production GitHub Environment restrictions/reviewers remain an independent operational control and must be configured separately.
 - VPC AgentCore Browser mode is provisioned/verified, but real route-table, DNS, security-group, NACL, and egress policy still need live validation against private/link-local/control-plane access and redirect/DNS-rebinding scenarios.
 - Only OpenAI has a concrete production BYOK reasoning adapter today; core credential routing remains provider-neutral.
-- DynamoDB ↔ EventBridge Scheduler mutations are fail-closed but not cross-service transactional; operational reconciliation remains a known boundary.
-- File inputs, passwords, miscellaneous controls, and native multi-select remain intentionally unsupported. Password/authentication stays in Browser Profile + human-auth flows. Add new primitives only with deterministic execution and explicit verification.
+- DynamoDB <-> EventBridge Scheduler mutations are fail-closed but not cross-service transactional; operational reconciliation remains a known boundary.
+- File/password/miscellaneous controls and native multi-select remain intentionally unsupported until they have explicit deterministic execution and verification semantics.
 
 ## Next product milestone
 
-After exact-head CI and promotion of this slice, the highest-value milestone remains the protected real AWS vertical demonstration, not further recovery hardening:
+1. Obtain an admin-authorized GitHub CLI session for this repository and run `scripts/configure-main-protection.sh --repository UnknownGod2011/Automation --apply`.
+2. Re-run with `--verify-only`, confirm GitHub reports `main` protected, then close Issue #29.
+3. Configure/verify the protected production GitHub Environment and its OIDC deployment variables/reviewer policy.
+4. Run the manual immutable AWS deployment and require strengthened live smoke plus all five System capabilities = `CONFIGURED`.
+5. Execute the controlled vertical: Cognito/Google -> OpenAI BYOK -> AgentCore Live View capture -> trusted completion/evidence -> Compile/inspect -> guided >30-second Fresh Test -> guided Publish -> Scheduler/SQS/Step Functions/AgentCore -> SES/CloudWatch -> controlled auth expiry -> secure repair/resume -> terminal success.
 
-1. Configure actual `main`/production-environment protection so the OIDC deployment gate can issue credentials.
-2. Deploy immutable artifacts and require strengthened live smoke plus all five System capabilities = `CONFIGURED`.
-3. Sign in through Cognito/Google and configure one OpenAI BYOK credential.
-4. Capture the controlled first-party workflow in AgentCore Live View and finish trusted capture/evidence persistence.
-5. Compile and inspect the semantic plan; confirm unresolved TYPE and SELECT inputs are described in human terms.
-6. Run a >30-second asynchronous Fresh Test using the guided values and inspect timeline/reasoning/run evidence.
-7. Approve/publish with recurrence/timezone and the same semantic guided reusable values.
-8. Observe EventBridge/SQS/Step Functions/AgentCore execution, effect verification, history, SES, and CloudWatch.
-9. Let the controlled target authentication expire, use secure Live View repair, save the Browser Profile, resume, and confirm terminal success/reporting.
-
-Concrete defects from that environment should determine subsequent engineering priorities.
+Concrete live-environment defects should determine subsequent engineering priorities rather than additional recovery micro-hardening.

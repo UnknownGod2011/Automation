@@ -2,6 +2,30 @@
 
 The production workflow `.github/workflows/deploy-aws.yml` is manual-only, runs from `main`, and assumes an environment-owned AWS role through GitHub OIDC. It does not accept long-lived AWS keys and retains no GitHub Actions ZIP artifacts.
 
+## Protect `main` before the first deployment
+
+The deploy workflow refuses to assume AWS credentials unless GitHub reports that the checked-out SHA is the current protected `main` head. Configure that repository boundary before attempting the first deployment.
+
+This repository includes an admin-only helper that applies the project baseline without accepting a token as a command-line argument:
+
+```bash
+gh auth status
+bash scripts/configure-main-protection.sh --repository UnknownGod2011/Automation --apply
+bash scripts/configure-main-protection.sh --repository UnknownGod2011/Automation --verify-only
+```
+
+The GitHub CLI session used for `--apply` must have repository **Administration: write** permission. Prefer a short-lived GitHub App user token or fine-grained personal access token scoped only to this repository. Do not store that administration token in the application, AWS deployment configuration, or ordinary GitHub Environment variables.
+
+The helper is intentionally conservative:
+
+- it requires the current `main` SHA to already have the successful GitHub Actions `validate` check from the GitHub Actions app;
+- it requires PR-based promotion but does not require an external approving reviewer, which keeps a personal repository usable while still blocking direct pushes;
+- required checks are strict/up-to-date, administrators are covered, stale reviews are dismissed, and conversations must be resolved;
+- force pushes and branch deletion are blocked;
+- if `main` is already protected, the helper **does not overwrite or relax it**. It only verifies that the existing policy meets this minimum baseline and fails closed otherwise.
+
+The no-cloud CI contract `scripts/test-configure-main-protection.sh` locks those mutation and fail-closed semantics. After GitHub reports the branch protected, close the repository protection blocker and keep `.github/workflows/deploy-aws.yml` unchanged: its pre-OIDC live verification remains a second independent gate.
+
 ## Protected GitHub Environment
 
 Configure `AWS_REGION`, `AWS_ACCOUNT_ID`, `AWS_DEPLOY_ROLE_ARN`, `AUTOMATION_RELEASE_BUCKET`, optional `AUTOMATION_RELEASE_KMS_KEY_ID`, and `AUTOMATION_AWS_ENVIRONMENT_JSON` as environment variables. Never add `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, or `AWS_SESSION_TOKEN` as repository/environment secrets.

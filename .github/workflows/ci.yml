@@ -64,4 +64,7 @@ jobs:
       - name: Verify GitHub OIDC deployment workflow contract
         shell: bash
         run: bash scripts/test-github-oidc-deploy-workflow.sh
+      - name: Verify GitHub main protection setup contract
+        shell: bash
+        run: bash scripts/test-configure-main-protection.sh
       - run: pnpm test
