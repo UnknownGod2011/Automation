@@ -75,11 +75,17 @@ elif [[ "$url" == "https://web.example.com/demo-target" ]]; then
   elif [[ "$cookie" == "Cookie: automation_demo_auth=authenticated" && "${FAKE_DEMO_MODE:-good}" != "session-broken" ]]; then
     code=200
     [[ "$out" == /dev/null ]] || {
-      if [[ "${FAKE_DEMO_MODE:-good}" == "missing-select" ]]; then
-        printf '<html><textarea data-testid="demo-note"></textarea><button data-testid="demo-submit">Complete</button></html>' >"$out"
-      else
-        printf '<html><select data-testid="demo-priority"><option value="normal">Normal priority</option><option value="high">High priority</option></select><textarea data-testid="demo-note"></textarea><button data-testid="demo-submit">Complete</button></html>' >"$out"
-      fi
+      case "${FAKE_DEMO_MODE:-good}" in
+        missing-select)
+          printf '<html><textarea data-testid="demo-note"></textarea><input type="checkbox" data-testid="demo-confirm"><button data-testid="demo-submit">Complete</button></html>' >"$out"
+          ;;
+        missing-checkbox)
+          printf '<html><select data-testid="demo-priority"><option value="normal">Normal priority</option><option value="high">High priority</option></select><textarea data-testid="demo-note"></textarea><button data-testid="demo-submit">Complete</button></html>' >"$out"
+          ;;
+        *)
+          printf '<html><select data-testid="demo-priority"><option value="normal">Normal priority</option><option value="high">High priority</option></select><textarea data-testid="demo-note"></textarea><input type="checkbox" data-testid="demo-confirm"><button data-testid="demo-submit">Complete</button></html>' >"$out"
+          ;;
+      esac
     }
   else
     code=401
@@ -99,12 +105,12 @@ elif [[ "$url" == "https://web.example.com/demo-target/action" && "$method" == "
     code=200
     if [[ "$out" != /dev/null ]]; then
       if [[ "${FAKE_DEMO_MODE:-good}" == "reflect-inputs" ]]; then
-        printf '<html><div data-testid="demo-complete">High priority deployment-smoke-note</div></html>' >"$out"
+        printf '<html><div data-testid="demo-complete">High priority deployment-smoke-note confirmed</div></html>' >"$out"
       else
         printf '<html><div data-testid="demo-complete">Demo task completed.</div></html>' >"$out"
       fi
     fi
-    [[ "$encoded_data" == *"|priority=high"* && "$encoded_data" == *"|note=deployment-smoke-note"* ]] || code=400
+    [[ "$encoded_data" == *"|priority=high"* && "$encoded_data" == *"|note=deployment-smoke-note"* && "$encoded_data" == *"|confirm=confirmed"* ]] || code=400
   fi
 fi
 if [[ "$write" == *'%{http_code}'* ]]; then printf '%s' "$code"; fi
@@ -154,6 +160,12 @@ if FAKE_DEMO_MODE=missing-select PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/s
   exit 1
 fi
 grep -Fq 'authenticated workflow select control is missing' "$tmp/demo-select.err"
+
+if FAKE_DEMO_MODE=missing-checkbox PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/demo-checkbox.out" 2>"$tmp/demo-checkbox.err"; then
+  echo 'smoke contract should reject a controlled demo target missing the checkbox primitive fixture' >&2
+  exit 1
+fi
+grep -Fq 'authenticated workflow checkbox is missing' "$tmp/demo-checkbox.err"
 
 if FAKE_DEMO_MODE=action-broken PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/demo-action.out" 2>"$tmp/demo-action.err"; then
   echo 'smoke contract should reject a broken controlled demo action' >&2
