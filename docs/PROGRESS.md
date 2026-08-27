@@ -4,77 +4,63 @@ Updated: 2026-08-27
 
 ## Current validated baseline
 
-Authoritative GitHub state at the start of this slice: `main` is `c31c5293fbb160c1a42c4571e9912338e22b355b` (`Align Publish runtime input guidance`) and push CI #386 completed successfully on that exact SHA. There are no open pull requests. GitHub reports `main.protected=false`; Issue #29 tracks that operational blocker.
+Authoritative GitHub state at the start of this slice: `main` is `d6b9dd01352e21d2aca983d50167f97843a7ea2a` (`Make main protection bootstrap operable`), and push CI #388 completed successfully on that exact SHA. There were no open pull requests. GitHub still reports `main.protected=false`; Issue #29 tracks the operational protection step required before the first AWS deployment.
 
-The AWS-first product vertical is structurally implemented: Cognito/Google sign-in, dashboard/create/revision, AgentCore Live View capture with durable Browser Profiles/traces, semantic compilation/inspection, guided asynchronous Fresh Test, guided publish/scheduled inputs, EventBridge Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution, OpenAI BYOK through AgentCore Identity, deterministic-first browser execution with constrained reasoning fallback, mandatory effect verification, run timeline/reasoning/evidence, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
+The AWS-first product vertical is structurally implemented: Cognito/Google sign-in, dashboard/create/revision, AgentCore Live View capture with durable Browser Profiles/traces, semantic compilation/inspection, guided asynchronous Fresh Test, guided publish/scheduled inputs, EventBridge Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution, OpenAI BYOK through AgentCore Identity, deterministic-first browser execution with constrained reasoning fallback, mandatory effect verification, authenticated capture/run evidence, run timeline/reasoning/history, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
 
 Further crash-recovery/outbox/lease micro-hardening remains parked unless CI or the real vertical exposes a correctness blocker.
 
-## This development slice — make the protected promotion boundary operable
+## This development slice — improve native capture semantics
 
-### Product/deployment blocker
+### Product defect
 
-The production deploy workflow intentionally refuses AWS OIDC credentials unless its source is the current protected `main` head, but the repository is presently unprotected. The GitHub connector available to development has repository content/workflow permissions but no Administration write permission, so it cannot safely change branch protection itself. Leaving the requirement as prose alone makes the first real deployment unnecessarily manual and error-prone.
+The browser capture installer previously recorded `role` only when a site explicitly supplied an ARIA `role` attribute and recorded `accessibleName` only from `aria-label`. Ordinary native controls such as `<button>`, labelled `<input>`, `<textarea>`, `<select>`, checkbox, radio, and normal links therefore often lost the semantic role/name that Playwright can target reliably. On real sites without `data-testid` or stable IDs this pushed compiled workflows toward brittle tag/CSS fallbacks and unnecessary semantic recovery even though the browser already exposed stronger native semantics.
 
 ### Change
 
-- Added `scripts/configure-main-protection.sh`, an explicit admin-operated GitHub CLI command for the repository's minimum production branch-protection policy.
-- The command defaults to verification. Mutation requires `--apply`; no GitHub token is accepted as a CLI argument.
-- Before applying protection, the command resolves the current `main` SHA and requires its `validate` check to be completed successfully by the GitHub Actions app (`app_id=15368`). A red, missing, stale, or foreign check causes zero protection mutation.
-- The baseline requires strict/up-to-date `validate`, PR-based promotion with zero mandatory external approvals, administrator enforcement, stale-review dismissal, conversation resolution, and blocks force pushes/deletion.
-- If `main` is already protected, the command never overwrites or relaxes the existing policy. It verifies the minimum baseline and fails closed if the existing policy is weaker/incompatible.
-- After applying a new policy, it verifies that `main` is protected, that the head SHA did not move during the operation, and that GitHub reports the expected controls.
-- Added `scripts/test-configure-main-protection.sh` with a fake `gh` API and wired it into CI.
-- Updated `docs/AWS_OIDC_DEPLOYMENT.md` with the required admin permission and safe application/verification sequence.
+- Capture now infers conservative native roles for common controls: button, link, textbox/searchbox/spinbutton/slider, combobox/listbox, checkbox, and radio.
+- Accessible-name capture now prefers explicit `aria-label`, then `aria-labelledby`, then associated native `<label>` text, then button/link text.
+- Role/name strings remain bounded to the existing capture metadata limits.
+- The installer deliberately never reads `element.value` to derive semantic metadata; user-entered values remain on the existing redacted/runtime-input boundary.
+- Explicit ARIA roles still take precedence over inferred native roles.
+- The compiler/runtime are unchanged: TEST_ID remains the highest-priority deterministic strategy, then ROLE/name, then text/CSS/XPath. Existing effect verification remains mandatory before success.
 
-The existing deployment workflow remains unchanged and continues to perform its own live `protected=true` + exact-main-head check immediately before OIDC role assumption.
+### Security / tenant isolation / privacy
 
-### Security / tenant isolation
-
-This slice changes repository promotion policy only; it has no application tenant authority. The script inherits GitHub CLI authentication and deliberately never accepts, stores, logs, or writes an administration token. GitHub's branch-protection API requires repository Administration write permission; operators should use a short-lived GitHub App user token or fine-grained PAT scoped only to this repository.
-
-No AWS, BYOK, Browser Profile, capture session, workflow/run state, user data, or provider secret crosses this boundary.
+This is capture metadata only. No tenant authority, Browser Profile identity, capture-session identity, BYOK secret, workload token, run variable, cookie, or provider credential is added to the trace. Associated labels and ARIA naming text are bounded UI metadata; field values are never consulted. Authentication setup remains separated from executable WORKFLOW capture and password/file/miscellaneous unsupported-control rules remain unchanged.
 
 ### Idempotency / concurrency / retry / timeout
 
-Applying to an unprotected branch is one explicit PUT followed by authoritative reads. Exact reruns against a compliant protected branch are read-only and return success. Existing incomplete protection is never overwritten automatically. The script also verifies the branch head after mutation; if `main` moves during the operation it fails and requires an operator re-check rather than guessing.
-
-GitHub API/auth/network uncertainty fails closed. There is no retry loop that could repeatedly mutate repository policy.
+No idempotency key, durable state transition, retry budget, lease, heartbeat, or scheduling behavior changes. Better deterministic target metadata should reduce selector failures and therefore reduce retry/model fallback cost rather than add work. Capture collector readiness, click/change coalescing, submit normalization, navigation association, and Finish fencing are unchanged.
 
 ### Side-effect verification / user recovery
 
-Browser side-effect verification and user recovery are unchanged. This slice gates code promotion/deployment, not workflow execution. The existing deployment workflow still validates source and tests before checking branch protection and requesting AWS credentials.
+Native semantic metadata changes only target resolution quality. It does not authorize a new browser primitive or weaken allowed-side-effect constraints. Consequential actions still require the existing captured expected-effect verification. If all deterministic strategies drift, the existing bounded retry/escalation policy remains authoritative.
 
 ### Cost / observability
 
-The helper makes a bounded handful of GitHub API calls only when an administrator explicitly runs it. CI uses a fake `gh` implementation and makes no GitHub administration call. No AWS resource, Browser/AgentCore allocation, model request, database write, queue delivery, dependency, retained Actions artifact, or recovery infrastructure is added.
+No AWS resource, IAM permission, dependency, Browser allocation, model request, S3 write, queue delivery, or retained Actions artifact is added. The additional DOM reads are local to the already-running capture page and bounded. More reliable ROLE/name strategies should reduce unnecessary semantic-recovery/model usage on ordinary sites.
 
 ### Regression coverage / validation
 
-The no-cloud protection contract proves:
+Focused tests cover native role inference for common HTML controls, bounded accessible-name selection, inclusion of the semantic helpers in the actual injected installer, `aria-labelledby` support, and an explicit guard that the installer does not read `element.value` for semantic naming.
 
-- an unprotected green `main` gets exactly one protection PUT with the expected baseline;
-- a compliant existing policy is verified without mutation;
-- an incomplete existing policy fails without being overwritten;
-- a missing/failed required `validate` check prevents mutation;
-- verify-only mode reports unprotected state without mutation;
-- malformed repository identity fails before invoking GitHub CLI.
-
-Local shell syntax and the no-cloud contract pass before publication. GitHub Actions on the exact branch head remains authoritative; this document does not claim the new slice is green until that run exists and completes successfully.
+GitHub Actions on the exact branch head remains authoritative; this document must not be read as claiming the slice is green until that run exists and completes successfully.
 
 ## Known production risks / intentionally parked work
 
-- `main` is still unprotected until an administrator actually runs the new helper (or configures an equivalent stronger policy) and GitHub confirms it. The deploy workflow will correctly issue zero AWS credentials until then.
+- `main` is still unprotected until an administrator runs `scripts/configure-main-protection.sh --apply` (or configures an equivalent stronger policy) and GitHub confirms it. The deploy workflow correctly issues zero AWS credentials until then.
 - Production GitHub Environment restrictions/reviewers remain an independent operational control and must be configured separately.
 - VPC AgentCore Browser mode is provisioned/verified, but real route-table, DNS, security-group, NACL, and egress policy still need live validation against private/link-local/control-plane access and redirect/DNS-rebinding scenarios.
 - Only OpenAI has a concrete production BYOK reasoning adapter today; core credential routing remains provider-neutral.
 - DynamoDB <-> EventBridge Scheduler mutations are fail-closed but not cross-service transactional; operational reconciliation remains a known boundary.
 - File/password/miscellaneous controls and native multi-select remain intentionally unsupported until they have explicit deterministic execution and verification semantics.
+- Capture compilation remains demonstration-driven and linear. Dynamic task-level decisions beyond constrained UI-drift recovery require an explicit, reviewable authoring contract before broadening normal model authority.
 
 ## Next product milestone
 
-1. Obtain an admin-authorized GitHub CLI session for this repository and run `scripts/configure-main-protection.sh --repository UnknownGod2011/Automation --apply`.
-2. Re-run with `--verify-only`, confirm GitHub reports `main` protected, then close Issue #29.
+1. Promote this slice only after exact-head CI is green.
+2. Apply/verify `main` protection with the existing admin helper and close Issue #29.
 3. Configure/verify the protected production GitHub Environment and its OIDC deployment variables/reviewer policy.
 4. Run the manual immutable AWS deployment and require strengthened live smoke plus all five System capabilities = `CONFIGURED`.
 5. Execute the controlled vertical: Cognito/Google -> OpenAI BYOK -> AgentCore Live View capture -> trusted completion/evidence -> Compile/inspect -> guided >30-second Fresh Test -> guided Publish -> Scheduler/SQS/Step Functions/AgentCore -> SES/CloudWatch -> controlled auth expiry -> secure repair/resume -> terminal success.

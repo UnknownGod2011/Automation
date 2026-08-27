@@ -22,35 +22,110 @@ const DEFAULT_NAVIGATION_ACTION_GRACE_MS = 50;
 const MAX_TARGET_FIELD_LENGTH = 512;
 const MAX_CAPTURE_SCREENSHOT_BYTES = 2 * 1024 * 1024;
 
+export function inferCaptureNativeRole(
+  tagName: unknown,
+  inputType?: unknown,
+  multiple = false,
+  hasHref = false,
+): string | undefined {
+  const tag = typeof tagName === "string" ? tagName.trim().toLowerCase() : "";
+  const type = typeof inputType === "string" ? inputType.trim().toLowerCase() : "";
+  if (tag === "button") return "button";
+  if (tag === "a") return hasHref ? "link" : undefined;
+  if (tag === "textarea") return "textbox";
+  if (tag === "select") return multiple || type === "select-multiple" ? "listbox" : "combobox";
+  if (tag !== "input") return undefined;
+  switch (type || "text") {
+    case "button":
+    case "submit":
+    case "reset":
+      return "button";
+    case "checkbox":
+      return "checkbox";
+    case "radio":
+      return "radio";
+    case "search":
+      return "searchbox";
+    case "number":
+      return "spinbutton";
+    case "range":
+      return "slider";
+    case "email":
+    case "tel":
+    case "text":
+    case "url":
+      return "textbox";
+    default:
+      return undefined;
+  }
+}
+
+export function selectCaptureAccessibleName(...values: readonly unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed) return trimmed.slice(0, 512);
+  }
+  return undefined;
+}
+
 export const CAPTURE_INSTALLER = `(() => {
   const key = "__automationCaptureInstalled";
   if (window[key]) return;
   window[key] = true;
   const clip = (value, max = 512) => typeof value === "string" ? value.trim().slice(0, max) : undefined;
+  const inferCaptureNativeRole = (${inferCaptureNativeRole.toString()});
+  const selectCaptureAccessibleName = (${selectCaptureAccessibleName.toString()});
   const activationElement = (node) => {
     const raw = node instanceof Element ? node : node?.parentElement;
     const label = raw?.closest?.("label");
     if (label instanceof HTMLLabelElement && label.control) return label.control;
     return raw?.closest?.("button,input,textarea,select,a,[role],[data-testid],[data-test-id]") || raw;
   };
-  const target = (node) => {
-    const raw = node instanceof Element ? node : node?.parentElement;
-    const element = raw?.closest?.("button,input,textarea,select,a,[role],[data-testid],[data-test-id]") || raw;
-    if (!element) return { css: "unknown" };
-    const role = clip(element.getAttribute("role"));
-    const accessibleName = clip(element.getAttribute("aria-label"));
-    const testId = clip(element.getAttribute("data-testid") || element.getAttribute("data-test-id"));
-    const text = clip(element.textContent, 256);
-    const id = clip(element.id);
-    const tag = element.tagName.toLowerCase();
-    const css = id ? "#" + CSS.escape(id) : tag;
-    return { role, accessibleName, testId, text, css };
-  };
   const inputType = (element) => element instanceof HTMLInputElement
     ? element.type
     : element instanceof HTMLSelectElement
       ? (element.multiple ? "select-multiple" : "select")
       : undefined;
+  const labelledByText = (element) => {
+    const labelledBy = element.getAttribute("aria-labelledby");
+    if (!labelledBy) return undefined;
+    return labelledBy
+      .trim()
+      .split(/\\s+/)
+      .filter(Boolean)
+      .map((id) => document.getElementById(id)?.textContent || "")
+      .join(" ");
+  };
+  const associatedLabelText = (element) => {
+    const labels = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement
+      ? element.labels
+      : null;
+    return labels ? Array.from(labels).map((label) => label.textContent || "").join(" ") : undefined;
+  };
+  const target = (node) => {
+    const raw = node instanceof Element ? node : node?.parentElement;
+    const element = raw?.closest?.("button,input,textarea,select,a,[role],[data-testid],[data-test-id]") || raw;
+    if (!element) return { css: "unknown" };
+    const tag = element.tagName.toLowerCase();
+    const role = clip(element.getAttribute("role")) || inferCaptureNativeRole(
+      tag,
+      inputType(element),
+      element instanceof HTMLSelectElement && element.multiple,
+      element instanceof HTMLAnchorElement && element.hasAttribute("href"),
+    );
+    const accessibleName = selectCaptureAccessibleName(
+      element.getAttribute("aria-label"),
+      labelledByText(element),
+      associatedLabelText(element),
+      element instanceof HTMLButtonElement || element instanceof HTMLAnchorElement ? element.textContent : undefined,
+    );
+    const testId = clip(element.getAttribute("data-testid") || element.getAttribute("data-test-id"));
+    const text = clip(element.textContent, 256);
+    const id = clip(element.id);
+    const css = id ? "#" + CSS.escape(id) : tag;
+    return { role, accessibleName, testId, text, css };
+  };
   const emit = (payload) => {
     const bridge = window.__automationCaptureEvent;
     if (typeof bridge === "function") void bridge({
