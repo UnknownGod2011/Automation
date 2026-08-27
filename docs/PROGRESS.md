@@ -49,7 +49,9 @@ Focused compiler coverage proves CLICK, TYPE, SELECT, CHECKBOX, RADIO, and SUBMI
 
 Normal implementation commit: `a145cc802d1c5ffde57409a420183839cdf8d371` (`Clarify compiled capture step intent`). CI #391 stopped exclusively at the deterministic pnpm supply-chain gate before installation or code validation. No package manifest changed. pnpm 10.15.0 regenerated the full reviewed graph from `632f2ffac9f82283280ea3f07fe86ccd00ff820975e412a14b88446bc5401839` to authoritative SHA-256 `9e7dfd36a9d7ed11f6a1693ca19b49e7c465263c57a53db3eb56d104741d259f`.
 
-The single permitted corrective commit authenticates exactly that CI-produced graph and retains the existing DynamoDB/AWS SDK peer-alignment assertions. GitHub Actions on the corrective exact head remains authoritative; this document must not be read as claiming green validation before that run actually completes successfully.
+Corrective head `c68bcfcd50447f8d5f87288d2e38bb2132977c3e` authenticated exactly that graph and retained the existing DynamoDB/AWS SDK peer-alignment assertions. CI #392 then passed deterministic lock verification, frozen installation, strict `pnpm check`, all three production packaging paths, and every AWS deployment/security/demo/OIDC contract. The full test suite reached 350 passing core tests with one stale regression assertion: `radio-control.test.ts` still expected the old event-ID-bearing objective even though production correctly emits `Select captured radio`.
+
+This corrective batch changes only that stale expectation to the new closed semantic objective. It does not restore capture event IDs or page-controlled accessible names to trusted workflow intent. GitHub Actions on the new exact head remains authoritative; this document must not be read as claiming green validation before that run completes successfully.
 
 ## Known production risks / intentionally parked work
 
@@ -63,7 +65,7 @@ The single permitted corrective commit authenticates exactly that CI-produced gr
 
 ## Next product milestone
 
-1. Promote this slice only after corrective exact-head CI is green.
+1. Promote this slice only after exact-head CI is green.
 2. Apply/verify real `main` protection and configure/verify the protected production GitHub Environment.
 3. Run the manual immutable AWS deployment and require strengthened live smoke plus all five System capabilities = `CONFIGURED`.
 4. Execute the controlled vertical: Cognito/Google -> OpenAI BYOK -> AgentCore Live View capture -> trusted completion/evidence -> Compile/inspect -> guided >30-second Fresh Test -> guided Publish -> Scheduler/SQS/Step Functions/AgentCore -> SES/CloudWatch -> controlled auth expiry -> secure repair/resume -> terminal success.

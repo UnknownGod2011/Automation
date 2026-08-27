@@ -46,7 +46,7 @@ describe("captured radio compilation", () => {
     const radio = graph.nodes["capture-1-delivery-email"];
     expect(radio).toMatchObject({
       kind: "CHECK",
-      objective: "Select captured radio option for event delivery-email",
+      objective: "Select captured radio",
       inputBindings: { checked: "capture.delivery-email.checked" },
       allowedSideEffects: ["CHECK"],
       escalation: "HUMAN",
