@@ -382,12 +382,26 @@ async function verifyCaptureCustomState(
   outputs: Readonly<Record<string, unknown>>,
 ): Promise<{ verified: boolean; detail: string }> {
   if (expected === "capture:input-filled") {
+    const typedValue = primitiveString(outputs, ["typedValue"]);
+    if (node.kind === "TYPE" && typedValue === null) {
+      return {
+        verified: false,
+        detail: "captured input verification has no transient bound value",
+      };
+    }
     const deadlineMs = Date.now() + timeoutMs;
     const locator = await resolveNodeLocator(page, node, deadlineMs);
     if (!locator) {
       return { verified: false, detail: "captured input verification target was not found" };
     }
     const value = await locator.inputValue({ timeout: remainingMs(deadlineMs) });
+    if (typedValue !== null) {
+      return value === typedValue
+        ? { verified: true, detail: "captured input bound-value verification passed" }
+        : { verified: false, detail: "captured input bound-value verification failed" };
+    }
+    // Preserve compatibility for legacy non-TYPE nodes that used the older
+    // capture:input-filled contract before dedicated control verifiers existed.
     return value.length > 0
       ? { verified: true, detail: "captured input verification passed" }
       : { verified: false, detail: "captured input verification failed" };
@@ -627,7 +641,7 @@ export class AgentCorePlaywrightBrowserExecutor implements BrowserExecutor {
             return await this.missingTarget(node, "semantic-type-missing");
           }
           await locator.fill(value, { timeout: remainingMs(deadlineMs) });
-          return await this.success(node, { value: true }, "semantic-type", false);
+          return await this.success(node, { typedValue: value }, "semantic-type", false);
         }
         case "EXTRACT": {
           const locator = semanticLocator(this.page, decision.arguments);
@@ -773,8 +787,9 @@ export class AgentCorePlaywrightBrowserExecutor implements BrowserExecutor {
     await locator.fill(value, { timeout: remainingMs(deadlineMs) });
 
     // Do not capture a screenshot after typing. It may expose user-entered secrets
-    // or private field contents in durable evidence.
-    return this.success(node, { value: true }, "type", false);
+    // or private field contents in durable evidence. The transient typedValue output
+    // is consumed only by verification; outputBindings are empty for captured TYPE.
+    return this.success(node, { typedValue: value }, "type", false);
   }
 
   private async select(
