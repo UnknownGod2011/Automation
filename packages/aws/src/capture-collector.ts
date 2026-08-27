@@ -27,6 +27,12 @@ const CAPTURE_INSTALLER = `(() => {
   if (window[key]) return;
   window[key] = true;
   const clip = (value, max = 512) => typeof value === "string" ? value.trim().slice(0, max) : undefined;
+  const activationElement = (node) => {
+    const raw = node instanceof Element ? node : node?.parentElement;
+    const label = raw?.closest?.("label");
+    if (label instanceof HTMLLabelElement && label.control) return label.control;
+    return raw?.closest?.("button,input,textarea,select,a,[role],[data-testid],[data-test-id]") || raw;
+  };
   const target = (node) => {
     const raw = node instanceof Element ? node : node?.parentElement;
     const element = raw?.closest?.("button,input,textarea,select,a,[role],[data-testid],[data-test-id]") || raw;
@@ -40,6 +46,11 @@ const CAPTURE_INSTALLER = `(() => {
     const css = id ? "#" + CSS.escape(id) : tag;
     return { role, accessibleName, testId, text, css };
   };
+  const inputType = (element) => element instanceof HTMLInputElement
+    ? element.type
+    : element instanceof HTMLSelectElement
+      ? "select"
+      : undefined;
   const emit = (payload) => {
     const bridge = window.__automationCaptureEvent;
     if (typeof bridge === "function") void bridge({
@@ -48,7 +59,8 @@ const CAPTURE_INSTALLER = `(() => {
     });
   };
   document.addEventListener("click", (event) => {
-    emit({ kind: "CLICK", target: target(event.target) });
+    const element = activationElement(event.target);
+    emit({ kind: "CLICK", target: target(element || event.target), inputType: inputType(element) });
   }, true);
   document.addEventListener("change", (event) => {
     const element = event.target;
@@ -400,6 +412,16 @@ export class AgentCorePlaywrightCaptureEventSource implements CaptureCollectionE
       if (!url) return;
       const title = safeString(pageRecord.title);
       const target = normalizeTarget((payload as unknown as { target?: unknown }).target);
+
+      if (payload.kind === "CLICK") {
+        const control = classifyCaptureInputControl(payload.inputType);
+        if (control === "SELECT" || control === "CHECKBOX" || control === "RADIO") {
+          // Select/checkbox/radio changes have explicit form-control events. Suppress
+          // their initiating click—even when the user clicked an associated label—so
+          // one demonstrated state change cannot compile into two browser actions.
+          return;
+        }
+      }
 
       if (payload.kind === "INPUT") {
         const identity = reserve();
