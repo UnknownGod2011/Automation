@@ -153,6 +153,19 @@ function primitiveString(
   return null;
 }
 
+function primitiveBoolean(
+  record: Readonly<Record<string, unknown>>,
+  keys: readonly string[],
+): boolean | null {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "boolean") return value;
+    if (value === "true") return true;
+    if (value === "false") return false;
+  }
+  return null;
+}
+
 function primitiveNumber(
   record: Readonly<Record<string, unknown>>,
   keys: readonly string[],
@@ -396,6 +409,22 @@ async function verifyCaptureCustomState(
       : { verified: false, detail: "captured select verification failed" };
   }
 
+  if (expected === "capture:check-bound-state") {
+    const checked = primitiveBoolean(outputs, ["checked"]);
+    if (checked === null) {
+      return { verified: false, detail: "captured checkbox verification has no checked state" };
+    }
+    const deadlineMs = Date.now() + timeoutMs;
+    const locator = await resolveNodeLocator(page, node, deadlineMs);
+    if (!locator) {
+      return { verified: false, detail: "captured checkbox verification target was not found" };
+    }
+    const actualChecked = await locator.isChecked({ timeout: remainingMs(deadlineMs) });
+    return actualChecked === checked
+      ? { verified: true, detail: "captured checkbox verification passed" }
+      : { verified: false, detail: "captured checkbox verification failed" };
+  }
+
   if (expected?.startsWith("capture:state:")) {
     const deadlineMs = Date.now() + timeoutMs;
     while (true) {
@@ -442,6 +471,8 @@ export class AgentCorePlaywrightBrowserExecutor implements BrowserExecutor {
           return await this.type(node, inputs, deadlineMs);
         case "SELECT":
           return await this.select(node, inputs, deadlineMs);
+        case "CHECK":
+          return await this.check(node, inputs, deadlineMs);
         case "EXTRACT":
           return await this.extract(node, deadlineMs);
         case "WAIT":
@@ -785,6 +816,44 @@ export class AgentCorePlaywrightBrowserExecutor implements BrowserExecutor {
     );
   }
 
+  private async check(
+    node: WorkflowNode,
+    inputs: Readonly<Record<string, unknown>>,
+    deadlineMs: number,
+  ): Promise<BrowserActionResult> {
+    const checked = primitiveBoolean(inputs, ["checked"]);
+    if (checked === null) {
+      return sanitizedFailure(
+        "POLICY_BLOCKED",
+        "check node has no bound boolean state",
+        node.id,
+        false,
+      );
+    }
+    const locator = await resolveNodeLocator(this.page, node, deadlineMs);
+    if (!locator) return this.missingTarget(node, "check-missing");
+
+    // Playwright check/uncheck is idempotent: a retry cannot reverse a state that was
+    // already applied before an uncertain verification boundary.
+    if (checked) {
+      await locator.check({ timeout: remainingMs(deadlineMs) });
+    } else {
+      await locator.uncheck({ timeout: remainingMs(deadlineMs) });
+    }
+    const actualChecked = await locator.isChecked({ timeout: remainingMs(deadlineMs) });
+    if (actualChecked !== checked) {
+      return sanitizedFailure(
+        "EFFECT_NOT_VERIFIED",
+        "check node did not reach the bound checkbox state",
+        node.id,
+        true,
+      );
+    }
+
+    // A checkbox can encode user/private form state. Keep evidence metadata-only.
+    return this.success(node, { checked: actualChecked }, "check", false);
+  }
+
   private async extract(
     node: WorkflowNode,
     deadlineMs: number,
@@ -943,7 +1012,7 @@ export class AgentCorePlaywrightVerificationEngine
         this.page,
         context.node,
         verified ? "verify-passed" : "verify-failed",
-        context.node.kind !== "TYPE" && context.node.kind !== "SELECT",
+        context.node.kind !== "TYPE" && context.node.kind !== "SELECT" && context.node.kind !== "CHECK",
       );
       return {
         verified,
