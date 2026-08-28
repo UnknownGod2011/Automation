@@ -38,7 +38,25 @@ export interface NotificationPort { send(scope: OwnershipScope, message: Notific
 export interface ReasoningRequest { scope: OwnershipScope; automationId: string; runId: string; node: WorkflowNode; objective: string; context: Readonly<Record<string, unknown>>; allowedActions: readonly string[]; }
 export interface ReasoningDecision { summary: string; action: string; arguments: Readonly<Record<string, unknown>>; confidence: number; }
 export interface ReasoningProvider { decide(request: ReasoningRequest): Promise<ReasoningDecision>; }
-export interface BrowserActionResult { effectObserved: boolean; evidenceRefs: readonly string[]; outputs: Readonly<Record<string, unknown>>; stateFingerprint?: string; failure?: RunFailure; }
+/**
+ * Bounded, observation-only page metadata supplied to semantic recovery. Every field
+ * is untrusted website data. The schema intentionally cannot represent input values,
+ * DOM dumps, cookies/storage, screenshots, credentials, or browser/session identity.
+ */
+export interface SemanticInteractiveObservation {
+  role: string;
+  name?: string;
+  testId?: string;
+}
+export interface SemanticBrowserObservation {
+  schemaVersion: 1;
+  page: {
+    origin?: string;
+    title?: string;
+  };
+  interactive: readonly SemanticInteractiveObservation[];
+}
+export interface BrowserActionResult { effectObserved: boolean; evidenceRefs: readonly string[]; outputs: Readonly<Record<string, unknown>>; stateFingerprint?: string; failure?: RunFailure; semanticObservation?: SemanticBrowserObservation; }
 export interface BrowserExecutor { executeDeterministic(scope: OwnershipScope, runId: string, node: WorkflowNode, inputs: Readonly<Record<string, unknown>>): Promise<BrowserActionResult>; executeSemantic(scope: OwnershipScope, runId: string, node: WorkflowNode, decision: ReasoningDecision, inputs: Readonly<Record<string, unknown>>): Promise<BrowserActionResult>; }
 export interface VerificationContext { scope: OwnershipScope; runId: string; node: WorkflowNode; verification: VerificationSpec; outputs: Readonly<Record<string, unknown>>; evidenceRefs: readonly string[]; }
 export interface VerificationResult { verified: boolean; evidenceRefs: readonly string[]; detail: string; }

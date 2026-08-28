@@ -136,6 +136,20 @@ class SubmitRecoveryBrowser implements BrowserExecutor {
       evidenceRefs: [],
       outputs: {},
       stateFingerprint: "form-selector-drifted",
+      semanticObservation: {
+        schemaVersion: 1,
+        page: {
+          origin: "https://app.example.com",
+          title: "Checkout — page text is untrusted",
+        },
+        interactive: [
+          {
+            role: "button",
+            name: "Send now",
+            testId: "replacement-submit",
+          },
+        ],
+      },
       failure: {
         code: "ELEMENT_NOT_FOUND",
         message: "captured submit target moved",
@@ -165,9 +179,9 @@ class FixedReasoner implements ReasoningProvider {
   async decide(request: ReasoningRequest): Promise<ReasoningDecision> {
     this.requests.push(structuredClone(request));
     return {
-      summary: "Use the constrained demonstrated submit target",
+      summary: "Use the constrained replacement submit target",
       action: this.action,
-      arguments: { testId: "submit-form" },
+      arguments: { testId: "replacement-submit" },
       confidence: 0.9,
     };
   }
@@ -193,7 +207,7 @@ function engine(browser: SubmitRecoveryBrowser, reasoner: ReasoningProvider) {
 }
 
 describe("captured SUBMIT semantic recovery", () => {
-  it("preserves the compiler submit-only authority through reasoning and execution", async () => {
+  it("preserves submit-only authority and supplies bounded live browser observations", async () => {
     expect(submitNode.kind).toBe("CLICK");
     expect(submitNode.allowedSideEffects).toEqual(["SUBMIT"]);
 
@@ -210,8 +224,24 @@ describe("captured SUBMIT semantic recovery", () => {
     expect(reasoner.requests[0]?.allowedActions).toEqual(["SUBMIT"]);
     expect(reasoner.requests[0]?.objective).not.toContain(scope.tenantId);
     expect(reasoner.requests[0]?.objective).not.toContain(scope.userId);
+    expect(reasoner.requests[0]?.context).toEqual({
+      browserObservation: {
+        schemaVersion: 1,
+        page: {
+          origin: "https://app.example.com",
+          title: "Checkout — page text is untrusted",
+        },
+        interactive: [
+          { role: "button", name: "Send now", testId: "replacement-submit" },
+        ],
+      },
+    });
+    expect(JSON.stringify(reasoner.requests[0]?.context)).not.toContain("profile-submit");
     expect(browser.semanticCalls).toHaveLength(1);
-    expect(browser.semanticCalls[0]?.decision.action).toBe("SUBMIT");
+    expect(browser.semanticCalls[0]?.decision).toMatchObject({
+      action: "SUBMIT",
+      arguments: { testId: "replacement-submit" },
+    });
   });
 
   it("policy-blocks a generic CLICK decision for a submit-only captured node", async () => {
