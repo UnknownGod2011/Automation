@@ -13,12 +13,22 @@ export type DemoPriority = (typeof DEMO_PRIORITIES)[number];
 export interface DemoTargetConfig {
   enabled: boolean;
   sessionTtlSeconds: number;
+  semanticDriftEnabled: boolean;
+}
+
+function optionalBoolean(value: string | undefined): boolean {
+  if (value === undefined || value === "" || value === "false") return false;
+  if (value === "true") return true;
+  throw new Error("demo target configuration is invalid");
 }
 
 export function readDemoTargetConfig(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): DemoTargetConfig {
   const enabled = env.AUTOMATION_DEMO_TARGET_ENABLED === "true";
+  const semanticDriftEnabled = optionalBoolean(
+    env.AUTOMATION_DEMO_TARGET_SEMANTIC_DRIFT_ENABLED,
+  );
   const rawTtl = env.AUTOMATION_DEMO_TARGET_SESSION_TTL_SECONDS;
   const sessionTtlSeconds = rawTtl === undefined || rawTtl === ""
     ? DEFAULT_SESSION_TTL_SECONDS
@@ -32,7 +42,7 @@ export function readDemoTargetConfig(
     throw new Error("demo target configuration is invalid");
   }
 
-  return { enabled, sessionTtlSeconds };
+  return { enabled, sessionTtlSeconds, semanticDriftEnabled };
 }
 
 function cookiePairs(cookieHeader: string | null): ReadonlyMap<string, string> {
@@ -85,10 +95,24 @@ export function demoTargetLoginHtml(): string {
   );
 }
 
-export function demoTargetWorkflowHtml(): string {
+function demoSubmitControl(semanticDriftEnabled: boolean): { insideForm: string; afterForm: string } {
+  if (!semanticDriftEnabled) {
+    return {
+      insideForm: '<button type="submit" data-testid="demo-submit">Complete demo task</button>',
+      afterForm: "",
+    };
+  }
+  return {
+    insideForm: "",
+    afterForm: '<div data-testid="demo-semantic-submit-slot"><input type="submit" form="demo-form" aria-label="Finish controlled demo after selector drift" data-testid="demo-semantic-submit" value="Finish controlled demo after selector drift"></div>',
+  };
+}
+
+export function demoTargetWorkflowHtml(semanticDriftEnabled = false): string {
+  const submit = demoSubmitControl(semanticDriftEnabled);
   return document(
     "Automation demo task",
-    '<h1>Demo workflow target</h1><p>Choose a non-secret priority, select Focused handling, enter a non-secret demo note, confirm the harmless demo action, and submit it.</p><form method="post" action="/demo-target/action" data-testid="demo-form"><label for="demo-priority">Priority</label><select id="demo-priority" name="priority" data-testid="demo-priority" required><option value="low">Low priority</option><option value="normal" selected>Normal priority</option><option value="high">High priority</option></select><fieldset data-testid="demo-mode"><legend>Handling mode</legend><label for="demo-mode-standard"><input id="demo-mode-standard" name="mode" type="radio" value="standard" data-testid="demo-mode-standard" checked required> Standard handling</label><label for="demo-mode-focused"><input id="demo-mode-focused" name="mode" type="radio" value="focused" data-testid="demo-mode-focused" required> Focused handling</label></fieldset><label for="demo-note">Demo note</label><textarea id="demo-note" name="note" data-testid="demo-note" maxlength="4096" required></textarea><label for="demo-confirm"><input id="demo-confirm" name="confirm" type="checkbox" value="confirmed" data-testid="demo-confirm" required> Confirm this harmless demo action</label><button type="submit" data-testid="demo-submit">Complete demo task</button></form>',
+    `<h1>Demo workflow target</h1><p>Choose a non-secret priority, select Focused handling, enter a non-secret demo note, confirm the harmless demo action, and submit it.</p><form id="demo-form" method="post" action="/demo-target/action" data-testid="demo-form"><label for="demo-priority">Priority</label><select id="demo-priority" name="priority" data-testid="demo-priority" required><option value="low">Low priority</option><option value="normal" selected>Normal priority</option><option value="high">High priority</option></select><fieldset data-testid="demo-mode"><legend>Handling mode</legend><label for="demo-mode-standard"><input id="demo-mode-standard" name="mode" type="radio" value="standard" data-testid="demo-mode-standard" checked required> Standard handling</label><label for="demo-mode-focused"><input id="demo-mode-focused" name="mode" type="radio" value="focused" data-testid="demo-mode-focused" required> Focused handling</label></fieldset><label for="demo-note">Demo note</label><textarea id="demo-note" name="note" data-testid="demo-note" maxlength="4096" required></textarea><label for="demo-confirm"><input id="demo-confirm" name="confirm" type="checkbox" value="confirmed" data-testid="demo-confirm" required> Confirm this harmless demo action</label>${submit.insideForm}</form>${submit.afterForm}`,
   );
 }
 

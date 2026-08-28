@@ -28,7 +28,9 @@ export async function GET(request: Request): Promise<Response> {
 
   const authenticated = hasDemoTargetSession(request.headers.get("cookie"));
   return new Response(
-    authenticated ? demoTargetWorkflowHtml() : demoTargetLoginHtml(),
+    authenticated
+      ? demoTargetWorkflowHtml(config.semanticDriftEnabled)
+      : demoTargetLoginHtml(),
     {
       status: authenticated ? 200 : 401,
       headers: demoTargetHeaders(),

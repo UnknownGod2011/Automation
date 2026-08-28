@@ -18,7 +18,7 @@ cat >"$tmp/deployment.json" <<'JSON'
 }
 JSON
 cat >"$tmp/environment.json" <<'JSON'
-{"schemaVersion":1,"parameters":{"web":{"DemoTargetEnabled":"true"}}}
+{"schemaVersion":1,"parameters":{"web":{"DemoTargetEnabled":"true","DemoTargetSemanticDriftEnabled":"false"}}}
 JSON
 
 cat >"$tmp/bin/curl" <<'SH'
@@ -47,13 +47,9 @@ if [[ "$url" == "https://web.example.com/" ]]; then
   code=200
   [[ "$out" == /dev/null ]] || {
     if [[ "${FAKE_WEB_MODE:-good}" == "missing-signin" ]]; then
-      cat >"$out" <<'HTML'
-<html><body><h1>Teach it once. Let the cloud run it.</h1></body></html>
-HTML
+      printf '<html><body><h1>Teach it once. Let the cloud run it.</h1></body></html>' >"$out"
     else
-      cat >"$out" <<'HTML'
-<html><body><h1>Teach it once. Let the cloud run it.</h1><a href="/api/auth/sign-in?returnTo=/">Sign in with Google or email</a></body></html>
-HTML
+      printf '<html><body><h1>Teach it once. Let the cloud run it.</h1><a href="/api/auth/sign-in?returnTo=/">Sign in with Google or email</a></body></html>' >"$out"
     fi
   }
 elif [[ "$url" == "https://web.example.com/api/auth/sign-in?returnTo=/" ]]; then
@@ -85,8 +81,11 @@ elif [[ "$url" == "https://web.example.com/demo-target" ]]; then
         missing-checkbox)
           printf '<html><select data-testid="demo-priority"><option value="normal">Normal priority</option><option value="high">High priority</option></select><input type="radio" data-testid="demo-mode-focused"><textarea data-testid="demo-note"></textarea><button data-testid="demo-submit">Complete</button></html>' >"$out"
           ;;
+        semantic-drift)
+          printf '<html><form id="demo-form"><select data-testid="demo-priority"><option value="normal">Normal priority</option><option value="high">High priority</option></select><input type="radio" data-testid="demo-mode-standard" checked><input type="radio" data-testid="demo-mode-focused"><textarea data-testid="demo-note"></textarea><input type="checkbox" data-testid="demo-confirm"></form><input type="submit" form="demo-form" aria-label="Finish controlled demo after selector drift" data-testid="demo-semantic-submit"></html>' >"$out"
+          ;;
         *)
-          printf '<html><select data-testid="demo-priority"><option value="normal">Normal priority</option><option value="high">High priority</option></select><input type="radio" data-testid="demo-mode-standard" checked><input type="radio" data-testid="demo-mode-focused"><textarea data-testid="demo-note"></textarea><input type="checkbox" data-testid="demo-confirm"><button data-testid="demo-submit">Complete</button></html>' >"$out"
+          printf '<html><form id="demo-form"><select data-testid="demo-priority"><option value="normal">Normal priority</option><option value="high">High priority</option></select><input type="radio" data-testid="demo-mode-standard" checked><input type="radio" data-testid="demo-mode-focused"><textarea data-testid="demo-note"></textarea><input type="checkbox" data-testid="demo-confirm"><button data-testid="demo-submit">Complete</button></form></html>' >"$out"
           ;;
       esac
     }
@@ -122,6 +121,19 @@ chmod +x "$tmp/bin/curl"
 
 PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/good.out"
 grep -Fq 'demo-target state and action verified' "$tmp/good.out"
+
+python3 - "$tmp/environment.json" >"$tmp/drift-environment.json" <<'PY'
+import json,sys
+from pathlib import Path
+doc=json.loads(Path(sys.argv[1]).read_text()); doc['parameters']['web']['DemoTargetSemanticDriftEnabled']='true'; print(json.dumps(doc))
+PY
+FAKE_DEMO_MODE=semantic-drift PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/drift-environment.json" >"$tmp/drift-good.out"
+grep -Fq 'demo-target state and action verified' "$tmp/drift-good.out"
+if PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/drift-environment.json" >"$tmp/drift-mismatch.out" 2>"$tmp/drift-mismatch.err"; then
+  echo 'smoke contract should reject semantic-drift configuration when the replacement target is absent' >&2
+  exit 1
+fi
+grep -Fq 'semantic-drift submit action is missing' "$tmp/drift-mismatch.err"
 
 if FAKE_WEB_MODE=missing-signin PATH="$tmp/bin:$PATH" bash "$ROOT_DIR/scripts/smoke-aws-deployment.sh" --deployment "$tmp/deployment.json" --environment "$tmp/environment.json" >"$tmp/missing-signin.out" 2>"$tmp/missing-signin.err"; then
   echo 'smoke contract should reject a signed-out shell without the authentication action' >&2
