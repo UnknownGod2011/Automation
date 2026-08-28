@@ -174,13 +174,13 @@ export async function captureSemanticBrowserObservation(
       }, MAX_INTERACTIVE_OBSERVATIONS),
     ]);
 
+    const origin = safeOrigin(page.url());
+    const safeTitle = boundedText(title, MAX_OBSERVATION_TEXT);
     const observation: SemanticBrowserObservation = {
       schemaVersion: 1,
       page: {
-        ...(safeOrigin(page.url()) ? { origin: safeOrigin(page.url()) } : {}),
-        ...(boundedText(title, MAX_OBSERVATION_TEXT)
-          ? { title: boundedText(title, MAX_OBSERVATION_TEXT) }
-          : {}),
+        ...(origin !== undefined ? { origin } : {}),
+        ...(safeTitle !== undefined ? { title: safeTitle } : {}),
       },
       interactive: normalizeInteractive(
         Array.isArray(raw) ? (raw as RawInteractiveObservation[]) : [],

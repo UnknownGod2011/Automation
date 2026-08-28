@@ -52,7 +52,9 @@ AWS coverage proves observation normalization removes URL query/fragment data an
 
 Normal implementation commit: `fb2c360cbdc7a6ce24a45e0714bedca5d4e015d0` (`Add bounded live browser observations for semantic recovery`). CI #398 stopped exclusively at the deterministic pnpm supply-chain gate before installation, type-checking, packaging, or tests. No package manifest changed. pnpm 10.15.0 re-resolved the full transitive graph from reviewed SHA `9e7dfd36a9d7ed11f6a1693ca19b49e7c465263c57a53db3eb56d104741d259f` to authoritative CI-produced SHA `c5889efa3fe2bdbaa705b768e0f0ca8a40de6fb0ba2a1106dd3a1a44e927cf39`.
 
-The single permitted corrective commit authenticates only that exact reviewed snapshot and retains the existing AWS SDK/DynamoDB peer-alignment assertions. It does not change semantic-observation behavior or weaken the dependency gate. GitHub Actions on the corrective exact head is authoritative; do not claim the product slice is green until that run completes successfully.
+The single dependency corrective commit `9f7a5a234c4d9a77a04be46673579cf6820b5106` authenticated only that exact reviewed snapshot and retained the existing AWS SDK/DynamoDB peer-alignment assertions. CI #399 then passed the reviewed lock gate, frozen installation, and contracts/core/web type-checking before failing on one AWS `exactOptionalPropertyTypes` diagnostic in `semantic-browser-observation.ts`. The observation design was not implicated: optional origin/title helpers were called separately in the object conditional and property expression, leaving the property type as `string | undefined`.
+
+This run corrects only that root-caused construction issue: origin and bounded title are each computed once, then conditionally spread only after local narrowing. The observation contract remains strict and does not admit explicit `undefined`. GitHub Actions on the exact new head is authoritative; this document must not be read as claiming green validation before that run completes successfully.
 
 ## Known production risks / intentionally parked work
 
