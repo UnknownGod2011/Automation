@@ -22,7 +22,7 @@ Deterministic selector drift could enter semantic recovery with essentially no l
 - The AWS Playwright runtime now captures a bounded observation-only page view at the failed deterministic target boundary.
 - Safe page metadata is limited to HTTP(S) origin and bounded title; query strings/fragments are never included.
 - Visible interactive metadata is capped at 32 entries and restricted to a closed role set with bounded accessible name and/or test-id.
-- The browser-side observation collector never reads input values, cookies, local/session storage, DOM HTML, screenshots, credentials, Browser Profile/session identity, tenant/user identity, BYOK material, workload tokens, or raw exceptions.
+- The browser-side observation collector never reads input values, cookies, local/session storage, DOM HTML, hidden text, screenshots, credentials, Browser Profile/session identity, tenant/user identity, BYOK material, workload tokens, or raw exceptions.
 - Observation collection failure is sanitized and fail-closed; semantic reasoning does not proceed with broadened authority.
 - The observation payload is not merged into workflow outputs/checkpoints and is therefore not persisted by the execution engine.
 
@@ -46,19 +46,13 @@ No AWS resource, IAM permission, dependency, extra Browser/AgentCore session, qu
 
 ### Regression coverage / validation
 
-Core coverage now forces a compiled captured SUBMIT into deterministic selector drift, supplies a replacement button through the transient observation boundary, and proves:
-
-- the reasoner still receives only `SUBMIT` authority;
-- the global workflow goal and closed current-step objective remain intact;
-- safe live browser metadata reaches the reasoner;
-- Browser Profile identity does not;
-- the constrained semantic target is executed exactly once;
-- ordinary effect verification still gates success;
-- a forged generic CLICK decision remains policy-blocked before semantic browser dispatch.
+Core coverage forces a compiled captured SUBMIT into deterministic selector drift, supplies a replacement button through the transient observation boundary, and proves the reasoner retains SUBMIT-only authority, receives safe live browser metadata, executes the constrained semantic target exactly once, and still requires ordinary effect verification. A forged generic CLICK decision remains policy-blocked before semantic browser dispatch.
 
 AWS coverage proves observation normalization removes URL query/fragment data and arbitrary value fields, filters unsupported roles, caps interactive entries, and surfaces browser-observation failure only through a fixed classified error.
 
-GitHub Actions on the exact published head is authoritative; this document must not be read as claiming a pass before that run exists and completes successfully.
+Normal implementation commit: `fb2c360cbdc7a6ce24a45e0714bedca5d4e015d0` (`Add bounded live browser observations for semantic recovery`). CI #398 stopped exclusively at the deterministic pnpm supply-chain gate before installation, type-checking, packaging, or tests. No package manifest changed. pnpm 10.15.0 re-resolved the full transitive graph from reviewed SHA `9e7dfd36a9d7ed11f6a1693ca19b49e7c465263c57a53db3eb56d104741d259f` to authoritative CI-produced SHA `c5889efa3fe2bdbaa705b768e0f0ca8a40de6fb0ba2a1106dd3a1a44e927cf39`.
+
+The single permitted corrective commit authenticates only that exact reviewed snapshot and retains the existing AWS SDK/DynamoDB peer-alignment assertions. It does not change semantic-observation behavior or weaken the dependency gate. GitHub Actions on the corrective exact head is authoritative; do not claim the product slice is green until that run completes successfully.
 
 ## Known production risks / intentionally parked work
 
