@@ -23,6 +23,7 @@ import type {
   WorkflowNode,
 } from "@automation/contracts";
 import { captureSafePageStateFingerprint } from "./capture-verification-state.js";
+import { captureSemanticBrowserObservation } from "./semantic-browser-observation.js";
 import {
   scopedResourceIdentity,
   stableResourceToken,
@@ -931,13 +932,16 @@ export class AgentCorePlaywrightBrowserExecutor implements BrowserExecutor {
       evidenceKind,
       true,
     );
-    return sanitizedFailure(
+    const failure = sanitizedFailure(
       "ELEMENT_NOT_FOUND",
       "deterministic browser target was not found",
       node.id,
       true,
       evidence.evidenceRefs,
     );
+    if (node.escalation !== "SEMANTIC_RECOVERY") return failure;
+    const semanticObservation = await captureSemanticBrowserObservation(this.page, node);
+    return { ...failure, semanticObservation };
   }
 
   private async success(

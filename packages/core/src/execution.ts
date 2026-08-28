@@ -16,6 +16,7 @@ import type {
   ReasoningDecision,
   ReasoningProvider,
   RunRepository,
+  SemanticBrowserObservation,
   VerificationEngine,
 } from "./index.js";
 import { classifyExecutionError } from "./errors.js";
@@ -202,6 +203,15 @@ export function semanticReasoningObjective(
   node: WorkflowNode,
 ): string {
   return `Workflow goal: ${graph.objective}\nCurrent step: ${node.objective}`;
+}
+
+function semanticContext(
+  inputs: Readonly<Record<string, unknown>>,
+  observation?: SemanticBrowserObservation,
+): Readonly<Record<string, unknown>> {
+  return observation
+    ? { ...inputs, browserObservation: observation }
+    : inputs;
 }
 
 function validateDecision(
@@ -686,6 +696,7 @@ export class WorkflowExecutionEngine {
       node,
       inputs,
       "SEMANTIC_RECOVERY",
+      deterministic.semanticObservation,
     );
     return {
       ...semantic,
@@ -703,6 +714,7 @@ export class WorkflowExecutionEngine {
     node: WorkflowNode,
     inputs: Readonly<Record<string, unknown>>,
     trigger: RunReasoningSummary["trigger"],
+    observation?: SemanticBrowserObservation,
   ): Promise<NodeActionResult> {
     const allowedActions = semanticAllowedActions(node);
     if (allowedActions.length === 0) {
@@ -728,7 +740,7 @@ export class WorkflowExecutionEngine {
         runId: run.runId,
         node,
         objective: semanticReasoningObjective(graph, node),
-        context: inputs,
+        context: semanticContext(inputs, observation),
         allowedActions,
       });
     } catch (error) {
