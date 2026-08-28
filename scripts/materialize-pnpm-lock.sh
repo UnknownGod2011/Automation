@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly EXPECTED_PNPM_VERSION="10.15.0"
-readonly EXPECTED_LOCK_SHA256="4354be9e6660a24ec9a42bea1010e9e372b9ce61f7085109bd01f95413a3f473"
+readonly EXPECTED_LOCK_SHA256="ecbd5c08c99ee9e8a92372f12f44115beb2d7626999538f09cc9c1e0f752ad40"
 
 actual_pnpm_version="$(pnpm --version)"
 if [[ "${actual_pnpm_version}" != "${EXPECTED_PNPM_VERSION}" ]]; then
@@ -10,15 +10,10 @@ if [[ "${actual_pnpm_version}" != "${EXPECTED_PNPM_VERSION}" ]]; then
   exit 1
 fi
 
-# Recreate the lock snapshot from manifests rather than relying on a retained
-# GitHub Actions log or any pre-existing local lockfile. Package lifecycle
-# scripts remain disabled during resolution.
-#
-# pnpm 10.x re-resolves the full graph for lockfile-only generation. That means
-# an upstream transitive release can intentionally trip this hash even when our
-# direct manifests did not change. Treat such a mismatch as a supply-chain
-# review boundary: inspect the authoritative CI resolution before changing this
-# value; never fall back to an unverified fresh install.
+# Bootstrap only: recreate the exact lock snapshot authenticated by main CI #406.
+# This branch emits that already-hash-verified lock so it can be checked into Git
+# in the corrective commit. The final strategy will no longer resolve the live
+# registry during CI verification.
 rm -f pnpm-lock.yaml
 pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
 
@@ -29,16 +24,16 @@ else
 fi
 
 if [[ "${actual_lock_sha256}" != "${EXPECTED_LOCK_SHA256}" ]]; then
-  echo "pnpm lock snapshot drifted." >&2
+  echo "pnpm lock snapshot drifted during checked-in-lock bootstrap." >&2
   echo "expected: ${EXPECTED_LOCK_SHA256}" >&2
   echo "actual:   ${actual_lock_sha256}" >&2
-  echo "Dependency changes require an intentional lock-snapshot review and hash update." >&2
   exit 1
 fi
 
-# Keep the previously-reviewed AWS peer alignment explicit. These checks make
-# an accidental regression obvious even before package installation begins.
 grep -Fq "specifier: 3.1111.0" pnpm-lock.yaml
 grep -Fq "version: 3.1103.0(@aws-sdk/client-dynamodb@3.1111.0)" pnpm-lock.yaml
 
-printf 'Verified pnpm lock snapshot %s\n' "${actual_lock_sha256}"
+printf 'Verified bootstrap pnpm lock snapshot %s\n' "${actual_lock_sha256}"
+printf '%s\n' '---BEGIN-PNPM-LOCK-BASE64---'
+base64 -w 0 pnpm-lock.yaml
+printf '\n%s\n' '---END-PNPM-LOCK-BASE64---'
