@@ -56,7 +56,15 @@ for name, value in required.items():
     if name == "WEB_ORIGIN" and (parsed.path not in ("", "/") or parsed.query):
         raise SystemExit("webOrigin must be an HTTPS origin without path/query")
 
+def parse_bool(raw, label):
+    if raw in (True, "true"):
+        return True
+    if raw in (False, "false"):
+        return False
+    raise SystemExit(f"{label} must be true or false")
+
 demo_enabled = None
+demo_semantic_drift_enabled = None
 if sys.argv[2]:
     env_doc = json.loads(Path(sys.argv[2]).read_text())
     if env_doc.get("schemaVersion") != 1:
@@ -67,18 +75,23 @@ if sys.argv[2]:
     web = parameters.get("web")
     if not isinstance(web, dict):
         raise SystemExit("environment parameters.web is required")
-    raw = web.get("DemoTargetEnabled", False)
-    if raw in (True, "true"):
-        demo_enabled = True
-    elif raw in (False, "false"):
-        demo_enabled = False
-    else:
-        raise SystemExit("parameters.web.DemoTargetEnabled must be true or false")
+    demo_enabled = parse_bool(
+        web.get("DemoTargetEnabled", False),
+        "parameters.web.DemoTargetEnabled",
+    )
+    demo_semantic_drift_enabled = parse_bool(
+        web.get("DemoTargetSemanticDriftEnabled", False),
+        "parameters.web.DemoTargetSemanticDriftEnabled",
+    )
 
 for name, value in required.items():
     print(f"{name}={shlex.quote(value.rstrip('/'))}")
 if demo_enabled is not None:
     print(f"DEMO_TARGET_ENABLED={'true' if demo_enabled else 'false'}")
+    print(
+        "DEMO_TARGET_SEMANTIC_DRIFT_ENABLED="
+        + ("true" if demo_semantic_drift_enabled else "false")
+    )
 PY
 # shellcheck disable=SC1090
 source "$meta"
@@ -190,7 +203,20 @@ PY
     grep -Fq 'data-testid="demo-note"' "$demo_workflow_body" || { echo 'demo-target smoke failed: authenticated workflow note field is missing' >&2; exit 14; }
     grep -Fq 'data-testid="demo-confirm"' "$demo_workflow_body" || { echo 'demo-target smoke failed: authenticated workflow checkbox is missing' >&2; exit 14; }
     grep -Fq 'type="checkbox"' "$demo_workflow_body" || { echo 'demo-target smoke failed: demo confirmation is not a checkbox' >&2; exit 14; }
-    grep -Fq 'data-testid="demo-submit"' "$demo_workflow_body" || { echo 'demo-target smoke failed: authenticated workflow submit action is missing' >&2; exit 14; }
+    if [[ "${DEMO_TARGET_SEMANTIC_DRIFT_ENABLED:-false}" == true ]]; then
+      grep -Fq 'data-testid="demo-semantic-submit"' "$demo_workflow_body" || { echo 'demo-target smoke failed: semantic-drift submit action is missing' >&2; exit 14; }
+      grep -Fq 'aria-label="Finish controlled demo after selector drift"' "$demo_workflow_body" || { echo 'demo-target smoke failed: semantic-drift accessible target is missing' >&2; exit 14; }
+      if grep -Fq 'data-testid="demo-submit"' "$demo_workflow_body"; then
+        echo 'demo-target smoke failed: semantic-drift deployment still exposes the captured submit target' >&2
+        exit 14
+      fi
+    else
+      grep -Fq 'data-testid="demo-submit"' "$demo_workflow_body" || { echo 'demo-target smoke failed: authenticated workflow submit action is missing' >&2; exit 14; }
+      if grep -Fq 'data-testid="demo-semantic-submit"' "$demo_workflow_body"; then
+        echo 'demo-target smoke failed: baseline deployment unexpectedly exposes semantic drift' >&2
+        exit 14
+      fi
+    fi
 
     demo_action_body="$tmp_dir/demo-action.html"
     demo_action_code="$(curl "${curl_common[@]}" --request POST --header "Cookie: $demo_cookie" --header 'content-type: application/x-www-form-urlencoded' --data-urlencode 'priority=high' --data-urlencode 'mode=focused' --data-urlencode 'note=deployment-smoke-note' --data-urlencode 'confirm=confirmed' --output "$demo_action_body" --write-out '%{http_code}' "$WEB_ORIGIN/demo-target/action")"

@@ -4,63 +4,47 @@ Updated: 2026-08-28
 
 ## Current validated baseline
 
-Authoritative GitHub state at the start of this slice: `main` is `b2248bf85aa0a5e25fc74a1a386720a4a6c0b429` (`Verify captured TYPE against bound value`). The AWS-first product vertical is structurally implemented: Cognito/Google sign-in, dashboard/create/revision, AgentCore Live View capture with durable Browser Profiles/traces, semantic compilation/inspection, guided asynchronous Fresh Test, guided publish/scheduled inputs, EventBridge Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution, OpenAI BYOK through AgentCore Identity, deterministic-first browser execution with constrained semantic fallback, mandatory effect verification, authenticated capture/run evidence, run timeline/reasoning/history, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
+Authoritative GitHub state at the start of this slice: `main` is `4bafd065a66658ea711dfc7c65799934718219a9` (`Add bounded live browser observations for semantic recovery`), and push CI #402 completed successfully on that exact SHA. The AWS-first product vertical is structurally implemented: Cognito/Google sign-in, dashboard/create/revision, AgentCore Live View capture with durable Browser Profiles/traces, semantic compilation/inspection, guided asynchronous Fresh Test, guided publish/scheduled inputs, EventBridge Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution, OpenAI BYOK through AgentCore Identity, deterministic-first browser execution with bounded live observations for constrained semantic fallback, mandatory effect verification, authenticated capture/run evidence, run history/reasoning, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
 
 Further crash-recovery/outbox/lease micro-hardening remains parked unless CI or the real vertical exposes a correctness blocker.
 
-## This development slice — bounded live browser observations for semantic recovery
+## This development slice — controlled semantic selector drift
 
-### Product blocker
+### Product milestone
 
-Deterministic selector drift could enter semantic recovery with essentially no live page context. Captured CLICK/SUBMIT nodes normally have no bound runtime inputs, so the OpenAI reasoner received the workflow goal, closed current-step intent, and immutable allowed action but had no safe description of the replacement controls currently visible in the browser. The deterministic-first -> semantic-recovery architecture therefore existed, but could be ineffective on the exact UI-drift case it is meant to recover.
+The runtime can now recover from harmless UI drift with bounded live browser observations, but the first-party AWS demo could still prove only the deterministic path. A production demo needs a controlled way to invalidate the captured submit target while preserving the exact same harmless form side effect so OpenAI BYOK recovery and mandatory verification can be demonstrated end to end.
 
 ### Change
 
-- Added a provider-neutral `SemanticBrowserObservation` contract to the core browser-action boundary.
-- Observation data is transient and may accompany a deterministic `ELEMENT_NOT_FOUND` result only when the immutable node is configured for `SEMANTIC_RECOVERY`.
-- The workflow engine passes that observation to the reasoner under `browserObservation` while preserving the existing immutable `allowedActions` authority and normal post-action verification.
-- The AWS Playwright runtime now captures a bounded observation-only page view at the failed deterministic target boundary.
-- Safe page metadata is limited to HTTP(S) origin and bounded title; query strings/fragments are never included.
-- Visible interactive metadata is capped at 32 entries and restricted to a closed role set with bounded accessible name and/or test-id.
-- The browser-side observation collector never reads input values, cookies, local/session storage, DOM HTML, hidden text, screenshots, credentials, Browser Profile/session identity, tenant/user identity, BYOK material, workload tokens, or raw exceptions.
-- Observation collection failure is sanitized and fail-closed; semantic reasoning does not proceed with broadened authority.
-- The observation payload is not merged into workflow outputs/checkpoints and is therefore not persisted by the execution engine.
+- Added opt-in `AUTOMATION_DEMO_TARGET_SEMANTIC_DRIFT_ENABLED`, defaulting to false and rejecting malformed values.
+- Added CloudFormation `DemoTargetSemanticDriftEnabled`, default false, and wired it only into the web Lambda environment. No new IAM or AWS data-plane authority is introduced.
+- Baseline teaching remains unchanged: capture uses the in-form `button[data-testid=demo-submit]` labelled `Complete demo task`.
+- Drift mode removes that captured element and renders a form-associated `input[type=submit]` outside the form with test-id `demo-semantic-submit` and accessible name `Finish controlled demo after selector drift`.
+- The form action, accepted fields, authentication boundary, non-reflection behavior, and completion response are identical in both modes.
+- The deployment smoke now reads the immutable environment contract and requires the baseline or drift fixture that configuration claims is deployed; a mismatch fails closed.
+- The AWS vertical runbook now requires capture/compile with drift disabled, then redeployment of the same immutable release with drift enabled before Fresh Test, and requires observable SUBMIT semantic recovery before claiming the BYOK recovery milestone.
 
-### Security / tenant isolation / prompt injection
+### Security / tenant isolation / side effects
 
-Ownership and execution authority are unchanged. Website-controlled names/titles are explicitly untrusted observation data; the existing OpenAI system prompt already states that browser/page context is data, never instructions. Allowed actions still come only from the immutable workflow node. In particular, a captured submit node remains `SUBMIT`-only through recovery, and page text cannot authorize CLICK, navigation, script execution, or a new workflow destination.
-
-The observation schema intentionally has no field capable of representing input values or browser/session/profile credentials. String lengths, role set, item count, and serialized byte size are bounded before the payload reaches the model adapter.
+The fixture is first-party, disabled by default, and has no AWS data-plane permission or durable application state. It does not alter tenant/user/profile/credential selection, Browser authority, model authority, or workflow side-effect policy. The replacement submit control posts the same harmless form exactly once; semantic recovery remains restricted by the immutable SUBMIT-only node and the existing structural completion verification must still pass before execution advances. The new flag is non-secret deployment configuration and is never request-selectable by an automation user.
 
 ### Idempotency / concurrency / retry / timeout
 
-No run ID, occurrence key, automation lock, lease, heartbeat, retry budget, Scheduler behavior, or persistence transition changed. Observations are collected only after deterministic target resolution has failed and before any semantic side effect. If observation collection itself fails, no semantic action is dispatched. Existing bounded node retry/human escalation remains authoritative.
+No run identity, occurrence key, automation lock, lease, heartbeat, retry budget, Scheduler delivery, workflow checkpoint, or persistence transition changed. The fixture only changes server-rendered target markup. Existing bounded deterministic attempts, semantic recovery, and human escalation remain authoritative.
 
-### Side-effect verification / user recovery
+### Cost / observability / user recovery
 
-This slice does not make model output authoritative. The model still chooses exactly one action from the immutable allowed-action enum, the semantic Playwright executor still validates/executes only constrained primitives, and the existing node verification contract must pass before the workflow advances. A recovered target therefore cannot manufacture success merely because the model found something clickable.
-
-### Cost / observability
-
-No AWS resource, IAM permission, dependency, extra Browser/AgentCore session, queue delivery, S3 artifact, retained GitHub Actions artifact, or additional model request was added. The only incremental work is one bounded in-page observation scan when deterministic execution has already failed and semantic recovery is actually configured. This should reduce wasted retries/human intervention for harmless selector drift.
+No dependency, Browser/AgentCore session, queue, database, S3 object, model call, or retained Actions artifact is added by configuration alone. When the live proof is executed, one semantic model request is expected only because deterministic targeting was deliberately made stale. The existing reasoning timeline and verification evidence are the required proof. Target-auth expiry and secure Profile repair/resume remain unchanged.
 
 ### Regression coverage / validation
 
-Core coverage forces a compiled captured SUBMIT into deterministic selector drift, supplies a replacement button through the transient observation boundary, and proves the reasoner retains SUBMIT-only authority, receives safe live browser metadata, executes the constrained semantic target exactly once, and still requires ordinary effect verification. A forged generic CLICK decision remains policy-blocked before semantic browser dispatch.
+Web unit coverage proves the drift flag is false by default, malformed values fail closed, baseline markup remains stable for capture, drift markup removes the captured submit target, and the replacement stays associated with the same form without exposing secret fields. The web-hosting contract locks the new CloudFormation parameter/environment mapping. The no-cloud AWS smoke contract exercises both baseline and drift configurations and rejects a deployment whose rendered fixture does not match its declared drift mode.
 
-AWS coverage proves observation normalization removes URL query/fragment data and arbitrary value fields, filters unsupported roles, caps interactive entries, and surfaces browser-observation failure only through a fixed classified error.
-
-Normal implementation commit: `fb2c360cbdc7a6ce24a45e0714bedca5d4e015d0` (`Add bounded live browser observations for semantic recovery`). CI #398 stopped exclusively at the deterministic pnpm supply-chain gate before installation, type-checking, packaging, or tests. No package manifest changed. pnpm 10.15.0 re-resolved the full transitive graph from reviewed SHA `9e7dfd36a9d7ed11f6a1693ca19b49e7c465263c57a53db3eb56d104741d259f` to authoritative CI-produced SHA `c5889efa3fe2bdbaa705b768e0f0ca8a40de6fb0ba2a1106dd3a1a44e927cf39`.
-
-The dependency corrective commit `9f7a5a234c4d9a77a04be46673579cf6820b5106` authenticated only that exact reviewed snapshot and retained the existing AWS SDK/DynamoDB peer-alignment assertions. CI #399 then passed the reviewed lock gate, frozen installation, and contracts/core/web type-checking before failing on one AWS `exactOptionalPropertyTypes` diagnostic in `semantic-browser-observation.ts`. The observation design was not implicated: optional origin/title helpers were called separately in the object conditional and property expression, leaving the property type as `string | undefined`.
-
-Commit `396802815023e4b872667e577ab80c4e8542e145` (`Fix strict semantic observation typing`) corrected only that root-caused construction issue by computing origin/title once and conditionally spreading already-narrowed locals. CI #400 then stopped exclusively at the deterministic pnpm supply-chain gate before installation or code validation. No manifest changed; pnpm 10.15.0 regenerated the authoritative lock snapshot as `4354be9e6660a24ec9a42bea1010e9e372b9ce61f7085109bd01f95413a3f473`.
-
-The single corrective commit for this run authenticates only that exact CI-produced snapshot and retains the existing AWS SDK/DynamoDB peer-alignment assertions. It does not change semantic-observation behavior or weaken the dependency gate. GitHub Actions on the corrective exact head is authoritative; do not claim this slice green until that run completes successfully.
+This batched change intentionally contains no dependency-manifest update. GitHub Actions on the exact published head remains authoritative; do not claim this slice green until that run completes successfully.
 
 ## Known production risks / intentionally parked work
 
-- `main` is still unprotected until an administrator applies/verifies the existing branch-protection helper (or configures an equivalent stronger policy). The deploy workflow correctly issues zero AWS credentials until then.
+- `main` remains unprotected until an administrator applies/verifies the existing branch-protection helper (or configures an equivalent stronger policy). The deploy workflow correctly issues zero AWS credentials until then.
 - Production GitHub Environment restrictions/reviewers remain an independent operational control and must be configured separately.
 - VPC AgentCore Browser mode is provisioned/verified, but real route-table, DNS, security-group, NACL, and egress policy still need live validation against private/link-local/control-plane access and redirect/DNS-rebinding scenarios.
 - Only OpenAI has a concrete production BYOK reasoning adapter today; core credential routing remains provider-neutral.
@@ -70,10 +54,11 @@ The single corrective commit for this run authenticates only that exact CI-produ
 
 ## Next product milestone
 
-1. Require exact-head CI green for this semantic-observation slice and promote only after validation.
-2. Add an opt-in harmless selector-drift mode to the controlled first-party demo target so the real AWS vertical proves OpenAI BYOK semantic recovery rather than only deterministic execution.
-3. Apply/verify real `main` protection and configure/verify the protected production GitHub Environment.
-4. Run the manual immutable AWS deployment and require strengthened live smoke plus all five System capabilities = `CONFIGURED`.
-5. Execute the controlled vertical: Cognito/Google -> OpenAI BYOK -> AgentCore Live View capture -> deterministic target drift -> bounded semantic recovery -> verified action -> guided >30-second Fresh Test -> guided Publish -> Scheduler/SQS/Step Functions/AgentCore -> SES/CloudWatch -> controlled auth expiry -> secure repair/resume -> terminal success.
+1. Require exact-head CI green for this controlled semantic-drift slice and promote only after validation.
+2. Apply/verify real `main` protection and configure/verify the protected production GitHub Environment.
+3. Run the immutable AWS deployment with the built-in target enabled and semantic drift disabled; require strengthened live smoke plus all five System capabilities = `CONFIGURED`.
+4. Execute Capture -> Compile on the stable target, then redeploy the same immutable release with semantic drift enabled.
+5. Run guided >30-second Fresh Test and prove deterministic SUBMIT drift -> bounded live observation -> OpenAI BYOK SUBMIT-only decision -> exactly one recovered activation -> existing completion verification.
+6. Publish and prove Scheduler/SQS/Step Functions/AgentCore cloud execution, SES/CloudWatch reporting, then controlled target-auth expiry -> secure repair/resume -> terminal success.
 
 Concrete live-environment defects should determine subsequent engineering priorities rather than additional recovery micro-hardening.

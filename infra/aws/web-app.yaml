@@ -29,6 +29,10 @@ Parameters:
     Default: 900
     MinValue: 60
     MaxValue: 3600
+  DemoTargetSemanticDriftEnabled:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
   ReservedConcurrency:
     Type: Number
     Default: 5
@@ -103,6 +107,7 @@ Resources:
           AUTOMATION_WEB_ORIGIN: !If [HasRuntimeConfig, !Ref WebOrigin, '']
           AUTOMATION_DEMO_TARGET_ENABLED: !Ref DemoTargetEnabled
           AUTOMATION_DEMO_TARGET_SESSION_TTL_SECONDS: !Ref DemoTargetSessionTtlSeconds
+          AUTOMATION_DEMO_TARGET_SEMANTIC_DRIFT_ENABLED: !Ref DemoTargetSemanticDriftEnabled
 
   WebFunctionUrl:
     Type: AWS::Lambda::Url
@@ -114,7 +119,7 @@ Resources:
   AllowPublicFunctionUrl:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: !Ref WebFunction
+      FunctionName: !GetAtt WebFunction.Arn
       Action: lambda:InvokeFunctionUrl
       Principal: '*'
       FunctionUrlAuthType: NONE
@@ -122,7 +127,7 @@ Resources:
   AllowPublicInvokeViaFunctionUrl:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: !Ref WebFunction
+      FunctionName: !GetAtt WebFunction.Arn
       Action: lambda:InvokeFunction
       Principal: '*'
       InvokedViaFunctionUrl: true
@@ -136,3 +141,5 @@ Outputs:
     Value: !If [HasRuntimeConfig, 'true', 'false']
   DemoTargetEnabled:
     Value: !Ref DemoTargetEnabled
+  DemoTargetSemanticDriftEnabled:
+    Value: !Ref DemoTargetSemanticDriftEnabled

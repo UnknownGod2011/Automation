@@ -14,20 +14,41 @@ import { POST as runDemoAction } from "../app/demo-target/action/route";
 
 const originalEnabled = process.env.AUTOMATION_DEMO_TARGET_ENABLED;
 const originalTtl = process.env.AUTOMATION_DEMO_TARGET_SESSION_TTL_SECONDS;
+const originalSemanticDrift = process.env.AUTOMATION_DEMO_TARGET_SEMANTIC_DRIFT_ENABLED;
 
 afterEach(() => {
   if (originalEnabled === undefined) delete process.env.AUTOMATION_DEMO_TARGET_ENABLED;
   else process.env.AUTOMATION_DEMO_TARGET_ENABLED = originalEnabled;
   if (originalTtl === undefined) delete process.env.AUTOMATION_DEMO_TARGET_SESSION_TTL_SECONDS;
   else process.env.AUTOMATION_DEMO_TARGET_SESSION_TTL_SECONDS = originalTtl;
+  if (originalSemanticDrift === undefined) delete process.env.AUTOMATION_DEMO_TARGET_SEMANTIC_DRIFT_ENABLED;
+  else process.env.AUTOMATION_DEMO_TARGET_SEMANTIC_DRIFT_ENABLED = originalSemanticDrift;
 });
 
 describe("controlled demo target", () => {
-  it("is disabled by default and bounds session TTL configuration", () => {
-    expect(readDemoTargetConfig({})).toEqual({ enabled: false, sessionTtlSeconds: 900 });
-    expect(readDemoTargetConfig({ AUTOMATION_DEMO_TARGET_ENABLED: "true", AUTOMATION_DEMO_TARGET_SESSION_TTL_SECONDS: "600" })).toEqual({ enabled: true, sessionTtlSeconds: 600 });
-    expect(() => readDemoTargetConfig({ AUTOMATION_DEMO_TARGET_ENABLED: "true", AUTOMATION_DEMO_TARGET_SESSION_TTL_SECONDS: "30" })).toThrow("configuration");
-    expect(() => readDemoTargetConfig({ AUTOMATION_DEMO_TARGET_ENABLED: "true", AUTOMATION_DEMO_TARGET_SESSION_TTL_SECONDS: "not-a-number" })).toThrow("configuration");
+  it("is disabled by default and bounds demo configuration", () => {
+    expect(readDemoTargetConfig({})).toEqual({
+      enabled: false,
+      sessionTtlSeconds: 900,
+      semanticDriftEnabled: false,
+    });
+    expect(readDemoTargetConfig({
+      AUTOMATION_DEMO_TARGET_ENABLED: "true",
+      AUTOMATION_DEMO_TARGET_SESSION_TTL_SECONDS: "600",
+      AUTOMATION_DEMO_TARGET_SEMANTIC_DRIFT_ENABLED: "true",
+    })).toEqual({ enabled: true, sessionTtlSeconds: 600, semanticDriftEnabled: true });
+    expect(() => readDemoTargetConfig({
+      AUTOMATION_DEMO_TARGET_ENABLED: "true",
+      AUTOMATION_DEMO_TARGET_SESSION_TTL_SECONDS: "30",
+    })).toThrow("configuration");
+    expect(() => readDemoTargetConfig({
+      AUTOMATION_DEMO_TARGET_ENABLED: "true",
+      AUTOMATION_DEMO_TARGET_SESSION_TTL_SECONDS: "not-a-number",
+    })).toThrow("configuration");
+    expect(() => readDemoTargetConfig({
+      AUTOMATION_DEMO_TARGET_ENABLED: "true",
+      AUTOMATION_DEMO_TARGET_SEMANTIC_DRIFT_ENABLED: "yes",
+    })).toThrow("configuration");
   });
 
   it("uses a scoped HttpOnly Secure authentication cookie", () => {
@@ -84,6 +105,7 @@ describe("controlled demo target", () => {
 
   it("presents a repeatable select + radio + text + checkbox + submit workflow only with a live demo session", async () => {
     process.env.AUTOMATION_DEMO_TARGET_ENABLED = "true";
+    delete process.env.AUTOMATION_DEMO_TARGET_SEMANTIC_DRIFT_ENABLED;
     const response = await getDemoTarget(new Request("https://demo.example/demo-target", {
       headers: { cookie: "automation_demo_auth=authenticated" },
     }));
@@ -100,6 +122,26 @@ describe("controlled demo target", () => {
     expect(body).toContain('type="checkbox"');
     expect(body).toContain('data-testid="demo-confirm"');
     expect(body).toContain('data-testid="demo-submit"');
+    expect(body).not.toContain('data-testid="demo-semantic-submit"');
+    expect(body).not.toContain("password");
+    expect(body).not.toContain("api key");
+  });
+
+  it("can opt into a harmless submit-target drift without changing the form side effect", async () => {
+    process.env.AUTOMATION_DEMO_TARGET_ENABLED = "true";
+    process.env.AUTOMATION_DEMO_TARGET_SEMANTIC_DRIFT_ENABLED = "true";
+    const response = await getDemoTarget(new Request("https://demo.example/demo-target", {
+      headers: { cookie: "automation_demo_auth=authenticated" },
+    }));
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain('id="demo-form"');
+    expect(body).not.toContain('data-testid="demo-submit"');
+    expect(body).toContain('data-testid="demo-semantic-submit-slot"');
+    expect(body).toContain('data-testid="demo-semantic-submit"');
+    expect(body).toContain('type="submit"');
+    expect(body).toContain('form="demo-form"');
+    expect(body).toContain('aria-label="Finish controlled demo after selector drift"');
     expect(body).not.toContain("password");
     expect(body).not.toContain("api key");
   });
