@@ -4,30 +4,33 @@ Updated: 2026-08-28
 
 ## Current validated baseline
 
-`main` is `26822252abebeb611ca1472a5950fdeed6b4ad85` (`Add controlled semantic selector drift demo`), and push CI #404 completed successfully on that exact SHA. The AWS-first product vertical is structurally implemented: Cognito/Google sign-in, dashboard/create/revision, AgentCore Live View capture with durable Browser Profiles/traces, semantic compilation/inspection, guided asynchronous Fresh Test, guided publish/scheduled inputs, EventBridge Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution, OpenAI BYOK through AgentCore Identity, deterministic-first browser execution with bounded live observations for constrained semantic fallback, mandatory effect verification, authenticated capture/run evidence, run history/reasoning, SES/CloudWatch reporting, and bounded target-auth takeover/resume.
+`main` is `5f3447bdc5e9c4449146a795fb778768cfbb5830` (`Add explicit semantic recovery proof view`). PR CI #405 passed on the exact pre-merge content, but push CI #406 failed on this exact `main` SHA at the deterministic pnpm lock-snapshot gate before installation/check/tests. The failure was real and isolated: pnpm 10.15.0 re-resolved the unchanged workspace manifests from the live registry to lock SHA `ecbd5c08c99ee9e8a92372f12f44115beb2d7626999538f09cc9c1e0f752ad40` instead of the previously reviewed `4354be9e6660a24ec9a42bea1010e9e372b9ce61f7085109bd01f95413a3f473`.
+
+The AWS-first product vertical is structurally implemented: Cognito/Google sign-in, dashboard/create/revision, AgentCore Live View capture with durable Browser Profiles/traces, semantic compilation/inspection, guided asynchronous Fresh Test, guided publish/scheduled inputs, EventBridge Scheduler -> SQS -> Step Functions -> AgentCore Runtime execution, OpenAI BYOK through AgentCore Identity, deterministic-first browser execution with bounded live observations for constrained semantic fallback, mandatory effect verification, authenticated capture/run evidence, run history/reasoning, SES/CloudWatch reporting, bounded target-auth takeover/resume, controlled semantic selector drift, and explicit semantic-recovery proof presentation.
 
 Further crash-recovery/outbox/lease micro-hardening remains parked unless CI or the real vertical exposes a correctness blocker.
 
-## This development slice — explicit semantic recovery proof presentation
+## This development slice — deterministic checked-in pnpm lock bootstrap
 
-### Product milestone
+### Product / build milestone
 
-The controlled target can now force a harmless selector drift and the durable run already stores sanitized semantic-recovery summaries, but operators still had to infer the proof by combining the reasoning timeline with terminal run status. The live AWS demo needs an explicit fail-closed proof view that distinguishes “semantic recovery occurred” from “semantic recovery occurred and the run subsequently reached verified terminal success.”
+CI #406 exposed that the current supply-chain gate is not actually reproducible: it deletes `pnpm-lock.yaml`, resolves the public registry afresh, and compares the generated file to a manually refreshed hash. An unrelated transitive publication can therefore turn a previously green exact tree red without any repository change. The commit history contains repeated lock-snapshot refreshes, confirming this is systemic rather than a one-off defect.
 
-### Change
+### Change in this bootstrap commit
 
-- Added a provider-neutral `semanticRecoveryProof` presentation helper. It counts only persisted summaries whose trigger is `SEMANTIC_RECOVERY`.
-- `SUCCEEDED` plus at least one recovery summary yields `VERIFIED`; any non-success state with recovery yields `OBSERVED`; no recovery summary yields `NOT_USED`.
-- Added an authenticated run-scoped `/semantic-recovery-proof` page that displays those states without exposing selectors, live page observations, runtime inputs, provider rationale, credentials, Browser Profile/session identifiers, or hidden chain-of-thought.
-- The proof page is deliberately presentation-only. It does not execute, retry, reason, inspect the browser, or create a second verification authority. Terminal run success remains authoritative because the execution engine already requires ordinary post-effect verification before it can complete.
+- Root-caused CI #406 from the authoritative job log; no product code or dependency manifest changed.
+- Updated the temporary bootstrap hash only to the exact graph CI #406 resolved (`ecbd5c08...`).
+- The bootstrap gate emits the lockfile only after that exact hash and the existing AWS SDK/DynamoDB peer-alignment assertions pass.
+- This emitted lock is dependency metadata only; it contains no application secrets, browser/session state, BYOK material, tenant data, or runtime inputs.
+- The corrective commit in this same development run will check that exact lockfile into Git and replace live-registry re-resolution with deterministic repository-lock verification. The bootstrap emission will then be removed.
 
-### Security / tenant isolation / idempotency / cost
+### Security / tenant isolation / concurrency / cost
 
-The page uses the existing authenticated tenant-scoped run lookup. No client-provided credential/profile/workflow identifiers are introduced. No persistence shape, run transition, retry budget, lease, scheduler delivery, model call, Browser session, DynamoDB write, S3 object, queue message, or AWS permission is added. A refresh is read-only and idempotent.
+No runtime behavior, execution authority, tenant boundary, retry/timeout, scheduler/queue behavior, Browser session, model call, DynamoDB/S3 data, IAM permission, or user-visible workflow behavior changes in this bootstrap. The only temporary cost is one normal CI run needed to materialize the already-authenticated dependency snapshot; no Actions artifact is retained.
 
-### Regression coverage / validation
+### Validation
 
-Unit coverage proves: workflow reasoning alone does not claim semantic recovery; recovery during RUNNING/FAILED remains observed but unverified; only terminal `SUCCEEDED` with a semantic-recovery summary yields verified proof. GitHub Actions on the exact published head remains authoritative; do not claim this slice green until that run completes successfully.
+GitHub Actions on the exact branch head is authoritative. Do not treat this bootstrap or the final checked-in-lock strategy as green until their corresponding CI runs complete successfully.
 
 ## Known production risks / intentionally parked work
 
@@ -41,7 +44,7 @@ Unit coverage proves: workflow reasoning alone does not claim semantic recovery;
 
 ## Next product milestone
 
-1. Require exact-head CI green for this semantic-recovery proof slice and promote only after validation.
+1. Finish the deterministic checked-in pnpm lock correction and require exact-head CI green.
 2. Apply/verify real `main` protection and configure/verify the protected production GitHub Environment.
 3. Run the immutable AWS deployment with the built-in target enabled and semantic drift disabled; require strengthened live smoke plus all five System capabilities = `CONFIGURED`.
 4. Execute Capture -> Compile on the stable target, redeploy the same immutable release with semantic drift enabled, and run guided >30-second Fresh Test.
